@@ -141,3 +141,61 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# === Project-specific additions ===
+
+# Secrets (절대 커밋 금지)
+*.pem
+*.key
+secrets/
+credentials.json
+service-account*.json
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Prisma
+prisma/migrations/dev.db*
+prisma/*.db
+prisma/*.db-journal
+
+# Docker
+docker-compose.override.yml
+
+# Database backups
+*.sql.bak
+*.dump
+*.backup
+
+# Local development data
+data/
+volumes/
+local-data/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Python (폴링 데몬용)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+.venv/
+
+# Attendance poller logs
+attendance-poller.log
