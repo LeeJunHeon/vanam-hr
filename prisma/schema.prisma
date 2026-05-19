@@ -5,19 +5,367 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  schemas  = ["hr", "public"]
+  schemas  = ["hr"]
 }
 
-// public.user — SSO 사용자 검증용 (재고관리/장비관리와 공유)
-model User {
-  id       Int     @id @default(autoincrement())
-  name     String
-  email    String? @unique
-  role     String?
-  isActive String  @default("Y") @map("is_active")
+model approval_lines {
+  id                                                      Int         @id @default(autoincrement())
+  department_id                                           Int         @unique
+  primary_approver_id                                     Int
+  deputy_approver_id                                      Int?
+  auto_delegate_hours                                     Int         @default(24)
+  created_at                                              DateTime    @default(now()) @db.Timestamptz(6)
+  updated_at                                              DateTime    @default(now()) @db.Timestamptz(6)
+  departments                                             departments @relation(fields: [department_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  employees_approval_lines_deputy_approver_idToemployees  employees?  @relation("approval_lines_deputy_approver_idToemployees", fields: [deputy_approver_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  employees_approval_lines_primary_approver_idToemployees employees   @relation("approval_lines_primary_approver_idToemployees", fields: [primary_approver_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@map("user")
-  @@schema("public")
+  @@schema("hr")
 }
 
-// ── HR 모델 (`prisma db pull` 결과로 자동 채워짐) ──
+model attendance_categories {
+  id                      Int                       @id @default(autoincrement())
+  code                    String                    @unique @db.VarChar(50)
+  name                    String                    @db.VarChar(100)
+  type                    String                    @db.VarChar(50)
+  annual_leave_deduct     Decimal?                  @db.Decimal(3, 2)
+  require_approval        Boolean                   @default(true)
+  display_color           String?                   @db.VarChar(20)
+  is_system               Boolean                   @default(false)
+  is_active               Boolean                   @default(true)
+  sort_order              Int                       @default(0)
+  description             String?
+  created_at              DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime                  @default(now()) @db.Timestamptz(6)
+  attendance_daily        attendance_daily[]
+  attendance_requests     attendance_requests[]
+  calendar_color_mappings calendar_color_mappings[]
+
+  @@index([is_active, sort_order], map: "idx_attendance_categories_active")
+  @@schema("hr")
+}
+
+model attendance_daily {
+  id                    Int                    @id @default(autoincrement())
+  employee_id           Int
+  work_date             DateTime               @db.Date
+  check_in              DateTime?              @db.Timestamptz(6)
+  check_out             DateTime?              @db.Timestamptz(6)
+  shift_pattern_id      Int?
+  auto_status           String?                @db.VarChar(50)
+  category_id           Int?
+  is_overridden         Boolean                @default(false)
+  work_minutes          Int?
+  note                  String?
+  is_confirmed          Boolean                @default(false)
+  confirmed_at          DateTime?              @db.Timestamptz(6)
+  created_at            DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime               @default(now()) @db.Timestamptz(6)
+  attendance_categories attendance_categories? @relation(fields: [category_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  employees             employees              @relation(fields: [employee_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  shift_patterns        shift_patterns?        @relation(fields: [shift_pattern_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([employee_id, work_date], map: "uk_attendance_daily")
+  @@index([work_date, auto_status], map: "idx_attendance_daily_date")
+  @@index([is_confirmed, work_date], map: "idx_attendance_daily_unconfirmed")
+  @@schema("hr")
+}
+
+model attendance_requests {
+  id                                                           Int                   @id @default(autoincrement())
+  employee_id                                                  Int
+  category_id                                                  Int
+  request_type                                                 String                @db.VarChar(50)
+  start_date                                                   DateTime              @db.Date
+  end_date                                                     DateTime              @db.Date
+  reason                                                       String?
+  external_source                                              String?               @db.VarChar(50)
+  external_event_id                                            String?               @db.VarChar(255)
+  corrected_check_in                                           DateTime?             @db.Timestamptz(6)
+  corrected_check_out                                          DateTime?             @db.Timestamptz(6)
+  status                                                       String                @default("pending") @db.VarChar(50)
+  primary_approver_id                                          Int?
+  deputy_approver_id                                           Int?
+  approved_by_id                                               Int?
+  approved_at                                                  DateTime?             @db.Timestamptz(6)
+  reject_reason                                                String?
+  requested_at                                                 DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at                                                   DateTime              @default(now()) @db.Timestamptz(6)
+  employees_attendance_requests_approved_by_idToemployees      employees?            @relation("attendance_requests_approved_by_idToemployees", fields: [approved_by_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  attendance_categories                                        attendance_categories @relation(fields: [category_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  employees_attendance_requests_deputy_approver_idToemployees  employees?            @relation("attendance_requests_deputy_approver_idToemployees", fields: [deputy_approver_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  employees_attendance_requests_employee_idToemployees         employees             @relation("attendance_requests_employee_idToemployees", fields: [employee_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  employees_attendance_requests_primary_approver_idToemployees employees?            @relation("attendance_requests_primary_approver_idToemployees", fields: [primary_approver_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([external_source, external_event_id], map: "uk_request_external")
+  @@index([deputy_approver_id, status], map: "idx_requests_deputy_approver")
+  @@index([employee_id, start_date], map: "idx_requests_employee")
+  @@index([primary_approver_id, status], map: "idx_requests_primary_approver")
+  @@index([status, requested_at], map: "idx_requests_status_time")
+  @@schema("hr")
+}
+
+model calendar_color_mappings {
+  id                    Int                   @id @default(autoincrement())
+  provider              String                @default("google") @db.VarChar(20)
+  color_id              String                @db.VarChar(20)
+  color_name            String?               @db.VarChar(50)
+  category_id           Int
+  is_active             Boolean               @default(true)
+  description           String?
+  created_at            DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime              @default(now()) @db.Timestamptz(6)
+  attendance_categories attendance_categories @relation(fields: [category_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([provider, color_id], map: "uk_calendar_color")
+  @@index([is_active], map: "idx_calendar_color_active")
+  @@schema("hr")
+}
+
+model code_lookups {
+  id          Int      @id @default(autoincrement())
+  category    String   @db.VarChar(50)
+  code        String   @db.VarChar(50)
+  label       String   @db.VarChar(100)
+  color       String?  @db.VarChar(20)
+  sort_order  Int      @default(0)
+  is_system   Boolean  @default(false)
+  is_active   Boolean  @default(true)
+  description String?
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([category, code], map: "uk_code_lookups")
+  @@index([category, sort_order], map: "idx_code_lookups_category")
+  @@schema("hr")
+}
+
+model departments {
+  id                Int             @id @default(autoincrement())
+  code              String          @unique @db.VarChar(50)
+  name              String          @db.VarChar(100)
+  parent_id         Int?
+  sort_order        Int             @default(0)
+  is_active         Boolean         @default(true)
+  created_at        DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime        @default(now()) @db.Timestamptz(6)
+  approval_lines    approval_lines?
+  departments       departments?    @relation("departmentsTodepartments", fields: [parent_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_departments departments[]   @relation("departmentsTodepartments")
+  employees         employees[]
+
+  @@index([is_active, sort_order], map: "idx_departments_active")
+  @@schema("hr")
+}
+
+model devices {
+  id            Int            @id @default(autoincrement())
+  employee_id   Int
+  mac_address   String         @unique @db.VarChar(32)
+  hostname      String?        @db.VarChar(255)
+  ip_address    String?        @db.VarChar(45)
+  device_type   String?        @db.VarChar(50)
+  label         String?        @db.VarChar(100)
+  is_active     Boolean        @default(true)
+  last_seen_at  DateTime?      @db.Timestamptz(6)
+  registered_at DateTime       @default(now()) @db.Timestamptz(6)
+  created_at    DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime       @default(now()) @db.Timestamptz(6)
+  employees     employees      @relation(fields: [employee_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  presence_raw  presence_raw[]
+
+  @@index([employee_id, is_active], map: "idx_devices_employee")
+  @@schema("hr")
+}
+
+model employee_shifts {
+  id             Int            @id @default(autoincrement())
+  employee_id    Int
+  pattern_id     Int
+  start_date     DateTime       @db.Date
+  end_date       DateTime?      @db.Date
+  override       Json?
+  created_at     DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime       @default(now()) @db.Timestamptz(6)
+  employees      employees      @relation(fields: [employee_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  shift_patterns shift_patterns @relation(fields: [pattern_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([employee_id, start_date], map: "idx_employee_shifts")
+  @@schema("hr")
+}
+
+model employees {
+  id                                                                     Int                     @id @default(autoincrement())
+  employee_no                                                            String                  @unique @db.VarChar(50)
+  user_id                                                                Int?                    @unique
+  name                                                                   String                  @db.VarChar(100)
+  email                                                                  String?                 @db.VarChar(255)
+  department_id                                                          Int?
+  position_id                                                            Int?
+  phone                                                                  String?                 @db.VarChar(50)
+  hired_at                                                               DateTime                @db.Date
+  resigned_at                                                            DateTime?               @db.Date
+  is_active                                                              Boolean                 @default(true)
+  note                                                                   String?
+  created_at                                                             DateTime                @default(now()) @db.Timestamptz(6)
+  updated_at                                                             DateTime                @default(now()) @db.Timestamptz(6)
+  approval_lines_approval_lines_deputy_approver_idToemployees            approval_lines[]        @relation("approval_lines_deputy_approver_idToemployees")
+  approval_lines_approval_lines_primary_approver_idToemployees           approval_lines[]        @relation("approval_lines_primary_approver_idToemployees")
+  attendance_daily                                                       attendance_daily[]
+  attendance_requests_attendance_requests_approved_by_idToemployees      attendance_requests[]   @relation("attendance_requests_approved_by_idToemployees")
+  attendance_requests_attendance_requests_deputy_approver_idToemployees  attendance_requests[]   @relation("attendance_requests_deputy_approver_idToemployees")
+  attendance_requests_attendance_requests_employee_idToemployees         attendance_requests[]   @relation("attendance_requests_employee_idToemployees")
+  attendance_requests_attendance_requests_primary_approver_idToemployees attendance_requests[]   @relation("attendance_requests_primary_approver_idToemployees")
+  devices                                                                devices[]
+  employee_shifts                                                        employee_shifts[]
+  departments                                                            departments?            @relation(fields: [department_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  positions                                                              positions?              @relation(fields: [position_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  external_calendars                                                     external_calendars?
+  monthly_confirmations                                                  monthly_confirmations[]
+  presence_raw                                                           presence_raw[]
+  push_subscriptions                                                     push_subscriptions[]
+
+  @@index([is_active], map: "idx_employees_active")
+  @@index([department_id], map: "idx_employees_department")
+  @@index([position_id], map: "idx_employees_position")
+  @@index([user_id], map: "idx_employees_user_id")
+  @@schema("hr")
+}
+
+model external_calendars {
+  id             Int       @id @default(autoincrement())
+  employee_id    Int       @unique
+  provider       String    @default("google") @db.VarChar(20)
+  calendar_id    String    @db.VarChar(255)
+  refresh_token  String
+  access_token   String?
+  expires_at     DateTime? @db.Timestamptz(6)
+  sync_status    String    @default("active") @db.VarChar(20)
+  last_synced_at DateTime? @db.Timestamptz(6)
+  last_error     String?
+  created_at     DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime  @default(now()) @db.Timestamptz(6)
+  employees      employees @relation(fields: [employee_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@schema("hr")
+}
+
+model monthly_confirmations {
+  id             Int       @id @default(autoincrement())
+  employee_id    Int
+  year_month     String    @db.VarChar(7)
+  confirmed_at   DateTime? @db.Timestamptz(6)
+  auto_confirmed Boolean   @default(false)
+  reminders_sent Int       @default(0)
+  note           String?
+  created_at     DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime  @default(now()) @db.Timestamptz(6)
+  employees      employees @relation(fields: [employee_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([employee_id, year_month], map: "uk_monthly_confirm")
+  @@index([year_month, confirmed_at], map: "idx_monthly_confirm")
+  @@schema("hr")
+}
+
+model notification_schedules {
+  id             Int      @id @default(autoincrement())
+  code           String   @unique @db.VarChar(50)
+  name           String   @db.VarChar(100)
+  trigger_type   String   @db.VarChar(50)
+  day_offset     Int
+  hour_of_day    Int      @default(9)
+  minute_of_hour Int      @default(0)
+  is_active      Boolean  @default(true)
+  description    String?
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime @default(now()) @db.Timestamptz(6)
+
+  @@schema("hr")
+}
+
+model policy_settings {
+  key         String   @id @db.VarChar(100)
+  value       String
+  description String?
+  updated_at  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@schema("hr")
+}
+
+model polling_schedules {
+  id               Int      @id @default(autoincrement())
+  name             String   @db.VarChar(100)
+  start_time       DateTime @db.Time(6)
+  end_time         DateTime @db.Time(6)
+  interval_seconds Int
+  day_of_week      Int[]
+  priority         Int      @default(0)
+  is_active        Boolean  @default(true)
+  description      String?
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@schema("hr")
+}
+
+model positions {
+  id         Int         @id @default(autoincrement())
+  code       String      @unique @db.VarChar(50)
+  name       String      @db.VarChar(100)
+  sort_order Int         @default(0)
+  is_active  Boolean     @default(true)
+  created_at DateTime    @default(now()) @db.Timestamptz(6)
+  updated_at DateTime    @default(now()) @db.Timestamptz(6)
+  employees  employees[]
+
+  @@index([is_active, sort_order], map: "idx_positions_active")
+  @@schema("hr")
+}
+
+model presence_raw {
+  id          BigInt     @id @default(autoincrement())
+  employee_id Int?
+  device_id   Int
+  checked_at  DateTime   @db.Timestamptz(6)
+  status      String     @db.VarChar(20)
+  ssid        String?    @db.VarChar(100)
+  raw_value   String?
+  devices     devices    @relation(fields: [device_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  employees   employees? @relation(fields: [employee_id], references: [id], onUpdate: NoAction)
+
+  @@index([device_id, checked_at(sort: Desc)], map: "idx_presence_raw_dev_time")
+  @@index([employee_id, checked_at(sort: Desc)], map: "idx_presence_raw_emp_time")
+  @@index([checked_at], map: "idx_presence_raw_time")
+  @@schema("hr")
+}
+
+model push_subscriptions {
+  id           Int       @id @default(autoincrement())
+  employee_id  Int
+  endpoint     String    @unique
+  p256dh_key   String
+  auth_key     String
+  user_agent   String?
+  is_active    Boolean   @default(true)
+  last_used_at DateTime? @db.Timestamptz(6)
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  employees    employees @relation(fields: [employee_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([employee_id, is_active], map: "idx_push_subs_emp")
+  @@schema("hr")
+}
+
+model shift_patterns {
+  id               Int                @id @default(autoincrement())
+  name             String             @unique @db.VarChar(100)
+  description      String?
+  cycle_days       Int
+  schedule         Json
+  is_active        Boolean            @default(true)
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime           @default(now()) @db.Timestamptz(6)
+  attendance_daily attendance_daily[]
+  employee_shifts  employee_shifts[]
+
+  @@schema("hr")
+}
