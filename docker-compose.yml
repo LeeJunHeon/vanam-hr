@@ -1,0 +1,22 @@
+services:
+  nextjs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vanam-hr-nextjs
+    restart: unless-stopped
+    ports:
+      - "3004:3000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?search_path=hr
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      NEXTAUTH_URL: ${NEXTAUTH_URL}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      AUTH_TRUST_HOST: "true"
+    networks:
+      - vanam-db-net
+
+networks:
+  vanam-db-net:
+    external: true

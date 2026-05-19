@@ -1,0 +1,23 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["hr", "public"]
+}
+
+// public.user — SSO 사용자 검증용 (재고관리/장비관리와 공유)
+model User {
+  id       Int     @id @default(autoincrement())
+  name     String
+  email    String? @unique
+  role     String?
+  isActive String  @default("Y") @map("is_active")
+
+  @@map("user")
+  @@schema("public")
+}
+
+// ── HR 모델 (`prisma db pull` 결과로 자동 채워짐) ──

@@ -168,6 +168,16 @@ prisma/migrations/dev.db*
 prisma/*.db
 prisma/*.db-journal
 
+# Prisma generated client
+/app/generated/
+/lib/generated/
+
+# Next.js generated
+next-env.d.ts
+
+# Claude Code local settings
+.claude/
+
 # Docker
 docker-compose.override.yml
 
