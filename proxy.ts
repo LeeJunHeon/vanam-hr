@@ -9,8 +9,15 @@ const { auth } = NextAuth(authConfig);
 const isLocal = !process.env.NEXTAUTH_URL ||
   process.env.NEXTAUTH_URL.includes("localhost");
 
+// 로컬 UI 확인용 인증 우회 (DISABLE_AUTH=true 설정 시 활성)
+// 운영에서는 절대 활성화하지 말 것
+const disableAuth = process.env.DISABLE_AUTH === "true";
+
 export default auth((req: NextRequest & { auth: any }) => {
   const { pathname } = req.nextUrl;
+
+  // ⚠️ 로컬 UI 확인 모드: 모든 요청 통과
+  if (disableAuth) return NextResponse.next();
 
   // /api/auth/* 는 next-auth 내부 — 항상 허용
   if (pathname.startsWith("/api/auth")) return NextResponse.next();
