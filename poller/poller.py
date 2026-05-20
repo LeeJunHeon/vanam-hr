@@ -2,22 +2,19 @@
 
 활성 디바이스의 MAC을 SNMP walk으로 조회 → presence_raw 적재.
 online ↔ offline 전환 시에만 INSERT (중복 방지).
+
+sync 단순 루프. asyncio 의존성 없음.
 """
 
-import asyncio
-import platform
 import signal
 import sys
+import time
 from datetime import datetime, timedelta
 
 from config import load_config
 from db import Database
 from logger import mask_mac, setup_logger
 from snmp_client import SnmpClient
-
-# Windows에서 pysnmp asyncio 호환을 위한 이벤트 루프 정책 설정
-if platform.system() == "Windows":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # 정책 캐시 만료 시간 (5분)
 POLICY_CACHE_TTL = timedelta(minutes=5)
@@ -59,21 +56,20 @@ class Poller:
             return True
         return datetime.now() - self.last_policy_load > POLICY_CACHE_TTL
 
-    async def run_once(self):
-        """폴링 1회 실행: SNMP walk → MAC 매칭 → presence_raw 적재.
-
-        중요: DB sync 호출(psycopg2)을 asyncio.to_thread()로 격리하여
-        pysnmp asyncio dispatcher와의 충돌 방지.
-        SNMP walk을 먼저 수행하여 dispatcher 상태 보호.
-        """
+    def run_once(self):
+        """폴링 1회 실행: SNMP walk → MAC 매칭 → presence_raw 적재."""
         if self.needs_policy_reload():
-            # reload_policies는 sync DB 호출 포함 → 스레드로 격리
-            await asyncio.to_thread(self.reload_policies)
+            self.reload_policies()
 
-        # SNMP walk 먼저 수행 (dispatcher 상태 보호)
-        assert self.snmp is not None
+        devices = self.db.get_active_devices()
+        if not devices:
+            self.logger.debug("활성 디바이스 0건 — 폴링 건너뜀")
+            return
+
+        # SNMP walk
         try:
-            snmp_results = await self.snmp.walk_mac_table()
+            assert self.snmp is not None
+            snmp_results = self.snmp.walk_mac_table()
             self._consecutive_snmp_errors = 0
         except Exception as e:
             self._consecutive_snmp_errors += 1
@@ -82,121 +78,89 @@ class Poller:
             )
             if self._consecutive_snmp_errors >= 3:
                 self.logger.warning("3회 연속 실패 — 30초 대기 후 재시도")
-                await asyncio.sleep(30)
-            return
-
-        # 활성 디바이스 조회 — DB sync 호출은 별도 스레드로 격리
-        devices = await asyncio.to_thread(self.db.get_active_devices)
-        if not devices:
-            self.logger.debug("활성 디바이스 0건 — 폴링 건너뜀")
+                time.sleep(30)
             return
 
         # 활성 디바이스 MAC → DB row 매핑
-        # devices.mac_address는 lib/macAddress.ts 규칙으로 정규화된 lowercase 12자리
         active_mac_to_device = {d["mac_address"]: d for d in devices}
-        seen_macs: set[str] = set()
 
-        # online 처리 (SNMP 결과의 mac은 이미 walk_mac_table()에서 정규화된 12자리)
+        # SNMP 응답에서 활성 직원 MAC 추출
+        seen_macs: set[str] = set()
         for result in snmp_results:
             normalized = result.get("mac", "")
             if not normalized:
                 continue
 
-            if normalized not in active_mac_to_device:
-                continue
+            if normalized in active_mac_to_device:
+                device = active_mac_to_device[normalized]
+                seen_macs.add(normalized)
 
-            device = active_mac_to_device[normalized]
-            seen_macs.add(normalized)
+                # 이 펌웨어는 SSID 정보 없음
+                ssid = None
+                raw_value = None
 
-            # 이 펌웨어는 SSID 정보 없음
-            ssid = None
-            raw_value = None
-
-            # 직전 상태 조회 (DB sync) → 스레드로 격리
-            last_status = await asyncio.to_thread(
-                self.db.get_last_status, device["id"]
-            )
-            if last_status == "online":
-                # 이미 online — last_seen_at만 갱신
-                if not self.config.dry_run:
-                    await asyncio.to_thread(
-                        self.db.update_last_seen, device["id"]
+                # 직전 상태 조회 → online 중복 방지
+                last_status = self.db.get_last_status(device["id"])
+                if last_status == "online":
+                    # 이미 online이면 last_seen_at만 갱신
+                    if not self.config.dry_run:
+                        self.db.update_last_seen(device["id"])
+                else:
+                    # 처음 또는 offline → online 전환
+                    self.logger.info(
+                        f"online: {mask_mac(normalized)} "
+                        f"(device_id={device['id']}, employee_id={device['employee_id']})"
                     )
-            else:
-                # 신규 또는 offline → online 전환
-                self.logger.info(
-                    f"online: {mask_mac(normalized)} "
-                    f"(device_id={device['id']}, employee_id={device['employee_id']})"
-                )
-                if not self.config.dry_run:
-                    await asyncio.to_thread(
-                        self.db.insert_presence,
-                        device["id"],
-                        device["employee_id"],
-                        "online",
-                        ssid,
-                        raw_value,
-                    )
-                    await asyncio.to_thread(
-                        self.db.update_last_seen, device["id"]
-                    )
+                    if not self.config.dry_run:
+                        self.db.insert_presence(
+                            device_id=device["id"],
+                            employee_id=device["employee_id"],
+                            status="online",
+                            ssid=ssid,
+                            raw_value=raw_value,
+                        )
+                        self.db.update_last_seen(device["id"])
 
-        # offline 전환 (SNMP 응답에 없는 활성 디바이스)
+        # offline 처리 — SNMP 응답에 없는 device
         for mac, device in active_mac_to_device.items():
             if mac in seen_macs:
                 continue
-            last_status = await asyncio.to_thread(
-                self.db.get_last_status, device["id"]
-            )
+            last_status = self.db.get_last_status(device["id"])
             if last_status == "online":
                 self.logger.info(
                     f"offline: {mask_mac(mac)} "
                     f"(device_id={device['id']}, employee_id={device['employee_id']})"
                 )
                 if not self.config.dry_run:
-                    await asyncio.to_thread(
-                        self.db.insert_presence,
-                        device["id"],
-                        device["employee_id"],
-                        "offline",
-                        None,
-                        None,
+                    self.db.insert_presence(
+                        device_id=device["id"],
+                        employee_id=device["employee_id"],
+                        status="offline",
+                        ssid=None,
+                        raw_value=None,
                     )
-            # last_status가 offline 또는 None이면 아무 것도 안 함 (중복 방지)
 
-    async def run(self):
+    def run(self):
+        """메인 루프. 폴링 주기는 polling_schedules 테이블에서 동적 조회."""
         self.logger.info("Poller 시작")
         self.logger.info(
             f"DRY_RUN={self.config.dry_run}, LOG_LEVEL={self.config.log_level}"
         )
 
-        # pysnmp cold start 워밍업: 첫 bulk_walk_cmd는 timeout이 정상 동작이므로 무시
-        # 정책 1회 로드해서 SnmpClient 준비 (DB sync는 스레드로 격리)
-        await asyncio.to_thread(self.reload_policies)
-        if self.snmp is not None:
-            self.logger.info("SNMP dispatcher 워밍업 시작...")
-            try:
-                await self.snmp.walk_mac_table()
-                self.logger.info("SNMP 워밍업 성공 (cold start 통과)")
-            except RuntimeError as e:
-                # 첫 호출 timeout은 예상된 동작. 무시하고 계속.
-                self.logger.info(f"SNMP 워밍업 timeout (예상된 cold start): {e}")
-
         while self.running:
             try:
-                await self.run_once()
-                interval = await asyncio.to_thread(
-                    self.db.get_current_polling_schedule, datetime.now()
-                )
+                self.run_once()
+                # 폴링 주기 결정 (DB에서 동적 조회)
+                interval = self.db.get_current_polling_schedule(datetime.now())
                 self.logger.debug(f"다음 폴링까지 {interval}초 대기")
                 # 종료 시그널 응답성 위해 1초 단위로 sleep
                 for _ in range(interval):
                     if not self.running:
                         break
-                    await asyncio.sleep(1)
+                    time.sleep(1)
             except Exception as e:
                 self.logger.exception(f"폴링 루프 예외: {e}")
-                await asyncio.sleep(60)
+                time.sleep(60)  # 알 수 없는 예외 시 1분 대기
 
         self.logger.info("Poller 정상 종료")
 
@@ -208,14 +172,14 @@ class Poller:
 def main():
     poller = Poller()
     signal.signal(signal.SIGINT, poller.stop)
-    # Windows에서 SIGTERM은 없을 수 있음
+    # Linux에선 SIGTERM 정상 동작
     if hasattr(signal, "SIGTERM"):
         try:
             signal.signal(signal.SIGTERM, poller.stop)
         except (ValueError, OSError):
             pass
     try:
-        asyncio.run(poller.run())
+        poller.run()
     except KeyboardInterrupt:
         sys.exit(0)
 
