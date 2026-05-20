@@ -12,6 +12,8 @@ RUN apk add --no-cache openssl
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+# Prisma 7 빌드용 placeholder DATABASE_URL (런타임엔 docker-compose가 실제 값 주입)
+ENV DATABASE_URL="postgresql://placeholder:placeholder@placeholder:5432/placeholder?schema=hr"
 # Prisma client 생성
 RUN npx prisma generate
 RUN npm run build
