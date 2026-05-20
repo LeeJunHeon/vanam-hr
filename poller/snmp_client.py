@@ -8,8 +8,6 @@ MAC OID (1.1.2)만 사용. SSID 구분 정보 없음.
 
 from typing import Optional
 
-import asyncio
-
 from pysnmp.hlapi.v3arch.asyncio import (
     CommunityData,
     ContextData,
@@ -95,7 +93,7 @@ class SnmpClient:
 
     async def walk_mac_table(self) -> list[dict]:
         """
-        MAC OID prefix walk. ipTIME 첫 BULK_WALK timeout 패턴 대응.
+        MAC OID prefix walk. 워밍업은 poller.py가 책임.
 
         반환 형식: [
             {mac: 'aabbccddeeff' (정규화된 lowercase 12자리),
@@ -105,25 +103,8 @@ class SnmpClient:
 
         이 펌웨어는 메인 OID 미지원 → SSID/유선 구분 불가.
         MAC 매칭만으로 디바이스 식별.
-
-        진단 결과 (test_warmup.py, test_full.py):
-        - 첫 bulk_walk_cmd 호출은 timeout (ARP/SNMP daemon cold)
-        - 두 번째 bulk_walk_cmd부터 즉시 성공
-        - GET 호출(sysUpTime 등)이 직전에 있으면 BULK_WALK 방해 (펌웨어 이슈)
-
-        해결: 자체적으로 최대 3회 재시도, 사이 0.5초 sleep.
         """
-        last_err: RuntimeError | None = None
-        for attempt in range(3):
-            try:
-                return await self._walk_once()
-            except RuntimeError as e:
-                last_err = e
-                if attempt < 2:
-                    await asyncio.sleep(0.5)
-        # 3회 모두 실패
-        assert last_err is not None
-        raise last_err
+        return await self._walk_once()
 
     def parse_ssid(self, conn_value: Optional[str]) -> Optional[str]:
         """현재 펌웨어는 SSID 정보 없음."""

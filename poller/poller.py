@@ -5,6 +5,7 @@ online ↔ offline 전환 시에만 INSERT (중복 방지).
 """
 
 import asyncio
+import platform
 import signal
 import sys
 from datetime import datetime, timedelta
@@ -13,6 +14,10 @@ from config import load_config
 from db import Database
 from logger import mask_mac, setup_logger
 from snmp_client import SnmpClient
+
+# Windows에서 pysnmp asyncio 호환을 위한 이벤트 루프 정책 설정
+if platform.system() == "Windows":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # 정책 캐시 만료 시간 (5분)
 POLICY_CACHE_TTL = timedelta(minutes=5)
@@ -146,6 +151,18 @@ class Poller:
         self.logger.info(
             f"DRY_RUN={self.config.dry_run}, LOG_LEVEL={self.config.log_level}"
         )
+
+        # pysnmp cold start 워밍업: 첫 bulk_walk_cmd는 timeout이 정상 동작이므로 무시
+        # 정책 1회 로드해서 SnmpClient 준비
+        self.reload_policies()
+        if self.snmp is not None:
+            self.logger.info("SNMP dispatcher 워밍업 시작...")
+            try:
+                await self.snmp.walk_mac_table()
+                self.logger.info("SNMP 워밍업 성공 (cold start 통과)")
+            except RuntimeError as e:
+                # 첫 호출 timeout은 예상된 동작. 무시하고 계속.
+                self.logger.info(f"SNMP 워밍업 timeout (예상된 cold start): {e}")
 
         while self.running:
             try:
