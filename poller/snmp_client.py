@@ -50,19 +50,8 @@ class SnmpClient:
             self._engine = SnmpEngine()
         return self._engine
 
-    async def walk_mac_table(self) -> list[dict]:
-        """
-        MAC OID prefix를 walk해서 라우터에 연결된 모든 디바이스의 MAC 반환.
-
-        반환 형식: [
-            {mac: 'aabbccddeeff' (정규화된 lowercase 12자리),
-             oid_index: '34.0.168.192' or '1.118.43.116'},
-            ...
-        ]
-
-        이 펌웨어는 메인 OID 미지원 → SSID/유선 구분 불가.
-        MAC 매칭만으로 디바이스 식별.
-        """
+    async def _walk_once(self) -> list[dict]:
+        """실제 SNMP walk 1회 수행. timeout 시 RuntimeError 발생."""
         engine = await self._get_engine()
         transport = await UdpTransportTarget.create(
             (self.host, self.port), timeout=self.timeout, retries=1
@@ -101,6 +90,33 @@ class SnmpClient:
                 )
 
         return results
+
+    async def walk_mac_table(self) -> list[dict]:
+        """
+        MAC OID prefix를 walk해서 라우터에 연결된 모든 디바이스의 MAC 반환.
+
+        반환 형식: [
+            {mac: 'aabbccddeeff' (정규화된 lowercase 12자리),
+             oid_index: '34.0.168.192' or '1.118.43.116'},
+            ...
+        ]
+
+        이 펌웨어는 메인 OID 미지원 → SSID/유선 구분 불가.
+        MAC 매칭만으로 디바이스 식별.
+
+        첫 호출이 timeout 나는 ipTIME 동작 패턴 대응:
+        timeout 발생 시 즉시 1회 재시도 (warmup 후 성공률 100%).
+        """
+        try:
+            return await self._walk_once()
+        except RuntimeError as first_err:
+            # 첫 호출 실패 시 즉시 재시도 (warmup 패턴)
+            # 예외 raise는 두 번째도 실패한 경우만
+            try:
+                return await self._walk_once()
+            except RuntimeError:
+                # 두 번째도 실패 → 진짜 에러로 raise
+                raise first_err
 
     def parse_ssid(self, conn_value: Optional[str]) -> Optional[str]:
         """현재 펌웨어는 SSID 정보 없음."""
