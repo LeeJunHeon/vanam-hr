@@ -19,7 +19,9 @@ class Config:
 
 
 def load_config() -> Config:
-    db_url = os.environ.get("DATABASE_URL")
+    # POLLER_DATABASE_URL이 있으면 우선 사용 (psycopg2 호환), 없으면 DATABASE_URL fallback
+    # Next.js Prisma는 ?schema=hr 쿼리 파라미터를 사용하지만 psycopg2는 invalid DSN으로 거부
+    db_url = os.environ.get("POLLER_DATABASE_URL") or os.environ.get("DATABASE_URL")
     community = os.environ.get("SNMP_COMMUNITY")
     if not db_url:
         raise SystemExit("DATABASE_URL 환경변수가 없습니다. .env 확인 필요.")
