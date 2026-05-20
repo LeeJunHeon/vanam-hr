@@ -23,8 +23,8 @@ class SnmpClient:
         host: str,
         community: str,
         port: int = 161,
-        timeout: int = 3,
-        retries: int = 2,
+        timeout: int = 5,
+        retries: int = 5,
     ):
         self.host = host
         self.community = community
