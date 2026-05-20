@@ -5,13 +5,12 @@ WORKDIR /app
 # 시스템 패키지:
 # - libpq-dev: psycopg2-binary 백업용
 # - libsnmp-dev, snmp: easysnmp 빌드 + snmpwalk CLI (디버깅용)
-# - snmp-mibs-downloader: MIB 파일 (선택, easysnmp가 use_numeric=True라 사실상 불필요하나 안전)
 # - build-essential, gcc: easysnmp wheel 미제공 시 컴파일
+# (snmp-mibs-downloader는 Debian Trixie main repo에 없음 + use_numeric=True라 불필요)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     libsnmp-dev \
     snmp \
-    snmp-mibs-downloader \
     build-essential \
     gcc \
     && rm -rf /var/lib/apt/lists/*
