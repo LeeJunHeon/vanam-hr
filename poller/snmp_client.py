@@ -79,6 +79,10 @@ class SnmpClient:
         """실제 walk 1회 수행. get_next 루프 사용 (ipTIME이 GETBULK 미응답하므로).
 
         Timeout 시 EasySNMPTimeoutError 발생.
+
+        중요: easysnmp는 r.oid의 마지막 옥텟을 r.oid_index로 자동 분리함.
+        walk 다음 단계로 진행하려면 r.oid + r.oid_index 조합 필수.
+        안 그러면 잘린 OID로 next 호출되어 무한 루프 발생.
         """
         session = self._get_session()
         results: list[dict] = []
@@ -87,26 +91,36 @@ class SnmpClient:
         current_oid = self.MAC_OID_PREFIX
         # 안전장치: 무한 루프 방지 (디바이스 256개까지 충분)
         max_iterations = 500
+        seen_oids: set[str] = set()  # 안전장치: 같은 OID 두 번 등장 시 즉시 종료
 
         for _ in range(max_iterations):
             item = session.get_next(current_oid)
 
+            # easysnmp는 마지막 옥텟을 oid_index로 분리하므로 둘을 조합해 완전한 OID 만듦
+            base = str(item.oid).lstrip(".")
+            idx = str(item.oid_index) if item.oid_index else ""
+            item_oid = f"{base}.{idx}" if idx else base
+
             # 응답 OID가 더 이상 MAC_OID_PREFIX 하위가 아니면 walk 종료
             # (예: 1.3.6.1.4.1.12874.1.3.1.1.3.* 으로 넘어가면 prefix 벗어남)
-            item_oid = str(item.oid).lstrip(".")
             if not item_oid.startswith(self.MAC_OID_PREFIX):
                 break
+
+            # 무한 루프 안전장치: 같은 OID가 또 나오면 종료
+            if item_oid in seen_oids:
+                break
+            seen_oids.add(item_oid)
 
             mac_value = item.value
             if mac_value and "No Such" not in str(mac_value):
                 normalized = self.normalize_mac(mac_value)
                 if normalized:
-                    # oid_index: prefix 제거 후 남은 부분 (예: '13.0.168.192')
-                    oid_index = item_oid[len(self.MAC_OID_PREFIX) :].lstrip(".")
+                    # prefix 제거 후 남은 인덱스 (예: '1.118.43.116' 또는 '13.0.168.192')
+                    oid_index_full = item_oid[len(self.MAC_OID_PREFIX) :].lstrip(".")
                     results.append(
                         {
                             "mac": normalized,
-                            "oid_index": oid_index,
+                            "oid_index": oid_index_full,
                         }
                     )
 
