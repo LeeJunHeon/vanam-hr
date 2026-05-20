@@ -57,35 +57,61 @@ class Poller:
         return datetime.now() - self.last_policy_load > POLICY_CACHE_TTL
 
     def run_once(self):
-        """폴링 1회 실행: SNMP walk → MAC 매칭 → presence_raw 적재."""
-        if self.needs_policy_reload():
-            self.reload_policies()
+        """폴링 1회 실행: SNMP walk → MAC 매칭 → presence_raw 적재.
 
+        각 단계별 소요 시간을 INFO 로그로 출력하여 병목 파악.
+        """
+        cycle_start = time.time()
+        self.logger.info("=== 폴링 사이클 시작 ===")
+
+        # [1] 정책 캐시 갱신 확인
+        if self.needs_policy_reload():
+            t0 = time.time()
+            self.reload_policies()
+            self.logger.info(f"  [1] 정책 reload: {time.time()-t0:.3f}s")
+
+        # [2] DB에서 활성 디바이스 조회
+        t0 = time.time()
         devices = self.db.get_active_devices()
+        self.logger.info(
+            f"  [2] 활성 디바이스 조회: {time.time()-t0:.3f}s ({len(devices)}건)"
+        )
+
         if not devices:
             self.logger.debug("활성 디바이스 0건 — 폴링 건너뜀")
             return
 
-        # SNMP walk
+        # [3] SNMP walk
+        t0 = time.time()
         try:
             assert self.snmp is not None
             snmp_results = self.snmp.walk_mac_table()
+            walk_time = time.time() - t0
+            self.logger.info(
+                f"  [3] SNMP walk: {walk_time:.3f}s ({len(snmp_results)}건 응답)"
+            )
             self._consecutive_snmp_errors = 0
         except Exception as e:
+            walk_time = time.time() - t0
             self._consecutive_snmp_errors += 1
             self.logger.warning(
-                f"SNMP walk 실패 ({self._consecutive_snmp_errors}회 연속): {e}"
+                f"  [3] SNMP walk 실패: {walk_time:.3f}s "
+                f"({self._consecutive_snmp_errors}회 연속): {e}"
             )
             if self._consecutive_snmp_errors >= 3:
-                self.logger.warning("3회 연속 실패 — 30초 대기 후 재시도")
+                self.logger.warning("3회 연속 실패 — 30초 대기")
                 time.sleep(30)
             return
 
-        # 활성 디바이스 MAC → DB row 매핑
+        # [4] MAC 매칭 + DB 작업
+        t0 = time.time()
         active_mac_to_device = {d["mac_address"]: d for d in devices}
-
-        # SNMP 응답에서 활성 직원 MAC 추출
         seen_macs: set[str] = set()
+        matched_count = 0
+        db_ops_count = 0
+        online_transitions = 0
+        offline_transitions = 0
+
         for result in snmp_results:
             normalized = result.get("mac", "")
             if not normalized:
@@ -94,44 +120,45 @@ class Poller:
             if normalized in active_mac_to_device:
                 device = active_mac_to_device[normalized]
                 seen_macs.add(normalized)
+                matched_count += 1
 
-                # 이 펌웨어는 SSID 정보 없음
-                ssid = None
-                raw_value = None
-
-                # 직전 상태 조회 → online 중복 방지
+                db_ops_count += 1
                 last_status = self.db.get_last_status(device["id"])
                 if last_status == "online":
-                    # 이미 online이면 last_seen_at만 갱신
                     if not self.config.dry_run:
+                        db_ops_count += 1
                         self.db.update_last_seen(device["id"])
                 else:
-                    # 처음 또는 offline → online 전환
+                    online_transitions += 1
                     self.logger.info(
-                        f"online: {mask_mac(normalized)} "
+                        f"  → online: {mask_mac(normalized)} "
                         f"(device_id={device['id']}, employee_id={device['employee_id']})"
                     )
                     if not self.config.dry_run:
+                        db_ops_count += 2
                         self.db.insert_presence(
                             device_id=device["id"],
                             employee_id=device["employee_id"],
                             status="online",
-                            ssid=ssid,
-                            raw_value=raw_value,
+                            ssid=None,
+                            raw_value=None,
                         )
                         self.db.update_last_seen(device["id"])
 
-        # offline 처리 — SNMP 응답에 없는 device
+        # [5] offline 처리
         for mac, device in active_mac_to_device.items():
             if mac in seen_macs:
                 continue
+            db_ops_count += 1
             last_status = self.db.get_last_status(device["id"])
             if last_status == "online":
+                offline_transitions += 1
                 self.logger.info(
-                    f"offline: {mask_mac(mac)} "
+                    f"  → offline: {mask_mac(mac)} "
                     f"(device_id={device['id']}, employee_id={device['employee_id']})"
                 )
                 if not self.config.dry_run:
+                    db_ops_count += 1
                     self.db.insert_presence(
                         device_id=device["id"],
                         employee_id=device["employee_id"],
@@ -139,6 +166,15 @@ class Poller:
                         ssid=None,
                         raw_value=None,
                     )
+
+        self.logger.info(
+            f"  [4-5] MAC 매칭 + DB: {time.time()-t0:.3f}s "
+            f"(매칭 {matched_count}건, DB {db_ops_count}회, "
+            f"online↑ {online_transitions}, offline↓ {offline_transitions})"
+        )
+
+        total = time.time() - cycle_start
+        self.logger.info(f"=== 사이클 종료: {total:.3f}s ===")
 
     def run(self):
         """메인 루프. 폴링 주기는 polling_schedules 테이블에서 동적 조회."""

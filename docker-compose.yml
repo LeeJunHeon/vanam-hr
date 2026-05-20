@@ -8,6 +8,7 @@ services:
     ports:
       - "3998:3000"
     environment:
+      TZ: Asia/Seoul
       DATABASE_URL: ${DATABASE_URL}
       NEXTAUTH_URL: ${NEXTAUTH_URL}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
@@ -27,6 +28,7 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
+      TZ: Asia/Seoul
       SNMP_COMMUNITY: ${SNMP_COMMUNITY}
       POLLER_DB_HOST: ${POLLER_DB_HOST:-localhost}
       POLLER_DB_PORT: ${POLLER_DB_PORT:-5433}
