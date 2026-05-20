@@ -6,7 +6,6 @@ sync 호출. asyncio 의존성 없음.
 MAC OID (1.1.2)만 사용. SSID/유선 구분 정보 없음.
 """
 
-import time
 from typing import Optional
 
 from easysnmp import Session
@@ -25,8 +24,8 @@ class SnmpClient:
         host: str,
         community: str,
         port: int = 161,
-        timeout: int = 5,
-        retries: int = 5,
+        timeout: int = 2,
+        retries: int = 1,
     ):
         self.host = host
         self.community = community
@@ -50,30 +49,18 @@ class SnmpClient:
         return self._session
 
     def walk_mac_table(self) -> list[dict]:
-        """
-        MAC OID prefix를 walk해서 라우터에 연결된 모든 디바이스 MAC 반환.
+        """MAC OID prefix walk. ipTIME rate limit 대응:
+
+        _walk_once는 timeout 시 부분 결과 반환하므로 외부 재시도 불필요.
+        완전 실패(연결 자체 안 됨) 시에만 위로 전파.
 
         반환 형식: [
             {mac: 'aabbccddeeff' (정규화된 lowercase 12자리),
              oid_index: '34.0.168.192' or '1.118.43.116'},
             ...
         ]
-
-        ipTIME 라우터의 cold start 대응: 첫 호출이 timeout 나면 즉시 재시도.
-        snmpwalk CLI는 자체 재시도하지만 easysnmp의 retries 파라미터는
-        walk()에서 동작 안 함 → 직접 구현. 최대 3회, 사이 0.5초 sleep.
         """
-        last_err: EasySNMPTimeoutError | None = None
-        for attempt in range(3):
-            try:
-                return self._walk_once()
-            except EasySNMPTimeoutError as e:
-                last_err = e
-                if attempt < 2:
-                    time.sleep(0.5)
-        # 3회 모두 timeout
-        assert last_err is not None
-        raise last_err
+        return self._walk_once()
 
     def _walk_once(self) -> list[dict]:
         """실제 walk 1회 수행. get_next 루프 사용 (ipTIME이 GETBULK 미응답하므로).
@@ -94,7 +81,12 @@ class SnmpClient:
         seen_oids: set[str] = set()  # 안전장치: 같은 OID 두 번 등장 시 즉시 종료
 
         for _ in range(max_iterations):
-            item = session.get_next(current_oid)
+            try:
+                item = session.get_next(current_oid)
+            except EasySNMPTimeoutError:
+                # ipTIME이 ~50회 후 응답 거부 (연결 한계).
+                # 그 시점까지 모은 results 반환 — 본인 폰 보통 그 안에 잡힘.
+                break
 
             # easysnmp는 마지막 옥텟을 oid_index로 분리하므로 둘을 조합해 완전한 OID 만듦
             base = str(item.oid).lstrip(".")
