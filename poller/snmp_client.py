@@ -6,9 +6,11 @@ sync 호출. asyncio 의존성 없음.
 MAC OID (1.1.2)만 사용. SSID/유선 구분 정보 없음.
 """
 
+import time
 from typing import Optional
 
 from easysnmp import Session
+from easysnmp.exceptions import EasySNMPTimeoutError
 
 
 class SnmpClient:
@@ -57,9 +59,24 @@ class SnmpClient:
             ...
         ]
 
-        easysnmp의 walk()는 내부적으로 SNMPv2c BULK_WALK 사용.
-        timeout 시 EasySNMPTimeoutError 발생 → 호출자가 처리.
+        ipTIME 라우터의 cold start 대응: 첫 호출이 timeout 나면 즉시 재시도.
+        snmpwalk CLI는 자체 재시도하지만 easysnmp의 retries 파라미터는
+        walk()에서 동작 안 함 → 직접 구현. 최대 3회, 사이 0.5초 sleep.
         """
+        last_err: EasySNMPTimeoutError | None = None
+        for attempt in range(3):
+            try:
+                return self._walk_once()
+            except EasySNMPTimeoutError as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(0.5)
+        # 3회 모두 timeout
+        assert last_err is not None
+        raise last_err
+
+    def _walk_once(self) -> list[dict]:
+        """실제 walk 1회 수행. Timeout 시 EasySNMPTimeoutError 발생."""
         session = self._get_session()
         results: list[dict] = []
 
