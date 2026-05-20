@@ -18,7 +18,6 @@ from pysnmp.hlapi.v3arch.asyncio import (
     SnmpEngine,
     UdpTransportTarget,
     bulk_walk_cmd,
-    get_cmd,
 )
 
 
@@ -94,34 +93,9 @@ class SnmpClient:
 
         return results
 
-    async def warmup(self) -> bool:
-        """
-        SNMP 채널 warmup. sysUpTime을 한 번 GET해서 ARP 해석 및 SNMP daemon 깨움.
-
-        실패해도 walk_mac_table에서 자체 재시도하므로 무시 가능.
-
-        Returns:
-            True: warmup 성공, False: 실패 (무시 가능)
-        """
-        try:
-            engine = await self._get_engine()
-            transport = await UdpTransportTarget.create(
-                (self.host, self.port), timeout=self.timeout, retries=1
-            )
-            errInd, errStat, _, _ = await get_cmd(
-                engine,
-                CommunityData(self.community, mpModel=1),
-                transport,
-                ContextData(),
-                ObjectType(ObjectIdentity("1.3.6.1.2.1.1.3.0")),  # sysUpTime
-            )
-            return not (errInd or errStat)
-        except Exception:
-            return False
-
     async def walk_mac_table(self) -> list[dict]:
         """
-        MAC OID prefix를 walk해서 라우터에 연결된 모든 디바이스의 MAC 반환.
+        MAC OID prefix walk. ipTIME 첫 BULK_WALK timeout 패턴 대응.
 
         반환 형식: [
             {mac: 'aabbccddeeff' (정규화된 lowercase 12자리),
@@ -132,19 +106,24 @@ class SnmpClient:
         이 펌웨어는 메인 OID 미지원 → SSID/유선 구분 불가.
         MAC 매칭만으로 디바이스 식별.
 
-        첫 호출이 timeout 나는 ipTIME 동작 패턴 대응:
-        timeout 발생 시 1초 휴식 후 재시도 (test_warmup.py 진단 결과 100% 성공).
+        진단 결과 (test_warmup.py, test_full.py):
+        - 첫 bulk_walk_cmd 호출은 timeout (ARP/SNMP daemon cold)
+        - 두 번째 bulk_walk_cmd부터 즉시 성공
+        - GET 호출(sysUpTime 등)이 직전에 있으면 BULK_WALK 방해 (펌웨어 이슈)
+
+        해결: 자체적으로 최대 3회 재시도, 사이 0.5초 sleep.
         """
-        try:
-            return await self._walk_once()
-        except RuntimeError as first_err:
-            # warmup pattern: 1초 휴식 후 재시도
-            await asyncio.sleep(1)
+        last_err: RuntimeError | None = None
+        for attempt in range(3):
             try:
                 return await self._walk_once()
-            except RuntimeError:
-                # 두 번째도 실패 → 첫 예외를 raise (진짜 에러)
-                raise first_err
+            except RuntimeError as e:
+                last_err = e
+                if attempt < 2:
+                    await asyncio.sleep(0.5)
+        # 3회 모두 실패
+        assert last_err is not None
+        raise last_err
 
     def parse_ssid(self, conn_value: Optional[str]) -> Optional[str]:
         """현재 펌웨어는 SSID 정보 없음."""

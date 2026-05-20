@@ -34,7 +34,6 @@ class Poller:
         self.last_policy_load: datetime | None = None
         self.running = True
         self._consecutive_snmp_errors = 0
-        self._warmup_done = False
 
     def reload_policies(self):
         """정책 5분마다 갱신. snmp_router_ip 변경 시 SnmpClient 재생성."""
@@ -48,7 +47,6 @@ class Poller:
             )
             self.snmp_router_ip = new_ip
             self.snmp = SnmpClient(new_ip, self.config.snmp_community)
-            self._warmup_done = False  # 새 SnmpClient는 warmup 다시 필요
         self.last_policy_load = datetime.now()
 
     def needs_policy_reload(self) -> bool:
@@ -66,16 +64,7 @@ class Poller:
             self.logger.debug("활성 디바이스 0건 — 폴링 건너뜀")
             return
 
-        # SNMP 채널 warmup (한 번만, ARP/SNMP daemon 깨우기)
-        if not self._warmup_done:
-            assert self.snmp is not None
-            warmup_ok = await self.snmp.warmup()
-            self.logger.info(
-                f"SNMP warmup {'성공' if warmup_ok else '실패 (무시)'}"
-            )
-            self._warmup_done = True
-
-        # SNMP walk
+        # SNMP walk (자체 재시도 포함 — ipTIME cold start 3회까지 시도)
         try:
             assert self.snmp is not None
             snmp_results = await self.snmp.walk_mac_table()
