@@ -1,6 +1,9 @@
-"""ipTIME SNMP 클라이언트. pysnmp-lextudio 6.x asyncio API.
+"""ipTIME SNMP 클라이언트. pysnmp 7.x asyncio API.
 
 세션 재사용으로 응답 시간 1~2초 유지.
+
+참고: ipTIME 펌웨어 4.4.198에서 메인 OID (1.1.1)는 미지원.
+MAC OID (1.1.2)만 사용. SSID 구분 정보 없음.
 """
 
 from typing import Optional
@@ -17,8 +20,17 @@ from pysnmp.hlapi.v3arch.asyncio import (
 
 
 class SnmpClient:
-    MAIN_OID_PREFIX = "1.3.6.1.4.1.12874.1.3.1.1.1"  # 무선 연결 상태
-    MAC_OID_PREFIX = "1.3.6.1.4.1.12874.1.3.1.1.2"  # MAC 주소
+    """ipTIME SNMP 클라이언트. pysnmp 7.x asyncio API.
+
+    세션 재사용으로 응답 시간 1~2초 유지.
+
+    참고: ipTIME 펌웨어 4.4.198에서 메인 OID (1.1.1)는 미지원.
+    MAC OID (1.1.2)만 사용. SSID 구분 정보 없음.
+    """
+
+    # 이 펌웨어는 응답하지 않지만 향후 다른 펌웨어/모델 대응 위해 보존
+    MAIN_OID_PREFIX = "1.3.6.1.4.1.12874.1.3.1.1.1"
+    MAC_OID_PREFIX = "1.3.6.1.4.1.12874.1.3.1.1.2"
 
     def __init__(
         self,
@@ -40,20 +52,23 @@ class SnmpClient:
 
     async def walk_mac_table(self) -> list[dict]:
         """
-        MAC OID prefix와 메인 OID prefix를 walk해서 라우터에 연결된 모든 디바이스 정보 반환.
+        MAC OID prefix를 walk해서 라우터에 연결된 모든 디바이스의 MAC 반환.
 
         반환 형식: [
-            {ip_reversed: '34.0.168.192', mac: 'aa:bb:cc:dd:ee:ff', conn: '5G VanaM_5G'},
+            {mac: 'aabbccddeeff' (정규화된 lowercase 12자리),
+             oid_index: '34.0.168.192' or '1.118.43.116'},
             ...
         ]
+
+        이 펌웨어는 메인 OID 미지원 → SSID/유선 구분 불가.
+        MAC 매칭만으로 디바이스 식별.
         """
         engine = await self._get_engine()
         transport = await UdpTransportTarget.create(
             (self.host, self.port), timeout=self.timeout, retries=2
         )
-        results: dict[str, dict] = {}
+        results: list[dict] = []
 
-        # MAC 테이블 walk
         async for errInd, errStat, _errIdx, varBinds in bulk_walk_cmd(
             engine,
             CommunityData(self.community, mpModel=1),  # mpModel=1 = SNMPv2c
@@ -71,49 +86,33 @@ class SnmpClient:
                 oid_str = str(oid)
                 if not oid_str.startswith(self.MAC_OID_PREFIX + "."):
                     break
-                ip_part = oid_str[len(self.MAC_OID_PREFIX) + 1 :]
+                oid_index = oid_str[len(self.MAC_OID_PREFIX) + 1 :]
                 mac_value = str(value)
                 if not mac_value or "No Such" in mac_value:
                     continue
-                results.setdefault(ip_part, {"ip_reversed": ip_part})
-                results[ip_part]["mac"] = mac_value.lower()
+                normalized = self.normalize_mac(mac_value)
+                if not normalized:
+                    continue
+                results.append(
+                    {
+                        "mac": normalized,
+                        "oid_index": oid_index,
+                    }
+                )
 
-        # 메인 OID walk (연결 상태/SSID)
-        async for errInd, errStat, _errIdx, varBinds in bulk_walk_cmd(
-            engine,
-            CommunityData(self.community, mpModel=1),
-            transport,
-            ContextData(),
-            0,
-            25,
-            ObjectType(ObjectIdentity(self.MAIN_OID_PREFIX)),
-        ):
-            if errInd or errStat:
-                break  # 메인 OID 실패해도 MAC만으로 진행 가능
-            for oid, value in varBinds:
-                oid_str = str(oid)
-                if not oid_str.startswith(self.MAIN_OID_PREFIX + "."):
-                    break
-                ip_part = oid_str[len(self.MAIN_OID_PREFIX) + 1 :]
-                conn_value = str(value)
-                if ip_part in results:
-                    results[ip_part]["conn"] = conn_value
-
-        return list(results.values())
+        return results
 
     def parse_ssid(self, conn_value: Optional[str]) -> Optional[str]:
-        """'5G VanaM_5G' → 'VanaM_5G'. LAN 등은 None."""
-        if not conn_value:
-            return None
-        if conn_value.startswith("5G ") or conn_value.startswith("2.4G "):
-            return conn_value.split(" ", 1)[1]
+        """현재 펌웨어는 SSID 정보 없음."""
         return None
 
     def is_wifi(self, conn_value: Optional[str]) -> bool:
-        """무선 연결인지 (LAN 제외)."""
-        if not conn_value:
-            return False
-        return conn_value.startswith("5G ") or conn_value.startswith("2.4G ")
+        """현재 펌웨어는 SSID 구분 정보 없음. 모든 매칭을 통과시킴.
+
+        회사 운영 정책상 직원은 휴대폰만 devices에 등록하므로
+        LAN 연결 디바이스가 매칭될 가능성 낮음.
+        """
+        return True
 
     def normalize_mac(self, mac: str) -> str:
         """SNMP 응답 MAC을 정규화 (콜론/하이픈/점 제거, lowercase, 12자리 hex 검증)."""

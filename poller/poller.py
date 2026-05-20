@@ -84,22 +84,21 @@ class Poller:
         active_mac_to_device = {d["mac_address"]: d for d in devices}
         seen_macs: set[str] = set()
 
-        # online 처리
+        # online 처리 (SNMP 결과의 mac은 이미 walk_mac_table()에서 정규화된 12자리)
         for result in snmp_results:
-            raw_mac = result.get("mac", "")
-            normalized = self.snmp.normalize_mac(raw_mac)
+            normalized = result.get("mac", "")
             if not normalized:
                 continue
-            conn = result.get("conn")
-            if not self.snmp.is_wifi(conn):
-                continue  # LAN 제외
 
             if normalized not in active_mac_to_device:
                 continue
 
             device = active_mac_to_device[normalized]
             seen_macs.add(normalized)
-            ssid = self.snmp.parse_ssid(conn)
+
+            # 이 펌웨어는 SSID 정보 없음
+            ssid = None
+            raw_value = None
 
             last_status = self.db.get_last_status(device["id"])
             if last_status == "online":
@@ -110,8 +109,7 @@ class Poller:
                 # 신규 또는 offline → online 전환
                 self.logger.info(
                     f"online: {mask_mac(normalized)} "
-                    f"(device_id={device['id']}, employee_id={device['employee_id']}, "
-                    f"ssid={ssid})"
+                    f"(device_id={device['id']}, employee_id={device['employee_id']})"
                 )
                 if not self.config.dry_run:
                     self.db.insert_presence(
@@ -119,7 +117,7 @@ class Poller:
                         employee_id=device["employee_id"],
                         status="online",
                         ssid=ssid,
-                        raw_value=conn,
+                        raw_value=raw_value,
                     )
                     self.db.update_last_seen(device["id"])
 
