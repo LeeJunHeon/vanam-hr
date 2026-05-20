@@ -206,6 +206,8 @@ __pycache__/
 venv/
 ENV/
 .venv/
+.pytest_cache/
+poller/.env
 
 # Attendance poller logs
 attendance-poller.log
