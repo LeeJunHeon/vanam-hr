@@ -25,19 +25,17 @@ services:
       dockerfile: Dockerfile
     container_name: hr-poller
     restart: unless-stopped
+    network_mode: host
     environment:
       SNMP_COMMUNITY: ${SNMP_COMMUNITY}
-      POLLER_DB_HOST: ${POLLER_DB_HOST:-inventory-web-postgres}
-      POLLER_DB_PORT: ${POLLER_DB_PORT:-5432}
+      POLLER_DB_HOST: ${POLLER_DB_HOST:-localhost}
+      POLLER_DB_PORT: ${POLLER_DB_PORT:-5433}
       POLLER_DB_NAME: ${POLLER_DB_NAME}
       POLLER_DB_USER: ${POLLER_DB_USER}
       POLLER_DB_PASSWORD: ${POLLER_DB_PASSWORD}
       POLLER_LOG_LEVEL: ${POLLER_LOG_LEVEL:-INFO}
       POLLER_LOG_FILE: ${POLLER_LOG_FILE:-/app/logs/poller.log}
       POLLER_DRY_RUN: ${POLLER_DRY_RUN:-false}
-    networks:
-      - internal
-      - vanam-db-net
     volumes:
       - ./poller/logs:/app/logs
 
