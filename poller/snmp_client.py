@@ -37,7 +37,7 @@ class SnmpClient:
         host: str,
         community: str,
         port: int = 161,
-        timeout: int = 5,
+        timeout: int = 3,
     ):
         self.host = host
         self.community = community
@@ -65,7 +65,7 @@ class SnmpClient:
         """
         engine = await self._get_engine()
         transport = await UdpTransportTarget.create(
-            (self.host, self.port), timeout=self.timeout, retries=2
+            (self.host, self.port), timeout=self.timeout, retries=1
         )
         results: list[dict] = []
 
@@ -75,7 +75,7 @@ class SnmpClient:
             transport,
             ContextData(),
             0,
-            25,
+            10,
             ObjectType(ObjectIdentity(self.MAC_OID_PREFIX)),
         ):
             if errInd or errStat:
