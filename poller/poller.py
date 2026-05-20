@@ -103,6 +103,15 @@ class Poller:
                 time.sleep(30)
             return
 
+        # 빈 응답 가드: walk이 0건 응답이면 라우터 일시 장애 가능성.
+        # offline 오판 방지 — 다음 사이클까지 현재 상태 유지.
+        if not snmp_results:
+            self.logger.warning(
+                "  [⚠️ SKIP] SNMP walk 빈 응답 — 라우터 일시 장애 추정, "
+                "이번 사이클 매칭/상태 변경 스킵"
+            )
+            return
+
         # [4] MAC 매칭 + DB 작업
         t0 = time.time()
         active_mac_to_device = {d["mac_address"]: d for d in devices}
