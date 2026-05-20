@@ -76,25 +76,42 @@ class SnmpClient:
         raise last_err
 
     def _walk_once(self) -> list[dict]:
-        """실제 walk 1회 수행. Timeout 시 EasySNMPTimeoutError 발생."""
+        """실제 walk 1회 수행. get_next 루프 사용 (ipTIME이 GETBULK 미응답하므로).
+
+        Timeout 시 EasySNMPTimeoutError 발생.
+        """
         session = self._get_session()
         results: list[dict] = []
 
-        items = session.walk(self.MAC_OID_PREFIX)
+        # 시작 OID: MAC OID prefix
+        current_oid = self.MAC_OID_PREFIX
+        # 안전장치: 무한 루프 방지 (디바이스 256개까지 충분)
+        max_iterations = 500
 
-        for item in items:
+        for _ in range(max_iterations):
+            item = session.get_next(current_oid)
+
+            # 응답 OID가 더 이상 MAC_OID_PREFIX 하위가 아니면 walk 종료
+            # (예: 1.3.6.1.4.1.12874.1.3.1.1.3.* 으로 넘어가면 prefix 벗어남)
+            item_oid = str(item.oid).lstrip(".")
+            if not item_oid.startswith(self.MAC_OID_PREFIX):
+                break
+
             mac_value = item.value
-            if not mac_value or "No Such" in str(mac_value):
-                continue
-            normalized = self.normalize_mac(mac_value)
-            if not normalized:
-                continue
-            results.append(
-                {
-                    "mac": normalized,
-                    "oid_index": item.oid_index,
-                }
-            )
+            if mac_value and "No Such" not in str(mac_value):
+                normalized = self.normalize_mac(mac_value)
+                if normalized:
+                    # oid_index: prefix 제거 후 남은 부분 (예: '13.0.168.192')
+                    oid_index = item_oid[len(self.MAC_OID_PREFIX) :].lstrip(".")
+                    results.append(
+                        {
+                            "mac": normalized,
+                            "oid_index": oid_index,
+                        }
+                    )
+
+            # 다음 OID로 진행 — 현재 응답 OID를 다음 get_next의 시작점으로
+            current_oid = item_oid
 
         return results
 
