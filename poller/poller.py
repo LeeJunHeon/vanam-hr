@@ -60,18 +60,19 @@ class Poller:
         return datetime.now() - self.last_policy_load > POLICY_CACHE_TTL
 
     async def run_once(self):
-        """폴링 1회 실행: SNMP walk → MAC 매칭 → presence_raw 적재."""
+        """폴링 1회 실행: SNMP walk → MAC 매칭 → presence_raw 적재.
+
+        중요: DB sync 호출(psycopg2)을 asyncio.to_thread()로 격리하여
+        pysnmp asyncio dispatcher와의 충돌 방지.
+        SNMP walk을 먼저 수행하여 dispatcher 상태 보호.
+        """
         if self.needs_policy_reload():
-            self.reload_policies()
+            # reload_policies는 sync DB 호출 포함 → 스레드로 격리
+            await asyncio.to_thread(self.reload_policies)
 
-        devices = self.db.get_active_devices()
-        if not devices:
-            self.logger.debug("활성 디바이스 0건 — 폴링 건너뜀")
-            return
-
-        # SNMP walk (자체 재시도 포함 — ipTIME cold start 3회까지 시도)
+        # SNMP walk 먼저 수행 (dispatcher 상태 보호)
+        assert self.snmp is not None
         try:
-            assert self.snmp is not None
             snmp_results = await self.snmp.walk_mac_table()
             self._consecutive_snmp_errors = 0
         except Exception as e:
@@ -82,6 +83,12 @@ class Poller:
             if self._consecutive_snmp_errors >= 3:
                 self.logger.warning("3회 연속 실패 — 30초 대기 후 재시도")
                 await asyncio.sleep(30)
+            return
+
+        # 활성 디바이스 조회 — DB sync 호출은 별도 스레드로 격리
+        devices = await asyncio.to_thread(self.db.get_active_devices)
+        if not devices:
+            self.logger.debug("활성 디바이스 0건 — 폴링 건너뜀")
             return
 
         # 활성 디바이스 MAC → DB row 매핑
@@ -105,11 +112,16 @@ class Poller:
             ssid = None
             raw_value = None
 
-            last_status = self.db.get_last_status(device["id"])
+            # 직전 상태 조회 (DB sync) → 스레드로 격리
+            last_status = await asyncio.to_thread(
+                self.db.get_last_status, device["id"]
+            )
             if last_status == "online":
                 # 이미 online — last_seen_at만 갱신
                 if not self.config.dry_run:
-                    self.db.update_last_seen(device["id"])
+                    await asyncio.to_thread(
+                        self.db.update_last_seen, device["id"]
+                    )
             else:
                 # 신규 또는 offline → online 전환
                 self.logger.info(
@@ -117,32 +129,38 @@ class Poller:
                     f"(device_id={device['id']}, employee_id={device['employee_id']})"
                 )
                 if not self.config.dry_run:
-                    self.db.insert_presence(
-                        device_id=device["id"],
-                        employee_id=device["employee_id"],
-                        status="online",
-                        ssid=ssid,
-                        raw_value=raw_value,
+                    await asyncio.to_thread(
+                        self.db.insert_presence,
+                        device["id"],
+                        device["employee_id"],
+                        "online",
+                        ssid,
+                        raw_value,
                     )
-                    self.db.update_last_seen(device["id"])
+                    await asyncio.to_thread(
+                        self.db.update_last_seen, device["id"]
+                    )
 
         # offline 전환 (SNMP 응답에 없는 활성 디바이스)
         for mac, device in active_mac_to_device.items():
             if mac in seen_macs:
                 continue
-            last_status = self.db.get_last_status(device["id"])
+            last_status = await asyncio.to_thread(
+                self.db.get_last_status, device["id"]
+            )
             if last_status == "online":
                 self.logger.info(
                     f"offline: {mask_mac(mac)} "
                     f"(device_id={device['id']}, employee_id={device['employee_id']})"
                 )
                 if not self.config.dry_run:
-                    self.db.insert_presence(
-                        device_id=device["id"],
-                        employee_id=device["employee_id"],
-                        status="offline",
-                        ssid=None,
-                        raw_value=None,
+                    await asyncio.to_thread(
+                        self.db.insert_presence,
+                        device["id"],
+                        device["employee_id"],
+                        "offline",
+                        None,
+                        None,
                     )
             # last_status가 offline 또는 None이면 아무 것도 안 함 (중복 방지)
 
@@ -153,8 +171,8 @@ class Poller:
         )
 
         # pysnmp cold start 워밍업: 첫 bulk_walk_cmd는 timeout이 정상 동작이므로 무시
-        # 정책 1회 로드해서 SnmpClient 준비
-        self.reload_policies()
+        # 정책 1회 로드해서 SnmpClient 준비 (DB sync는 스레드로 격리)
+        await asyncio.to_thread(self.reload_policies)
         if self.snmp is not None:
             self.logger.info("SNMP dispatcher 워밍업 시작...")
             try:
@@ -167,7 +185,9 @@ class Poller:
         while self.running:
             try:
                 await self.run_once()
-                interval = self.db.get_current_polling_schedule(datetime.now())
+                interval = await asyncio.to_thread(
+                    self.db.get_current_polling_schedule, datetime.now()
+                )
                 self.logger.debug(f"다음 폴링까지 {interval}초 대기")
                 # 종료 시그널 응답성 위해 1초 단위로 sleep
                 for _ in range(interval):
