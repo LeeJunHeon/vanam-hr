@@ -34,11 +34,20 @@ pip install -r requirements.txt
 
 프로젝트 루트의 `.env` 에 다음이 있어야 함:
 
-- `DATABASE_URL` (Next.js와 공유)
 - `SNMP_COMMUNITY` (16자 무작위)
+- `POLLER_DB_HOST` (예: `192.168.0.x`)
+- `POLLER_DB_PORT` (기본 `5432`)
+- `POLLER_DB_NAME`
+- `POLLER_DB_USER`
+- `POLLER_DB_PASSWORD` (특수문자 그대로 OK — URL 인코딩 불필요)
 - `POLLER_LOG_LEVEL=INFO` (선택)
 - `POLLER_LOG_FILE=poller/poller.log` (선택)
 - `POLLER_DRY_RUN=false` (true면 DB INSERT 안 함, 로그만)
+
+> **DB 연결 환경변수 분리 이유**: Next.js Prisma는 `DATABASE_URL` 의
+> 쿼리 파라미터(`?schema=hr`)를 사용하지만 psycopg2는 invalid DSN으로 거부함.
+> 또한 비밀번호에 `!`, `@` 등 특수문자가 들어가면 URL 파싱이 깨지므로
+> psycopg2에는 host/port/dbname/user/password를 keyword args로 분리 전달.
 
 ### 3. 실행
 

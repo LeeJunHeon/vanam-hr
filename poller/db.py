@@ -8,8 +8,14 @@ from psycopg2.extras import RealDictCursor
 
 
 class Database:
-    def __init__(self, dsn: str):
-        self.dsn = dsn
+    def __init__(self, host: str, port: int, dbname: str, user: str, password: str):
+        self.conn_params = {
+            "host": host,
+            "port": port,
+            "dbname": dbname,
+            "user": user,
+            "password": password,
+        }
         self.conn = None
         self._connect()
 
@@ -19,7 +25,8 @@ class Database:
                 self.conn.close()
             except Exception:
                 pass
-        self.conn = psycopg2.connect(self.dsn)
+        # keyword args로 전달 — URL 파싱 우회, 특수문자(!, @ 등) 안전
+        self.conn = psycopg2.connect(**self.conn_params)
         self.conn.autocommit = False
 
     def _ensure_connected(self):

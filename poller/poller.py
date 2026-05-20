@@ -22,7 +22,13 @@ class Poller:
     def __init__(self):
         self.config = load_config()
         self.logger = setup_logger(self.config.log_level, self.config.log_file)
-        self.db = Database(self.config.database_url)
+        self.db = Database(
+            host=self.config.db_host,
+            port=self.config.db_port,
+            dbname=self.config.db_name,
+            user=self.config.db_user,
+            password=self.config.db_password,
+        )
         self.snmp_router_ip: str | None = None
         self.snmp: SnmpClient | None = None
         self.last_policy_load: datetime | None = None
