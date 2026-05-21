@@ -41,6 +41,28 @@ services:
     volumes:
       - ./poller/logs:/app/logs
 
+  aggregator:
+    build:
+      context: ./aggregator
+      dockerfile: Dockerfile
+    container_name: hr-aggregator
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Seoul
+      AGGREGATOR_DB_HOST: ${AGGREGATOR_DB_HOST:-inventory-web-postgres}
+      AGGREGATOR_DB_PORT: ${AGGREGATOR_DB_PORT:-5432}
+      AGGREGATOR_DB_NAME: ${AGGREGATOR_DB_NAME}
+      AGGREGATOR_DB_USER: ${AGGREGATOR_DB_USER}
+      AGGREGATOR_DB_PASSWORD: ${AGGREGATOR_DB_PASSWORD}
+      AGGREGATOR_INTERVAL_SECONDS: ${AGGREGATOR_INTERVAL_SECONDS:-60}
+      AGGREGATOR_LOG_LEVEL: ${AGGREGATOR_LOG_LEVEL:-INFO}
+      AGGREGATOR_LOG_FILE: ${AGGREGATOR_LOG_FILE:-/app/logs/aggregator.log}
+    volumes:
+      - ./aggregator/logs:/app/logs
+    networks:
+      - internal
+      - vanam-db-net
+
 networks:
   internal:
     driver: bridge
