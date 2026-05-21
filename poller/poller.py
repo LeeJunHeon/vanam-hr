@@ -130,31 +130,14 @@ class Poller:
                 time.sleep(30)
             return
 
-        # 빈 응답 가드: ipTIME ARP 캐시 갱신 주기(약 120초)와 동조 시 빈 응답.
-        # 5초 대기 후 1회 재시도 (실측 검증: 5초면 cool down 풀림).
-        # 격행 패턴(XOXOXOXOXO)을 깨서 매 사이클 데이터 확보 보장.
+        # 빈 응답 가드: 표준 OID는 정상 환경에서 빈 응답 발생 안 함.
+        # 빈 응답이면 라우터 진짜 장애 → SKIP (offline 오판 방지, 다음 사이클 대기).
         if not snmp_results:
-            self.logger.info(
-                "  빈 응답 — 5초 후 재시도 (ARP 갱신 주기 회피)"
+            self.logger.warning(
+                "  [⚠️ SKIP] SNMP walk 빈 응답 — 라우터 장애 추정, "
+                "이번 사이클 매칭/상태 변경 스킵"
             )
-            time.sleep(5)
-            t0 = time.time()
-            try:
-                snmp_results = self.snmp.walk_mac_table()
-                self.logger.info(
-                    f"  [3-retry] SNMP walk 재시도: {time.time()-t0:.3f}s "
-                    f"({len(snmp_results)}건 응답)"
-                )
-            except Exception as e:
-                self.logger.warning(f"  [3-retry] 재시도 실패: {e}")
-                snmp_results = []
-
-            if not snmp_results:
-                self.logger.warning(
-                    "  [⚠️ SKIP] 재시도 후에도 빈 응답 — 진짜 라우터 장애 추정, "
-                    "이번 사이클 매칭/상태 변경 스킵"
-                )
-                return
+            return
 
         # [4-5] MAC 매칭 + DB (메모리 상태 기준)
         t0 = time.time()

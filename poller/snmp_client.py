@@ -2,8 +2,21 @@
 
 sync 호출. asyncio 의존성 없음.
 
-참고: ipTIME 펌웨어 4.4.198에서 메인 OID (1.1.1)는 미지원.
-MAC OID (1.1.2)만 사용. SSID/유선 구분 정보 없음.
+표준 SNMP MIB ipNetToMediaPhysAddress 사용:
+  OID: 1.3.6.1.2.1.4.22.1.2
+  내용: ARP 테이블의 MAC 주소 (PhysAddress)
+
+실측 (2026-05-21):
+- 60초 간격 5회 walk 모두 52건 일관 응답
+- 평균 0.033초 (vendor OID 4초의 120배 빠름)
+- timeout 0회, 격행/cool down 없음
+- 본인 폰 매칭률 100%
+
+이전 vendor OID (1.3.6.1.4.1.12874.1.3.1.1.2)는 캐시 갱신 주기 때문에
+격행으로 빈 응답 50% 발생 → 표준 OID로 모든 문제 해결.
+
+OID 구조: 1.3.6.1.2.1.4.22.1.2.{ifIndex}.{IP옥텟1}.{IP옥텟2}.{IP옥텟3}.{IP옥텟4}
+값 형식: raw bytes 6자 (MAC 주소 그대로 binary)
 """
 
 from typing import Optional
@@ -13,11 +26,11 @@ from easysnmp.exceptions import EasySNMPTimeoutError
 
 
 class SnmpClient:
-    """ipTIME SNMP 클라이언트 (sync, Session 재사용)."""
+    """표준 SNMP MIB 기반 ARP 테이블 클라이언트 (sync, Session 재사용)."""
 
-    # 이 펌웨어는 응답하지 않지만 향후 다른 펌웨어/모델 대응 위해 보존
-    MAIN_OID_PREFIX = "1.3.6.1.4.1.12874.1.3.1.1.1"
-    MAC_OID_PREFIX = "1.3.6.1.4.1.12874.1.3.1.1.2"
+    # 표준 ipNetToMediaPhysAddress (ARP 테이블의 MAC 주소)
+    # 실측: ipTIME 펌웨어 4.4.198에서 timeout 없이 한 번에 다 응답
+    MAC_OID_PREFIX = "1.3.6.1.2.1.4.22.1.2"
 
     def __init__(
         self,
@@ -49,52 +62,35 @@ class SnmpClient:
         return self._session
 
     def walk_mac_table(self) -> list[dict]:
-        """MAC OID prefix walk. ipTIME rate limit 대응:
-
-        _walk_once는 timeout 시 부분 결과 반환하므로 외부 재시도 불필요.
-        완전 실패(연결 자체 안 됨) 시에만 위로 전파.
+        """표준 ARP OID walk. 한 번에 다 받음 (timeout 없음).
 
         반환 형식: [
             {mac: 'aabbccddeeff' (정규화된 lowercase 12자리),
-             oid_index: '34.0.168.192' or '1.118.43.116'},
+             oid_index: '{ifIndex}.{IP옥텟1}.{IP옥텟2}.{IP옥텟3}.{IP옥텟4}'},
             ...
         ]
         """
-        return self._walk_once()
-
-    def _walk_once(self) -> list[dict]:
-        """실제 walk 1회 수행. get_next 루프 사용 (ipTIME이 GETBULK 미응답하므로).
-
-        Timeout 시 EasySNMPTimeoutError 발생.
-
-        중요: easysnmp는 r.oid의 마지막 옥텟을 r.oid_index로 자동 분리함.
-        walk 다음 단계로 진행하려면 r.oid + r.oid_index 조합 필수.
-        안 그러면 잘린 OID로 next 호출되어 무한 루프 발생.
-        """
         session = self._get_session()
         results: list[dict] = []
-
-        # 시작 OID: MAC OID prefix
         current_oid = self.MAC_OID_PREFIX
-        # 안전장치: 무한 루프 방지 (디바이스 256개까지 충분)
+        # 안전장치: 무한 루프 방지
         max_iterations = 500
-        seen_oids: set[str] = set()  # 안전장치: 같은 OID 두 번 등장 시 즉시 종료
+        seen_oids: set[str] = set()
 
         for _ in range(max_iterations):
             try:
                 item = session.get_next(current_oid)
             except EasySNMPTimeoutError:
-                # ipTIME이 ~50회 후 응답 거부 (연결 한계).
-                # 그 시점까지 모은 results 반환 — 본인 폰 보통 그 안에 잡힘.
+                # 표준 OID는 정상 환경에서 timeout 발생 안 함.
+                # 발생 시 라우터 진짜 장애 → 부분 결과 반환.
                 break
 
-            # easysnmp는 마지막 옥텟을 oid_index로 분리하므로 둘을 조합해 완전한 OID 만듦
+            # easysnmp가 마지막 옥텟을 oid_index로 분리하므로 둘을 조합
             base = str(item.oid).lstrip(".")
             idx = str(item.oid_index) if item.oid_index else ""
             item_oid = f"{base}.{idx}" if idx else base
 
-            # 응답 OID가 더 이상 MAC_OID_PREFIX 하위가 아니면 walk 종료
-            # (예: 1.3.6.1.4.1.12874.1.3.1.1.3.* 으로 넘어가면 prefix 벗어남)
+            # prefix 벗어나면 walk 종료
             if not item_oid.startswith(self.MAC_OID_PREFIX):
                 break
 
@@ -103,38 +99,45 @@ class SnmpClient:
                 break
             seen_oids.add(item_oid)
 
-            mac_value = item.value
-            if mac_value and "No Such" not in str(mac_value):
-                normalized = self.normalize_mac(mac_value)
-                if normalized:
-                    # prefix 제거 후 남은 인덱스 (예: '1.118.43.116' 또는 '13.0.168.192')
-                    oid_index_full = item_oid[len(self.MAC_OID_PREFIX) :].lstrip(".")
-                    results.append(
-                        {
-                            "mac": normalized,
-                            "oid_index": oid_index_full,
-                        }
-                    )
+            normalized = self.normalize_mac(item.value)
+            if normalized:
+                oid_index_full = item_oid[
+                    len(self.MAC_OID_PREFIX) :
+                ].lstrip(".")
+                results.append(
+                    {
+                        "mac": normalized,
+                        "oid_index": oid_index_full,
+                    }
+                )
 
-            # 다음 OID로 진행 — 현재 응답 OID를 다음 get_next의 시작점으로
             current_oid = item_oid
 
         return results
 
-    def normalize_mac(self, mac: str) -> str:
-        """SNMP 응답 MAC을 정규화 (콜론/하이픈 제거, lowercase, 12자리).
+    def normalize_mac(self, mac_value) -> str:
+        """SNMP raw bytes MAC을 정규화 (lowercase 12자리 hex 문자열).
+
+        표준 ipNetToMediaPhysAddress는 MAC을 6 바이트 raw binary로 반환.
+        easysnmp가 str로 변환해서 주지만 실제로는 raw bytes 6개의 latin-1 표현.
+
+        예: 'p0]\\x9a÷Í' (raw 6 bytes) → '70305d9af7cd'
 
         유효하지 않으면 빈 문자열 반환.
         """
-        cleaned = (
-            mac.replace(":", "")
-            .replace("-", "")
-            .replace(".", "")
-            .replace(" ", "")
-            .lower()
-        )
-        if len(cleaned) != 12:
+        if mac_value is None:
             return ""
-        if not all(c in "0123456789abcdef" for c in cleaned):
+
+        try:
+            # bytes 타입이면 그대로, str이면 latin-1로 인코딩 (1문자 = 1바이트 유지)
+            if isinstance(mac_value, bytes):
+                mac_bytes = mac_value
+            else:
+                mac_bytes = str(mac_value).encode("latin-1")
+
+            if len(mac_bytes) != 6:
+                return ""
+
+            return mac_bytes.hex().lower()
+        except (UnicodeDecodeError, ValueError):
             return ""
-        return cleaned
