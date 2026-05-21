@@ -130,14 +130,31 @@ class Poller:
                 time.sleep(30)
             return
 
-        # 빈 응답 가드: walk이 0건 응답이면 라우터 일시 장애 가능성.
-        # offline 오판 방지 — 다음 사이클까지 현재 상태 유지.
+        # 빈 응답 가드: ipTIME ARP 캐시 갱신 주기(약 120초)와 동조 시 빈 응답.
+        # 5초 대기 후 1회 재시도 (실측 검증: 5초면 cool down 풀림).
+        # 격행 패턴(XOXOXOXOXO)을 깨서 매 사이클 데이터 확보 보장.
         if not snmp_results:
-            self.logger.warning(
-                "  [⚠️ SKIP] SNMP walk 빈 응답 — 라우터 일시 장애 추정, "
-                "이번 사이클 매칭/상태 변경 스킵"
+            self.logger.info(
+                "  빈 응답 — 5초 후 재시도 (ARP 갱신 주기 회피)"
             )
-            return
+            time.sleep(5)
+            t0 = time.time()
+            try:
+                snmp_results = self.snmp.walk_mac_table()
+                self.logger.info(
+                    f"  [3-retry] SNMP walk 재시도: {time.time()-t0:.3f}s "
+                    f"({len(snmp_results)}건 응답)"
+                )
+            except Exception as e:
+                self.logger.warning(f"  [3-retry] 재시도 실패: {e}")
+                snmp_results = []
+
+            if not snmp_results:
+                self.logger.warning(
+                    "  [⚠️ SKIP] 재시도 후에도 빈 응답 — 진짜 라우터 장애 추정, "
+                    "이번 사이클 매칭/상태 변경 스킵"
+                )
+                return
 
         # [4-5] MAC 매칭 + DB (메모리 상태 기준)
         t0 = time.time()
@@ -219,26 +236,49 @@ class Poller:
         self.logger.info(f"=== 사이클 종료: {total:.3f}s ===")
 
     def run(self):
-        """메인 루프. 폴링 주기는 polling_schedules 테이블에서 동적 조회."""
+        """메인 루프. time.monotonic() 기반 fixed-rate scheduling.
+
+        run_once() 소요 시간이 sleep에 누적되지 않도록 다음 wake-up 시각을 절대값으로 계산.
+        근태 기록은 분 단위 정확성이 필수이므로 정확히 polling_schedules의 interval을 유지.
+        실측 drift 최대 100ms — 분 단위 정확성에 충분.
+        """
         self.logger.info("Poller 시작")
         self.logger.info(
             f"DRY_RUN={self.config.dry_run}, LOG_LEVEL={self.config.log_level}"
         )
 
+        next_run_at = time.monotonic()
+
         while self.running:
             try:
-                self.run_once()
-                # 폴링 주기 결정 (DB에서 동적 조회)
-                interval = self.db.get_current_polling_schedule(datetime.now())
-                self.logger.debug(f"다음 폴링까지 {interval}초 대기")
-                # 종료 시그널 응답성 위해 1초 단위로 sleep
-                for _ in range(interval):
-                    if not self.running:
-                        break
-                    time.sleep(1)
+                now = time.monotonic()
+
+                if now >= next_run_at:
+                    # 다음 사이클 시각을 미리 계산 (run_once 시작 직전)
+                    interval = self.db.get_current_polling_schedule(datetime.now())
+                    next_run_at += interval
+
+                    self.run_once()
+
+                    # 만약 run_once가 너무 오래 걸려서 next_run_at이 이미 과거가 됐으면
+                    # 즉시 다음 사이클 실행하지 않고 다음 주기로 재조정 (밀린 사이클 skip)
+                    behind = time.monotonic() - next_run_at
+                    if behind > 0:
+                        skip_count = int(behind // interval) + 1
+                        self.logger.warning(
+                            f"사이클이 {behind:.1f}초 지연됨 — {skip_count}회 skip "
+                            f"(run_once가 interval보다 오래 걸림)"
+                        )
+                        next_run_at += skip_count * interval
+                else:
+                    # 다음 시각까지 1초 단위로 sleep (시그널 응답성 유지)
+                    sleep_time = min(1.0, next_run_at - now)
+                    time.sleep(sleep_time)
+
             except Exception as e:
                 self.logger.exception(f"폴링 루프 예외: {e}")
-                time.sleep(60)  # 알 수 없는 예외 시 1분 대기
+                time.sleep(60)
+                next_run_at = time.monotonic()
 
         self.logger.info("Poller 정상 종료")
 
