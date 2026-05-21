@@ -36,6 +36,25 @@ class Poller:
         self.last_policy_load: datetime | None = None
         self.running = True
         self._consecutive_snmp_errors = 0
+        # 메모리 상태 캐시: {device_id: 'online' or 'offline'}
+        # 시작 시 1회만 DB에서 로드, 이후 메모리만 사용
+        self.device_states: dict[int, str] = {}
+        self._initial_states_loaded = False
+
+    def _ensure_initial_states_loaded(self):
+        """폴러 시작 후 첫 사이클에 활성 디바이스의 마지막 상태 로드."""
+        if self._initial_states_loaded:
+            return
+        devices = self.db.get_active_devices()
+        for d in devices:
+            last = self.db.get_last_status(d["id"])
+            # 초기 상태는 'offline' default (online은 명확한 evidence 있을 때만)
+            self.device_states[d["id"]] = "online" if last == "online" else "offline"
+        self.logger.info(
+            f"초기 상태 로드: {len(self.device_states)}건 "
+            f"(online {sum(1 for s in self.device_states.values() if s == 'online')}건)"
+        )
+        self._initial_states_loaded = True
 
     def reload_policies(self):
         """정책 5분마다 갱신. snmp_router_ip 변경 시 SnmpClient 재생성."""
@@ -70,6 +89,9 @@ class Poller:
             self.reload_policies()
             self.logger.info(f"  [1] 정책 reload: {time.time()-t0:.3f}s")
 
+        # 첫 사이클에 초기 상태 로드 (DB에서 1회만)
+        self._ensure_initial_states_loaded()
+
         # [2] DB에서 활성 디바이스 조회
         t0 = time.time()
         devices = self.db.get_active_devices()
@@ -80,6 +102,11 @@ class Poller:
         if not devices:
             self.logger.debug("활성 디바이스 0건 — 폴링 건너뜀")
             return
+
+        # 새 디바이스 발견 시 메모리에 추가 (offline default)
+        for d in devices:
+            if d["id"] not in self.device_states:
+                self.device_states[d["id"]] = "offline"
 
         # [3] SNMP walk
         t0 = time.time()
@@ -112,40 +139,37 @@ class Poller:
             )
             return
 
-        # [4] MAC 매칭 + DB 작업
+        # [4-5] MAC 매칭 + DB (메모리 상태 기준)
         t0 = time.time()
         active_mac_to_device = {d["mac_address"]: d for d in devices}
         seen_macs: set[str] = set()
         matched_count = 0
-        db_ops_count = 0
         online_transitions = 0
         offline_transitions = 0
+        db_inserts = 0
+        db_updates = 0
 
         for result in snmp_results:
             normalized = result.get("mac", "")
             if not normalized:
                 continue
-
             if normalized in active_mac_to_device:
                 device = active_mac_to_device[normalized]
                 seen_macs.add(normalized)
                 matched_count += 1
 
-                db_ops_count += 1
-                last_status = self.db.get_last_status(device["id"])
-                if last_status == "online":
+                current_state = self.device_states.get(device["id"], "offline")
+
+                if current_state == "online":
+                    # 이미 online → last_seen_at만 갱신 (INSERT 없음)
                     if not self.config.dry_run:
-                        db_ops_count += 1
                         self.db.update_last_seen(device["id"])
+                        db_updates += 1
                 else:
+                    # offline → online 전환 → INSERT
                     online_transitions += 1
-                    self.logger.info(
-                        f"  → online: {mask_mac(normalized)} "
-                        f"(device_id={device['id']}, employee_id={device['employee_id']})"
-                    )
                     if not self.config.dry_run:
-                        db_ops_count += 2
-                        self.db.insert_presence(
+                        new_id = self.db.insert_presence(
                             device_id=device["id"],
                             employee_id=device["employee_id"],
                             status="online",
@@ -153,32 +177,41 @@ class Poller:
                             raw_value=None,
                         )
                         self.db.update_last_seen(device["id"])
+                        db_inserts += 1
+                        db_updates += 1
+                        self.device_states[device["id"]] = "online"
+                        self.logger.info(
+                            f"  → online: {mask_mac(normalized)} "
+                            f"(device_id={device['id']}, employee_id={device['employee_id']}, "
+                            f"presence_raw.id={new_id})"
+                        )
 
-        # [5] offline 처리
+        # offline 처리
         for mac, device in active_mac_to_device.items():
             if mac in seen_macs:
                 continue
-            db_ops_count += 1
-            last_status = self.db.get_last_status(device["id"])
-            if last_status == "online":
+            current_state = self.device_states.get(device["id"], "offline")
+            if current_state == "online":
                 offline_transitions += 1
-                self.logger.info(
-                    f"  → offline: {mask_mac(mac)} "
-                    f"(device_id={device['id']}, employee_id={device['employee_id']})"
-                )
                 if not self.config.dry_run:
-                    db_ops_count += 1
-                    self.db.insert_presence(
+                    new_id = self.db.insert_presence(
                         device_id=device["id"],
                         employee_id=device["employee_id"],
                         status="offline",
                         ssid=None,
                         raw_value=None,
                     )
+                    db_inserts += 1
+                    self.device_states[device["id"]] = "offline"
+                    self.logger.info(
+                        f"  → offline: {mask_mac(mac)} "
+                        f"(device_id={device['id']}, employee_id={device['employee_id']}, "
+                        f"presence_raw.id={new_id})"
+                    )
 
         self.logger.info(
             f"  [4-5] MAC 매칭 + DB: {time.time()-t0:.3f}s "
-            f"(매칭 {matched_count}건, DB {db_ops_count}회, "
+            f"(매칭 {matched_count}건, INSERT {db_inserts}, UPDATE {db_updates}, "
             f"online↑ {online_transitions}, offline↓ {offline_transitions})"
         )
 

@@ -1,4 +1,4 @@
-"""psycopg2 DB 연결/쿼리. raw SQL 사용. 단일 연결 유지 + 끊김 시 재연결."""
+"""psycopg2 DB 연결/쿼리. autocommit=True 패턴으로 트랜잭션 누수 차단."""
 
 from datetime import datetime
 from typing import Optional
@@ -20,14 +20,25 @@ class Database:
         self._connect()
 
     def _connect(self):
+        """연결 + autocommit=True + 세션 timezone Asia/Seoul.
+
+        autocommit=True 이유:
+        - psycopg2 기본은 False라 매 쿼리가 트랜잭션 안에서 실행됨
+        - commit/rollback 안 하면 'idle in transaction' 상태 누적 → DB 일관성 위험
+        - 출퇴근 폴러는 단순 SELECT/INSERT만 하므로 autocommit이 더 안전
+        """
         if self.conn:
             try:
                 self.conn.close()
             except Exception:
                 pass
-        # keyword args로 전달 — URL 파싱 우회, 특수문자(!, @ 등) 안전
         self.conn = psycopg2.connect(**self.conn_params)
-        self.conn.autocommit = False
+        self.conn.autocommit = True
+
+        # 이 세션의 NOW(), CURRENT_TIMESTAMP를 KST 기준으로 (가독성)
+        # TIMESTAMPTZ 컬럼은 어차피 UTC로 저장되니 데이터 영향 X
+        with self.conn.cursor() as c:
+            c.execute("SET TIME ZONE 'Asia/Seoul'")
 
     def _ensure_connected(self):
         """매 쿼리 전 ping. 끊겼으면 재연결."""
@@ -49,7 +60,7 @@ class Database:
             return row[0] if row else None
 
     def get_active_devices(self) -> list[dict]:
-        """활성 디바이스 목록. {id, employee_id, mac_address(lowercase, no colons)}."""
+        """활성 디바이스 목록. {id, employee_id, mac_address}."""
         self._ensure_connected()
         with self.conn.cursor(cursor_factory=RealDictCursor) as c:
             c.execute(
@@ -62,13 +73,9 @@ class Database:
             return [dict(r) for r in c.fetchall()]
 
     def get_current_polling_schedule(self, now: datetime) -> int:
-        """
-        현재 시각에 매칭되는 polling_schedules 중 priority가 가장 높은 것의 intervalSeconds.
-        매칭 없으면 기본 30초.
-        dayOfWeek: 0=일, 1=월, ..., 6=토 (Python의 datetime.weekday()는 0=월, 6=일이므로 변환).
-        """
-        py_wday = now.weekday()  # 0=Mon ~ 6=Sun
-        db_wday = (py_wday + 1) % 7  # 1=Mon, ..., 6=Sat, 0=Sun
+        """현재 시각에 매칭되는 폴링 주기 (초). 기본 60."""
+        py_wday = now.weekday()
+        db_wday = (py_wday + 1) % 7
 
         now_time = now.time()
         self._ensure_connected()
@@ -87,7 +94,7 @@ class Database:
                 (db_wday, now_time, now_time),
             )
             row = c.fetchone()
-            return row["interval_seconds"] if row else 30
+            return row["interval_seconds"] if row else 60
 
     def insert_presence(
         self,
@@ -96,8 +103,12 @@ class Database:
         status: str,
         ssid: Optional[str],
         raw_value: Optional[str],
-    ):
-        """hr.presence_raw에 한 행 INSERT."""
+    ) -> int:
+        """presence_raw INSERT. RETURNING으로 새 id 반환 (INSERT 검증).
+
+        autocommit=True 환경에서 INSERT는 즉시 영구 저장됨.
+        새 id를 반환받지 못하면 INSERT 실패로 간주 (호출자에서 처리).
+        """
         self._ensure_connected()
         with self.conn.cursor() as c:
             c.execute(
@@ -105,20 +116,24 @@ class Database:
                 INSERT INTO hr.presence_raw
                     (employee_id, device_id, checked_at, status, ssid, raw_value)
                 VALUES (%s, %s, NOW(), %s, %s, %s)
+                RETURNING id
                 """,
                 (employee_id, device_id, status, ssid, raw_value),
             )
-            self.conn.commit()
+            row = c.fetchone()
+            if row is None:
+                raise RuntimeError("INSERT 실패: RETURNING id가 비어있음")
+            return row[0]
 
     def get_last_status(self, device_id: int) -> Optional[str]:
-        """이 디바이스의 가장 최근 presence_raw.status 조회 (중복 이벤트 방지용)."""
+        """이 디바이스의 가장 최근 presence_raw.status. 폴러 시작 시 1회만 사용 권장."""
         self._ensure_connected()
         with self.conn.cursor() as c:
             c.execute(
                 """
                 SELECT status FROM hr.presence_raw
                 WHERE device_id = %s
-                ORDER BY checked_at DESC
+                ORDER BY checked_at DESC, id DESC
                 LIMIT 1
                 """,
                 (device_id,),
@@ -132,9 +147,8 @@ class Database:
         with self.conn.cursor() as c:
             c.execute(
                 """
-                UPDATE hr.devices SET last_seen_at = NOW(), updated_at = NOW()
+                UPDATE hr.devices SET last_seen_at = NOW()
                 WHERE id = %s
                 """,
                 (device_id,),
             )
-            self.conn.commit()
