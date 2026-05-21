@@ -95,6 +95,7 @@ class Aggregator:
 
         for emp in employees:
             emp_id = emp["id"]
+            emp_no = emp.get("employee_no", "?")
             emp_name = emp.get("name", "?")
 
             raw = self.db.get_today_presence_raw(emp_id)
@@ -126,12 +127,12 @@ class Aggregator:
             if new_id is None:
                 skip_overridden += 1
                 self.logger.debug(
-                    f"  직원 {emp_id}({emp_name}) — is_overridden=true 로 보호됨, 스킵"
+                    f"  직원 {emp_id}({emp_no}/{emp_name}) — is_overridden=true 로 보호됨, 스킵"
                 )
             else:
                 upsert_count += 1
                 self.logger.info(
-                    f"  직원 {emp_id}({emp_name}) — "
+                    f"  직원 {emp_id}({emp_no}/{emp_name}) — "
                     f"check_in={check_in}, check_out={check_out}, "
                     f"work_minutes={work_minutes}, id={new_id}"
                 )

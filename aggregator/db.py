@@ -41,12 +41,15 @@ class Database:
             self._connect()
 
     def get_active_employees(self) -> list[dict]:
-        """활성 직원 목록. {id, code, name}."""
+        """활성 직원 목록. {id, employee_no, name}.
+
+        hr.employees 실제 컬럼명은 employee_no (code 아님).
+        """
         self._ensure_connected()
         with self.conn.cursor(cursor_factory=RealDictCursor) as c:
             c.execute(
                 """
-                SELECT id, code, name
+                SELECT id, employee_no, name
                 FROM hr.employees
                 WHERE is_active = true
                 ORDER BY id
