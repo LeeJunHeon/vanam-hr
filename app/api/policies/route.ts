@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth-helpers";
 
 // GET /api/policies?search=...
 export async function GET(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const search = searchParams.get("search") || "";
 
@@ -40,6 +44,9 @@ export async function GET(request: NextRequest) {
 // PUT /api/policies?key=debounce_minutes — 값 수정만
 export async function PUT(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const key = searchParams.get("key");
     if (!key) {

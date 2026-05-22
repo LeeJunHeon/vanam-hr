@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth-helpers";
 
 // schedule 원소 형식
 interface SchedulePoint {
@@ -103,6 +104,9 @@ async function validateScheduleTypes(types: string[]): Promise<string | null> {
 // GET /api/shifts?search=...&includeInactive=true
 export async function GET(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const search = searchParams.get("search") || "";
     const includeInactive = searchParams.get("includeInactive") === "true";
@@ -143,6 +147,9 @@ export async function GET(request: NextRequest) {
 // POST /api/shifts — 시프트 패턴 추가
 export async function POST(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const body = await request.json();
     const { name, description, cycleDays, schedule } = body;
 
@@ -214,6 +221,9 @@ export async function POST(request: NextRequest) {
 // PUT /api/shifts?id=1 — 시프트 패턴 수정
 export async function PUT(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {
@@ -321,6 +331,9 @@ export async function PUT(request: NextRequest) {
 // DELETE /api/shifts?id=1 — 시프트 패턴 삭제
 export async function DELETE(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {

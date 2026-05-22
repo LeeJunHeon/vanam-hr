@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import {
+  getTargetEmployeeId,
+  requireSession,
+  isAdminSession,
+} from "@/lib/auth-helpers";
 
 function parseDate(s: string | null | undefined): Date | null {
   if (!s || typeof s !== "string") return null;
@@ -21,27 +26,17 @@ function categoryTypeToRequestType(categoryType: string): string {
 }
 
 // GET /api/attendance-requests?employeeId=N&status=...&from=...&to=...
+// 비관리자: 본인 요청만, 관리자: 다른 직원도 조회 가능.
 export async function GET(request: NextRequest) {
   try {
+    const r = await getTargetEmployeeId(request);
+    if (!r.ok) return r.response;
+    const employeeId = r.employeeId;
+
     const { searchParams } = new URL(request.url);
-    const employeeIdRaw = searchParams.get("employeeId");
     const status = searchParams.get("status") || "";
     const fromRaw = searchParams.get("from");
     const toRaw = searchParams.get("to");
-
-    if (!employeeIdRaw) {
-      return NextResponse.json(
-        { error: "employeeId 파라미터가 필요합니다." },
-        { status: 400 }
-      );
-    }
-    const employeeId = Number(employeeIdRaw);
-    if (!Number.isInteger(employeeId)) {
-      return NextResponse.json(
-        { error: "employeeId는 정수여야 합니다." },
-        { status: 400 }
-      );
-    }
 
     const where: any = { employeeId };
     if (status) where.status = status;
@@ -126,8 +121,15 @@ export async function GET(request: NextRequest) {
 }
 
 // POST /api/attendance-requests — 본인 신청
+// body.employeeId는 비관리자의 경우 본인 employeeId여야 함.
 export async function POST(request: NextRequest) {
   try {
+    const sessionR = await requireSession();
+    if (!sessionR.ok) return sessionR.response;
+    const { session } = sessionR;
+    const ownId = session.user.employeeId;
+    const isAdmin = isAdminSession(session);
+
     const body = await request.json();
     const {
       employeeId,
@@ -148,8 +150,6 @@ export async function POST(request: NextRequest) {
 
     const employeeIdNum = Number(employeeId);
     const categoryIdNum = Number(categoryId);
-    const startD = parseDate(startDate);
-    const endD = parseDate(endDate);
 
     if (!Number.isInteger(employeeIdNum) || !Number.isInteger(categoryIdNum)) {
       return NextResponse.json(
@@ -157,6 +157,28 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+
+    // 비관리자는 본인만 신청 가능
+    if (!isAdmin) {
+      if (!Number.isInteger(ownId)) {
+        return NextResponse.json(
+          {
+            error:
+              "본인 직원 정보가 매핑되어 있지 않습니다. 관리자에게 직원 등록을 요청하세요.",
+          },
+          { status: 403 }
+        );
+      }
+      if (employeeIdNum !== ownId) {
+        return NextResponse.json(
+          { error: "본인 명의로만 신청할 수 있습니다." },
+          { status: 403 }
+        );
+      }
+    }
+
+    const startD = parseDate(startDate);
+    const endD = parseDate(endDate);
     if (!startD || !endD) {
       return NextResponse.json(
         { error: "startDate, endDate 형식이 잘못되었습니다 (YYYY-MM-DD)." },
@@ -279,8 +301,15 @@ export async function POST(request: NextRequest) {
 
 // PUT /api/attendance-requests?id=N
 // 두 흐름: action="cancel" 취소 / 그 외 필드 수정 (둘 다 pending 만 가능)
+// 비관리자: 본인 요청만 수정/취소 가능.
 export async function PUT(request: NextRequest) {
   try {
+    const sessionR = await requireSession();
+    if (!sessionR.ok) return sessionR.response;
+    const { session } = sessionR;
+    const ownId = session.user.employeeId;
+    const isAdmin = isAdminSession(session);
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {
@@ -290,7 +319,6 @@ export async function PUT(request: NextRequest) {
 
     const body = await request.json();
     const {
-      employeeId, // 본인 검증용
       action, // "cancel" | undefined
       categoryId,
       startDate,
@@ -310,12 +338,14 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    // 본인 검증
-    if (employeeId !== undefined && Number(employeeId) !== before.employeeId) {
-      return NextResponse.json(
-        { error: "본인의 요청만 수정/취소할 수 있습니다." },
-        { status: 403 }
-      );
+    // 본인 검증 (관리자 우회 허용)
+    if (!isAdmin) {
+      if (!Number.isInteger(ownId) || before.employeeId !== ownId) {
+        return NextResponse.json(
+          { error: "본인의 요청만 수정/취소할 수 있습니다." },
+          { status: 403 }
+        );
+      }
     }
 
     if (before.status !== "pending") {

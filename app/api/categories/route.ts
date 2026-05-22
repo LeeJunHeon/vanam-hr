@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth-helpers";
 
 // GET /api/categories?type=...&search=...&includeInactive=true
 export async function GET(request: NextRequest) {
@@ -51,6 +52,9 @@ export async function GET(request: NextRequest) {
 // POST /api/categories — 근태 항목 추가
 export async function POST(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const body = await request.json();
     const {
       code,
@@ -143,6 +147,9 @@ export async function POST(request: NextRequest) {
 // PUT /api/categories?id=1 — 근태 항목 수정
 export async function PUT(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {
@@ -242,6 +249,9 @@ export async function PUT(request: NextRequest) {
 // DELETE /api/categories?id=1 — 근태 항목 삭제
 export async function DELETE(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {

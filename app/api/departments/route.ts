@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth-helpers";
 
 // targetId가 ancestorId의 자손인지 확인 (순환 참조 방지)
 // 시작: parentId = ancestorId. 거기서 부모를 따라 올라가면서 targetId 만나면 true.
@@ -25,6 +26,9 @@ async function isDescendant(
 // GET /api/departments?search=...&includeInactive=true
 export async function GET(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const search = searchParams.get("search") || "";
     const includeInactive = searchParams.get("includeInactive") === "true";
@@ -65,6 +69,9 @@ export async function GET(request: NextRequest) {
 // POST /api/departments — 부서 추가
 export async function POST(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const body = await request.json();
     const { code, name, parentId, sortOrder } = body;
 
@@ -138,6 +145,9 @@ export async function POST(request: NextRequest) {
 // PUT /api/departments?id=1 — 부서 수정 (code 제외)
 export async function PUT(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {
@@ -227,6 +237,9 @@ export async function PUT(request: NextRequest) {
 // DELETE /api/departments?id=1 — 부서 삭제
 export async function DELETE(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {

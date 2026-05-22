@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth-helpers";
 
 // 직원 활성 검증 헬퍼
 async function validateActiveEmployee(
@@ -15,6 +16,9 @@ async function validateActiveEmployee(
 // GET /api/approval-lines?search=...
 export async function GET(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const search = searchParams.get("search") || "";
 
@@ -72,6 +76,9 @@ export async function GET(request: NextRequest) {
 // POST /api/approval-lines
 export async function POST(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const body = await request.json();
     const {
       departmentId,
@@ -209,6 +216,9 @@ export async function POST(request: NextRequest) {
 // PUT /api/approval-lines?id=1 — departmentId 제외 부분 업데이트
 export async function PUT(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {
@@ -337,6 +347,9 @@ export async function PUT(request: NextRequest) {
 // 참조 무결성 검증 없음 — attendance_requests는 결재 시점에 결재자 id를 복사하므로 결재선 삭제 영향 없음
 export async function DELETE(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {

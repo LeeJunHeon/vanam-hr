@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getApproverId } from "@/lib/auth-helpers";
 
 // 자동 위임 시간 계산
 function isDelegationElapsed(requestedAt: Date, hours: number): boolean {
@@ -14,28 +15,16 @@ function hoursUntilDelegation(requestedAt: Date, hours: number): number {
 }
 
 // GET /api/approvals?approverId=N&status=pending|approved|rejected|all
-// pending: 본인이 메인/대리인 대기 요청
-// approved/rejected: 본인이 처리한 해당 상태 요청
-// 그 외 (또는 status 미전달): 본인이 처리한 전체 이력 (approved + rejected)
+// 비관리자: 본인 결재함만 (approverId 무시 또는 본인과 다르면 403)
+// 관리자: 다른 결재자도 조회 가능.
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const approverIdRaw = searchParams.get("approverId");
-    const status = searchParams.get("status") || "pending";
+    const r = await getApproverId(request);
+    if (!r.ok) return r.response;
+    const approverId = r.approverId;
 
-    if (!approverIdRaw) {
-      return NextResponse.json(
-        { error: "approverId 파라미터가 필요합니다." },
-        { status: 400 }
-      );
-    }
-    const approverId = Number(approverIdRaw);
-    if (!Number.isInteger(approverId)) {
-      return NextResponse.json(
-        { error: "approverId는 정수여야 합니다." },
-        { status: 400 }
-      );
-    }
+    const { searchParams } = new URL(request.url);
+    const status = searchParams.get("status") || "pending";
 
     let where: any = {};
     if (status === "pending") {
@@ -165,6 +154,7 @@ export async function GET(request: NextRequest) {
 
 // PUT /api/approvals?id=N — 승인/반려
 // body: { approverId, action: 'approve' | 'reject', rejectReason? }
+// 비관리자는 본인 명의 결재만 수행 가능. 관리자는 다른 결재자 명의 가능.
 export async function PUT(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -175,11 +165,11 @@ export async function PUT(request: NextRequest) {
     const idNum = Number(id);
 
     const body = await request.json();
-    const { approverId, action, rejectReason } = body;
+    const { approverId: bodyApproverId, action, rejectReason } = body;
 
-    if (!approverId || !action) {
+    if (!action) {
       return NextResponse.json(
-        { error: "approverId, action은 필수입니다." },
+        { error: "action은 필수입니다." },
         { status: 400 }
       );
     }
@@ -196,13 +186,9 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const approverIdNum = Number(approverId);
-    if (!Number.isInteger(approverIdNum)) {
-      return NextResponse.json(
-        { error: "approverId는 정수여야 합니다." },
-        { status: 400 }
-      );
-    }
+    const r = await getApproverId(request, bodyApproverId);
+    if (!r.ok) return r.response;
+    const approverIdNum = r.approverId;
 
     const target = await prisma.attendanceRequest.findUnique({
       where: { id: idNum },

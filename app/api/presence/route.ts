@@ -1,27 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getTargetEmployeeId } from "@/lib/auth-helpers";
 
 // GET /api/presence?employeeId=N
 // 신도림 단독 환경에서 본인의 오늘 presence_raw 요약을 반환.
-// my-attendance 페이지에서 "현재 상태" + "마지막 끊김 시각" 표시용.
+// 비관리자: 본인만, 관리자: 다른 직원도 조회 가능.
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const employeeIdRaw = searchParams.get("employeeId");
-
-    if (!employeeIdRaw) {
-      return NextResponse.json(
-        { error: "employeeId 파라미터가 필요합니다." },
-        { status: 400 }
-      );
-    }
-    const employeeId = Number(employeeIdRaw);
-    if (!Number.isInteger(employeeId)) {
-      return NextResponse.json(
-        { error: "employeeId는 정수여야 합니다." },
-        { status: 400 }
-      );
-    }
+    const r = await getTargetEmployeeId(request);
+    if (!r.ok) return r.response;
+    const employeeId = r.employeeId;
 
     // KST 기준 오늘 날짜를 계산하기 위해 raw query 사용 (Asia/Seoul 일자).
     // checked_at 컬럼이 timestamptz이므로 AT TIME ZONE 'Asia/Seoul' 변환 후 date 비교.

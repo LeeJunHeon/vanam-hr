@@ -1,28 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getTargetEmployeeId } from "@/lib/auth-helpers";
 
 // GET /api/attendance-daily?employeeId=N&from=YYYY-MM-DD&to=YYYY-MM-DD
-// from/to는 inclusive (서버는 to+1일 lt로 처리)
+// 비관리자: employeeId는 본인만 (쿼리 무시 또는 본인과 다르면 403)
+// 관리자: employeeId 미지정 시 본인, 지정 시 그 직원 데이터
 export async function GET(request: NextRequest) {
   try {
+    const r = await getTargetEmployeeId(request);
+    if (!r.ok) return r.response;
+    const employeeId = r.employeeId;
+
     const { searchParams } = new URL(request.url);
-    const employeeIdRaw = searchParams.get("employeeId");
     const fromRaw = searchParams.get("from");
     const toRaw = searchParams.get("to");
-
-    if (!employeeIdRaw) {
-      return NextResponse.json(
-        { error: "employeeId 파라미터가 필요합니다." },
-        { status: 400 }
-      );
-    }
-    const employeeId = Number(employeeIdRaw);
-    if (!Number.isInteger(employeeId)) {
-      return NextResponse.json(
-        { error: "employeeId는 정수여야 합니다." },
-        { status: 400 }
-      );
-    }
 
     const where: any = { employeeId };
     if (fromRaw || toRaw) {

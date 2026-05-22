@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { normalizeMacAddress } from "@/lib/macAddress";
+import { requireAdmin } from "@/lib/auth-helpers";
 
 // GET /api/devices?search=...&employeeId=...&deviceType=...&includeInactive=true
 export async function GET(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const search = searchParams.get("search") || "";
     const employeeIdRaw = searchParams.get("employeeId");
@@ -91,6 +95,9 @@ async function validateDeviceType(code: string): Promise<string | null> {
 // POST /api/devices — 디바이스 추가
 export async function POST(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const body = await request.json();
     const { employeeId, macAddress, hostname, ipAddress, deviceType, label } =
       body;
@@ -193,6 +200,9 @@ export async function POST(request: NextRequest) {
 // PUT /api/devices?id=1
 export async function PUT(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {
@@ -320,6 +330,9 @@ export async function PUT(request: NextRequest) {
 // DELETE /api/devices?id=1
 export async function DELETE(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {

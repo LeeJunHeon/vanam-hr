@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth-helpers";
 
 // GET /api/dashboard/stats — 모든 통계 병렬 집계
 export async function GET() {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const now = new Date();
     const todayStart = new Date(
       now.getFullYear(),

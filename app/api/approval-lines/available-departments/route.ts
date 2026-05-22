@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth-helpers";
 
 // GET /api/approval-lines/available-departments
 // 결재선이 아직 없는 활성 부서 목록 (추가 폼의 부서 select용)
 export async function GET() {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const lines = await prisma.approvalLine.findMany({
       select: { departmentId: true },
     });

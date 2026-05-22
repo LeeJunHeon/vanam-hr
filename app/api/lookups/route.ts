@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth-helpers";
 
 // GET /api/lookups?category=...&search=...&includeInactive=true
+// NOTE: GET은 다수 비관리자 페이지(RequestPage / MyAttendancePage 등)에서
+// 참조 데이터로 사용되므로 requireAdmin을 적용하지 않는다.
+// 미인증 차단은 proxy.ts에서 처리.
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -51,6 +55,9 @@ export async function GET(request: NextRequest) {
 // POST /api/lookups — 룩업 추가
 export async function POST(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const body = await request.json();
     const { category, code, label, color, sortOrder, description } = body;
 
@@ -114,6 +121,9 @@ export async function POST(request: NextRequest) {
 // PUT /api/lookups?id=1 — 룩업 수정
 export async function PUT(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {
@@ -171,6 +181,9 @@ export async function PUT(request: NextRequest) {
 // DELETE /api/lookups?id=1 — 룩업 삭제 (시스템 룩업은 차단)
 export async function DELETE(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth-helpers";
 
 // YYYY-MM-DD 문자열을 Date로 변환 (잘못된 형식이면 null)
 function parseDate(s: string | null | undefined): Date | null {
@@ -20,6 +21,9 @@ function fmtDate(d: Date | null | undefined): string | null {
 // GET /api/employees?search=...&departmentId=...&positionId=...&includeInactive=true
 export async function GET(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const search = searchParams.get("search") || "";
     const departmentIdRaw = searchParams.get("departmentId");
@@ -82,6 +86,9 @@ export async function GET(request: NextRequest) {
 // POST /api/employees — 직원 추가
 export async function POST(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const body = await request.json();
     const {
       employeeNo,
@@ -260,6 +267,9 @@ export async function POST(request: NextRequest) {
 // PUT /api/employees?id=1 — 직원 수정
 export async function PUT(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {
@@ -486,6 +496,9 @@ export async function PUT(request: NextRequest) {
 // DELETE /api/employees?id=1
 export async function DELETE(request: NextRequest) {
   try {
+    const _auth = await requireAdmin();
+    if (!_auth.ok) return _auth.response;
+
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     if (!id) {
