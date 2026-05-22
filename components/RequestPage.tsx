@@ -16,7 +16,6 @@ import {
   FileText,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
-import CurrentEmployeeSelector from "@/components/CurrentEmployeeSelector";
 import { exportCSV } from "@/lib/csvUtils";
 
 interface AttendanceRequest {
@@ -349,9 +348,6 @@ export default function RequestPage() {
           {toast}
         </div>
       )}
-
-      {/* 본인 선택기 */}
-      <CurrentEmployeeSelector />
 
       {/* 헤더 */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">

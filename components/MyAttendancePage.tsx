@@ -16,7 +16,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
-import CurrentEmployeeSelector from "@/components/CurrentEmployeeSelector";
 
 interface AttendanceDaily {
   id: number;
@@ -211,9 +210,6 @@ export default function MyAttendancePage() {
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
-      {/* 본인 선택기 */}
-      <CurrentEmployeeSelector />
-
       {/* 헤더 */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>

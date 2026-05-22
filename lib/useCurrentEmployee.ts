@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useSession } from "next-auth/react";
+import { useEffect, useState } from "react";
 
 export interface CurrentEmployeeOption {
   id: number;
@@ -9,59 +10,82 @@ export interface CurrentEmployeeOption {
   departmentName: string | null;
 }
 
-const STORAGE_KEY = "vanam-hr:currentEmployeeId";
-
-// 본인 선택기 훅 (localStorage 영속화)
-// my-attendance / request / approval 3개 페이지가 공유
-// Phase 7 NextAuth 연동 시 session.user.dbId → employee.userId 매핑으로 교체 예정
+// SSO 도입 후: session.user.employeeId 자동 사용
+// 같은 인터페이스 유지 — 호출처 코드 변경 최소화
 export function useCurrentEmployee() {
-  const [employees, setEmployees] = useState<CurrentEmployeeOption[]>([]);
-  const [currentId, setCurrentIdState] = useState<number | null>(null);
+  const { data: session, status } = useSession();
+  const [current, setCurrent] = useState<CurrentEmployeeOption | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const employeeId = (session?.user as any)?.employeeId ?? null;
+  const employeeNo = (session?.user as any)?.employeeNo ?? null;
+  const userName = session?.user?.name ?? "";
+
   useEffect(() => {
+    if (status === "loading") {
+      setLoading(true);
+      return;
+    }
+
+    if (!employeeId) {
+      setCurrent(null);
+      setLoading(false);
+      return;
+    }
+
+    // 본인 정보 (부서명 포함) 1회 조회
     (async () => {
       try {
-        const res = await fetch("/api/employees?includeInactive=false");
-        if (!res.ok) return;
-        const data = await res.json();
-        const opts: CurrentEmployeeOption[] = data.map((e: any) => ({
-          id: e.id,
-          employeeNo: e.employeeNo,
-          name: e.name,
-          departmentName: e.departmentName,
-        }));
-        setEmployees(opts);
-
-        const stored =
-          typeof window !== "undefined"
-            ? localStorage.getItem(STORAGE_KEY)
-            : null;
-        const storedNum = stored ? Number(stored) : null;
-        if (storedNum && opts.some((o) => o.id === storedNum)) {
-          setCurrentIdState(storedNum);
-        } else if (opts.length > 0) {
-          setCurrentIdState(opts[0].id);
-          if (typeof window !== "undefined") {
-            localStorage.setItem(STORAGE_KEY, String(opts[0].id));
+        const res = await fetch(`/api/employees?id=${employeeId}`);
+        if (res.ok) {
+          const data = await res.json();
+          // /api/employees는 id 쿼리 지원 X일 수 있음 → 전체 조회 후 필터
+          const list = Array.isArray(data) ? data : [data];
+          const found = list.find((e: any) => e.id === employeeId);
+          if (found) {
+            setCurrent({
+              id: found.id,
+              employeeNo: found.employeeNo ?? employeeNo ?? "",
+              name: found.name ?? userName,
+              departmentName: found.departmentName ?? null,
+            });
+          } else {
+            // 못 찾으면 session 정보로 최소 fallback
+            setCurrent({
+              id: employeeId,
+              employeeNo: employeeNo ?? "",
+              name: userName,
+              departmentName: null,
+            });
           }
+        } else {
+          setCurrent({
+            id: employeeId,
+            employeeNo: employeeNo ?? "",
+            name: userName,
+            departmentName: null,
+          });
         }
       } catch (e) {
         console.error("useCurrentEmployee fetch error:", e);
+        setCurrent({
+          id: employeeId,
+          employeeNo: employeeNo ?? "",
+          name: userName,
+          departmentName: null,
+        });
       } finally {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [employeeId, employeeNo, userName, status]);
 
-  const setCurrentId = useCallback((id: number) => {
-    setCurrentIdState(id);
-    if (typeof window !== "undefined") {
-      localStorage.setItem(STORAGE_KEY, String(id));
-    }
-  }, []);
-
-  const current = employees.find((e) => e.id === currentId) ?? null;
-
-  return { employees, currentId, current, setCurrentId, loading };
+  return {
+    currentId: employeeId as number | null,
+    current,
+    loading,
+    // 호환성 stub (사용처에서 호출하지만 더 이상 의미 없음)
+    employees: [] as CurrentEmployeeOption[],
+    setCurrentId: (_id: number) => {},
+  };
 }

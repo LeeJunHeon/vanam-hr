@@ -15,7 +15,6 @@ import {
   X,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
-import CurrentEmployeeSelector from "@/components/CurrentEmployeeSelector";
 
 interface ApprovalItem {
   id: number;
@@ -224,9 +223,6 @@ export default function ApprovalPage() {
           {toast}
         </div>
       )}
-
-      {/* 본인 선택기 */}
-      <CurrentEmployeeSelector />
 
       {/* 헤더 */}
       <div>
