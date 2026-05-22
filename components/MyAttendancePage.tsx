@@ -9,6 +9,10 @@ import {
   UserCheck,
   AlertCircle,
   Clock,
+  Wifi,
+  WifiOff,
+  Info,
+  ChevronDown,
   type LucideIcon,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
@@ -37,6 +41,14 @@ interface StatusLookup {
   color: string | null;
 }
 
+interface PresenceSummary {
+  employeeId: number;
+  currentStatus: "online" | "offline" | null;
+  lastOnlineAt: string | null;
+  lastOfflineAt: string | null;
+  todayRawCount: number;
+}
+
 const DAY_HEADERS = ["일", "월", "화", "수", "목", "금", "토"];
 
 function pad2(n: number): string {
@@ -47,6 +59,12 @@ function formatTime(iso: string | null): string {
   if (!iso) return "-";
   const d = new Date(iso);
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function formatDateTime(iso: string | null): string {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
 function ymd(date: Date): string {
@@ -63,6 +81,7 @@ export default function MyAttendancePage() {
 
   const [dailies, setDailies] = useState<AttendanceDaily[]>([]);
   const [statusLookups, setStatusLookups] = useState<StatusLookup[]>([]);
+  const [presence, setPresence] = useState<PresenceSummary | null>(null);
   const [loading, setLoading] = useState(false);
 
   const todayYmd = useMemo(() => ymd(today), [today]);
@@ -115,6 +134,28 @@ export default function MyAttendancePage() {
   useEffect(() => {
     fetchDailies();
   }, [fetchDailies]);
+
+  const fetchPresence = useCallback(async () => {
+    if (!currentId) {
+      setPresence(null);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/presence?employeeId=${currentId}`);
+      if (res.ok) {
+        setPresence(await res.json());
+      } else {
+        setPresence(null);
+      }
+    } catch (e) {
+      console.error("fetch presence error:", e);
+      setPresence(null);
+    }
+  }, [currentId]);
+
+  useEffect(() => {
+    fetchPresence();
+  }, [fetchPresence]);
 
   // date(YYYY-MM-DD) → daily 매핑
   const dailyByDate = useMemo(() => {
@@ -259,6 +300,12 @@ export default function MyAttendancePage() {
               dynamicColor={getStatusColor("absent")}
             />
           </div>
+
+          {/* 현재 상태 박스 (오늘 사무실 연결 상태) */}
+          <PresenceStatusCard presence={presence} onRefresh={fetchPresence} />
+
+          {/* 시스템 동작 안내 (펼치기) */}
+          <SystemInfoBox />
 
           {/* 로딩 */}
           {loading ? (
@@ -464,8 +511,7 @@ export default function MyAttendancePage() {
               {/* 빈 상태 안내 (데스크탑/모바일 공통) */}
               {dailies.length === 0 && (
                 <div className="bg-gray-50 border border-gray-100 rounded-2xl px-4 py-3 text-xs text-gray-500">
-                  이 달의 근태 기록이 없습니다. Phase 5의 폴링/aggregator
-                  구현 후 자동 수집됩니다.
+                  이 달의 근태 기록이 없습니다.
                 </div>
               )}
             </>
@@ -516,6 +562,184 @@ function SummaryCard({
       <p className="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 font-mono">
         {value}
       </p>
+    </div>
+  );
+}
+
+// 현재 사무실 연결 상태 + 최근 online/offline 시각
+interface PresenceStatusCardProps {
+  presence: PresenceSummary | null;
+  onRefresh: () => void;
+}
+
+function PresenceStatusCard({ presence, onRefresh }: PresenceStatusCardProps) {
+  const isOnline = presence?.currentStatus === "online";
+  const isOffline = presence?.currentStatus === "offline";
+  const noData = !presence || presence.currentStatus === null;
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-gray-900">
+          오늘 사무실 연결 상태
+        </h3>
+        <button
+          onClick={onRefresh}
+          className="text-xs font-medium text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-50 transition-colors"
+        >
+          새로고침
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {/* 현재 상태 */}
+        <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50">
+          <div
+            className={`w-10 h-10 rounded-full flex items-center justify-center ${
+              isOnline
+                ? "bg-emerald-100"
+                : isOffline
+                ? "bg-rose-100"
+                : "bg-gray-100"
+            }`}
+          >
+            {isOnline ? (
+              <Wifi size={18} className="text-emerald-600" />
+            ) : isOffline ? (
+              <WifiOff size={18} className="text-rose-600" />
+            ) : (
+              <WifiOff size={18} className="text-gray-400" />
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+              현재 상태
+            </p>
+            <p
+              className={`text-base font-bold ${
+                isOnline
+                  ? "text-emerald-600"
+                  : isOffline
+                  ? "text-rose-600"
+                  : "text-gray-400"
+              }`}
+            >
+              {isOnline
+                ? "● 사무실"
+                : isOffline
+                ? "◌ 연결 끊김"
+                : "오늘 기록 없음"}
+            </p>
+          </div>
+        </div>
+
+        {/* 마지막 연결 시각 */}
+        <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50">
+          <div className="w-10 h-10 rounded-full bg-emerald-50 flex items-center justify-center">
+            <Wifi size={18} className="text-emerald-500" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+              최근 연결 시각
+            </p>
+            <p className="text-sm font-mono text-gray-900">
+              {presence?.lastOnlineAt
+                ? formatDateTime(presence.lastOnlineAt)
+                : "-"}
+            </p>
+          </div>
+        </div>
+
+        {/* 마지막 끊김 시각 (잠정 퇴근) */}
+        <div className="flex items-center gap-3 p-3 rounded-lg bg-gray-50">
+          <div className="w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center">
+            <WifiOff size={18} className="text-amber-500" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+              최근 끊김 시각
+            </p>
+            <p className="text-sm font-mono text-gray-900">
+              {presence?.lastOfflineAt
+                ? formatDateTime(presence.lastOfflineAt)
+                : "-"}
+            </p>
+            {isOffline && presence?.lastOfflineAt && (
+              <p className="text-[10px] text-amber-600 mt-0.5">
+                ※ 잠정 퇴근 시각 (재연결 시 자동 갱신)
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {noData && (
+        <div className="mt-3 text-xs text-gray-400 text-center">
+          오늘 사무실 WiFi 연결 기록이 아직 없습니다.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 시스템 동작 안내 (펼치기)
+function SystemInfoBox() {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="bg-blue-50/60 border border-blue-100 rounded-2xl overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-blue-50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <Info size={16} className="text-blue-500" />
+          <span className="text-sm font-semibold text-blue-900">
+            출퇴근 자동 인식 안내
+          </span>
+        </div>
+        <ChevronDown
+          size={16}
+          className={`text-blue-500 transition-transform ${
+            expanded ? "rotate-180" : ""
+          }`}
+        />
+      </button>
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-3 text-xs text-blue-900/80 leading-relaxed">
+          <p>
+            이 시스템은 사무실 WiFi 연결 상태로 출퇴근을 자동 인식합니다.
+            등록된 본인 디바이스(폰 등)가 사무실 라우터에 연결/끊김되는 시점을
+            매 1분마다 기록합니다.
+          </p>
+          <div className="space-y-1.5">
+            <p>
+              <span className="font-semibold">• 출근 시각:</span> 그날 처음
+              사무실 WiFi에 연결된 시각
+            </p>
+            <p>
+              <span className="font-semibold">• 퇴근 시각:</span> 그날 마지막
+              연결이 끊긴 시각 (그 이후 재연결이 없을 때만 인정)
+            </p>
+            <p>
+              <span className="font-semibold">• 외출 후 복귀:</span> 퇴근으로
+              표시됐다가 다시 연결되면 자동으로 "근무 중"으로 갱신됩니다
+            </p>
+            <p>
+              <span className="font-semibold">• 짧은 끊김:</span> 절전 모드 /
+              5GHz↔2.4GHz 전환 같은 일시적 끊김도 기록되지만, 다시 연결되면 퇴근으로
+              간주되지 않습니다
+            </p>
+          </div>
+          <div className="pt-2 border-t border-blue-100/70">
+            <p className="text-[11px] text-blue-700/70">
+              ℹ️ 화면의 "최근 끊김 시각"은 잠정 퇴근 시각으로, 사무실 WiFi에 다시
+              연결되면 자동으로 갱신됩니다. 오늘 일과 종료 후 확정됩니다.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
