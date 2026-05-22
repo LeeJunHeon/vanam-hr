@@ -1,6 +1,6 @@
 "use client";
 
-import { UserX, Mail } from "lucide-react";
+import { UserX } from "lucide-react";
 
 interface NotMappedNoticePageProps {
   userName?: string | null;
@@ -25,14 +25,12 @@ export default function NotMappedNoticePage({
 
         <div className="text-center space-y-2">
           <h2 className="text-xl font-bold text-gray-900">
-            직원 정보가 등록되어 있지 않습니다
+            등록되지 않은 사용자
           </h2>
-          <p className="text-sm text-gray-500 leading-relaxed">
-            SSO 로그인은 정상적으로 완료되었지만,
+          <p className="text-sm text-gray-600 leading-relaxed">
+            현재 인사 시스템에 본인 정보가 등록되지 않았습니다.
             <br />
-            인사·근태 시스템에서 본인 직원 정보가 매핑되어 있지 않습니다.
-            <br />
-            관리자에게 직원 등록 요청을 보내주세요.
+            담당자에게 등록을 요청해주세요.
           </p>
         </div>
 
@@ -46,17 +44,6 @@ export default function NotMappedNoticePage({
             <span className="font-medium text-gray-900 break-all">
               {userEmail ?? "-"}
             </span>
-          </div>
-        </div>
-
-        <div className="rounded-xl bg-blue-50 border border-blue-100 p-4 flex items-start gap-3">
-          <Mail size={18} className="text-blue-500 shrink-0 mt-0.5" />
-          <div className="text-xs text-blue-700 leading-relaxed">
-            <p className="font-semibold mb-1">관리자에게 알릴 내용</p>
-            <p>
-              위 이메일을 hr.employees 의 user_id 필드에 매핑해 달라고 요청하면
-              본인 데이터(근태, 결재 등) 메뉴를 사용할 수 있습니다.
-            </p>
           </div>
         </div>
       </div>
