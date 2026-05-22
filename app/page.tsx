@@ -17,6 +17,8 @@ import CategoriesPage from "@/components/CategoriesPage";
 import PoliciesPage from "@/components/PoliciesPage";
 import CalendarPage from "@/components/CalendarPage";
 import LookupsPage from "@/components/LookupsPage";
+import NotMappedNoticePage from "@/components/NotMappedNoticePage";
+import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 
 const PAGE_TITLES: Record<PageId, string> = {
   dashboard: "대시보드",
@@ -36,6 +38,7 @@ const PAGE_TITLES: Record<PageId, string> = {
 
 export default function Home() {
   const { data: session } = useSession();
+  const { me, loading: meLoading } = useCurrentEmployee();
   const [page, setPage] = useState<PageId>("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
@@ -49,6 +52,9 @@ export default function Home() {
   const userName = session?.user?.name ?? "로딩중...";
   const userRole = session?.user?.role ?? "";
   const isAdmin = userRole === "admin";
+  // /api/me 응답 기반 — admin은 매핑 없이도 통과
+  const isMapped = me?.isMapped ?? false;
+  const showNotMapped = !meLoading && !isAdmin && !isMapped;
 
   // admin이 아닌데 admin 전용 페이지로 가려고 하면 대시보드로 강제 이동
   useEffect(() => {
@@ -58,6 +64,15 @@ export default function Home() {
   }, [isAdmin, page]);
 
   const renderPage = () => {
+    // 매핑 안 된 일반 사용자 — 모든 페이지 대신 안내 페이지만 표시
+    if (showNotMapped) {
+      return (
+        <NotMappedNoticePage
+          userName={session?.user?.name}
+          userEmail={session?.user?.email}
+        />
+      );
+    }
     // 권한 부족 가드 (effect 동기화 전 한 프레임 보호)
     if (!isAdmin && isAdminOnlyPage(page)) {
       return <DashboardPage />;
