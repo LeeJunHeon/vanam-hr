@@ -19,6 +19,8 @@ interface NavItem {
   label: string;
   icon: React.ElementType;
   group?: string;
+  /** true면 admin role 사용자에게만 보임 + 라우팅 허용 */
+  adminOnly?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -28,17 +30,29 @@ const NAV_ITEMS: NavItem[] = [
   { id: "request",        label: "휴가/근태 신청", icon: FileText },
   { id: "approval",       label: "결재함",         icon: CheckSquare },
   // 관리자
-  { id: "employees",      label: "직원 관리",      icon: Users,       group: "관리자" },
-  { id: "org",            label: "부서/직급",      icon: Building2,   group: "관리자" },
-  { id: "devices",        label: "디바이스 관리",  icon: Smartphone,  group: "관리자" },
-  { id: "shifts",         label: "시프트 패턴",    icon: Clock,       group: "관리자" },
-  { id: "approval-lines", label: "결재선 설정",    icon: Users,       group: "관리자" },
+  { id: "employees",      label: "직원 관리",      icon: Users,       group: "관리자", adminOnly: true },
+  { id: "org",            label: "부서/직급",      icon: Building2,   group: "관리자", adminOnly: true },
+  { id: "devices",        label: "디바이스 관리",  icon: Smartphone,  group: "관리자", adminOnly: true },
+  { id: "shifts",         label: "시프트 패턴",    icon: Clock,       group: "관리자", adminOnly: true },
+  { id: "approval-lines", label: "결재선 설정",    icon: Users,       group: "관리자", adminOnly: true },
   // 시스템
-  { id: "categories",     label: "근태 항목",      icon: Layers,      group: "시스템" },
-  { id: "policies",       label: "정책 설정",      icon: Settings,    group: "시스템" },
-  { id: "calendar",       label: "Calendar 연동",  icon: CalendarDays, group: "시스템" },
-  { id: "lookups",        label: "코드 룩업",      icon: Tag,         group: "시스템" },
+  { id: "categories",     label: "근태 항목",      icon: Layers,      group: "시스템", adminOnly: true },
+  { id: "policies",       label: "정책 설정",      icon: Settings,    group: "시스템", adminOnly: true },
+  { id: "calendar",       label: "Calendar 연동",  icon: CalendarDays, group: "시스템", adminOnly: true },
+  { id: "lookups",        label: "코드 룩업",      icon: Tag,         group: "시스템", adminOnly: true },
 ];
+
+/**
+ * admin role이어야만 접근 가능한 PageId 집합.
+ * app/page.tsx 라우팅 가드에서 사용.
+ */
+export const ADMIN_ONLY_PAGES: ReadonlySet<PageId> = new Set(
+  NAV_ITEMS.filter((i) => i.adminOnly).map((i) => i.id)
+);
+
+export function isAdminOnlyPage(page: PageId): boolean {
+  return ADMIN_ONLY_PAGES.has(page);
+}
 
 interface SidebarProps {
   currentPage: PageId;
@@ -60,9 +74,12 @@ export default function Sidebar({
     if (typeof window !== "undefined" && window.innerWidth < 1024) onClose();
   };
 
+  const isAdmin = userRole === "admin";
+  const visibleItems = NAV_ITEMS.filter((i) => isAdmin || !i.adminOnly);
+
   const renderNavItems = () => {
     let prevGroup: string | undefined = undefined;
-    return NAV_ITEMS.map((item) => {
+    return visibleItems.map((item) => {
       const showDivider = item.group && item.group !== prevGroup;
       prevGroup = item.group;
       return (

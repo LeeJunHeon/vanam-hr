@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
 import { Menu } from "lucide-react";
-import Sidebar, { PageId } from "@/components/Sidebar";
+import Sidebar, { PageId, isAdminOnlyPage } from "@/components/Sidebar";
 import DashboardPage from "@/components/DashboardPage";
 import MyAttendancePage from "@/components/MyAttendancePage";
 import RequestPage from "@/components/RequestPage";
@@ -47,9 +47,21 @@ export default function Home() {
   }, []);
 
   const userName = session?.user?.name ?? "로딩중...";
-  const userRole = (session?.user as any)?.role ?? "";
+  const userRole = session?.user?.role ?? "";
+  const isAdmin = userRole === "admin";
+
+  // admin이 아닌데 admin 전용 페이지로 가려고 하면 대시보드로 강제 이동
+  useEffect(() => {
+    if (!isAdmin && isAdminOnlyPage(page)) {
+      setPage("dashboard");
+    }
+  }, [isAdmin, page]);
 
   const renderPage = () => {
+    // 권한 부족 가드 (effect 동기화 전 한 프레임 보호)
+    if (!isAdmin && isAdminOnlyPage(page)) {
+      return <DashboardPage />;
+    }
     switch (page) {
       case "dashboard":       return <DashboardPage />;
       case "my-attendance":   return <MyAttendancePage />;
