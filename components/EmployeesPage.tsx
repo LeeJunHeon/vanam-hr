@@ -11,6 +11,7 @@ import {
   Download,
   User,
   Link as LinkIcon,
+  Info,
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
 
@@ -184,8 +185,18 @@ export default function EmployeesPage() {
   };
 
   const handleSave = async () => {
-    if (!form.employeeNo.trim() || !form.name.trim() || !form.hiredAt) {
-      setFormError("사번, 이름, 입사일은 필수입니다.");
+    if (!form.employeeNo.trim() || !form.hiredAt) {
+      setFormError("사번, 입사일은 필수입니다.");
+      return;
+    }
+    if (form.userId === "") {
+      setFormError(
+        "이름·이메일은 SSO 사용자 마스터에서 가져옵니다. SSO 사용자를 선택하세요."
+      );
+      return;
+    }
+    if (!form.name.trim()) {
+      setFormError("이름이 비어있습니다. SSO 사용자를 다시 선택하세요.");
       return;
     }
     if (form.resignedAt && form.resignedAt < form.hiredAt) {
@@ -368,6 +379,26 @@ export default function EmployeesPage() {
             </button>
           </div>
 
+          {/* 포털 마스터 정책 안내 */}
+          <div className="bg-white border border-blue-100 rounded-xl p-3 flex items-start gap-2.5">
+            <Info size={16} className="text-blue-500 shrink-0 mt-0.5" />
+            <p className="text-xs text-blue-800 leading-relaxed">
+              <span className="font-semibold">이름·이메일은 포털 SSO 사용자 마스터에서 관리</span>됩니다.
+              직접 수정할 수 없으며, SSO 사용자 매핑을 변경하면 자동으로 동기화됩니다.
+              <br />
+              이름/이메일을 변경해야 하면{" "}
+              <a
+                href="https://vanam.synology.me"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline font-semibold"
+              >
+                VanaM 포털
+              </a>
+              에서 처리하세요.
+            </p>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {/* 사번 */}
             <div>
@@ -388,19 +419,30 @@ export default function EmployeesPage() {
               />
             </div>
 
-            {/* SSO 매핑 */}
+            {/* SSO 매핑 — 이름/이메일은 여기서 자동 채움 */}
             <div>
               <label className="block text-xs font-semibold text-blue-700 mb-1">
-                SSO 사용자 매핑
+                SSO 사용자 매핑 <span className="text-rose-500">*</span>
               </label>
               <select
                 value={form.userId}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, userId: e.target.value }))
-                }
+                onChange={(e) => {
+                  const v = e.target.value;
+                  const picked =
+                    v === ""
+                      ? null
+                      : availableUsers.find((u) => String(u.id) === v) ?? null;
+                  setForm((f) => ({
+                    ...f,
+                    userId: v,
+                    // SSO 매핑 = 포털 사용자 마스터. 이름/이메일 자동 동기화.
+                    name: picked ? picked.name : "",
+                    email: picked?.email ?? "",
+                  }));
+                }}
                 className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
               >
-                <option value="">(매핑 없음)</option>
+                <option value="">(SSO 사용자 선택)</option>
                 {availableUsers.map((u) => (
                   <option key={u.id} value={u.id}>
                     {u.name} ({u.email ?? `id: ${u.id}`})
@@ -408,40 +450,36 @@ export default function EmployeesPage() {
                 ))}
               </select>
               <p className="text-[10px] text-gray-500 mt-1">
-                매핑하면 해당 SSO 사용자가 로그인 시 이 직원으로 인식됩니다
+                포털 SSO 사용자를 선택하면 이름·이메일이 자동으로 채워집니다.
               </p>
             </div>
 
-            {/* 이름 */}
+            {/* 이름 — read-only, SSO에서 자동 채움 */}
             <div>
               <label className="block text-xs font-semibold text-blue-700 mb-1">
                 이름 <span className="text-rose-500">*</span>
               </label>
               <input
                 value={form.name}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, name: e.target.value }))
-                }
-                placeholder="예: 홍길동"
+                readOnly
+                placeholder="(SSO 사용자 선택 시 자동 채움)"
                 maxLength={100}
-                className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-gray-50 text-gray-700 outline-none cursor-not-allowed"
               />
             </div>
 
-            {/* 이메일 (사내) */}
+            {/* 이메일 — read-only, SSO에서 자동 채움 */}
             <div>
               <label className="block text-xs font-semibold text-blue-700 mb-1">
-                이메일 (사내, SSO와 별개)
+                이메일 (포털 SSO)
               </label>
               <input
                 type="email"
                 value={form.email}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, email: e.target.value }))
-                }
-                placeholder="예: hong@vanam.co.kr"
+                readOnly
+                placeholder="(SSO 사용자 선택 시 자동 채움)"
                 maxLength={255}
-                className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-gray-50 text-gray-700 outline-none cursor-not-allowed"
               />
             </div>
 
