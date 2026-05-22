@@ -21,16 +21,32 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async session({ session }) {
       if (!session.user?.email) return session;
 
+      // public.user (inventory) 조회 + 매핑된 hr.employees 조회를 1쿼리로
       const dbUser = await prisma.user.findUnique({
         where: { email: session.user.email },
-        select: { id: true, name: true, role: true },
+        select: {
+          id: true,
+          name: true,
+          role: true,
+        },
       });
 
-      if (dbUser) {
-        session.user.name = dbUser.name;
-        (session.user as any).role = dbUser.role ?? "viewer";
-        (session.user as any).dbId = dbUser.id;
-      }
+      if (!dbUser) return session;
+
+      // hr.employees에서 user_id로 본인 직원 row 찾기
+      const employee = await prisma.employee.findUnique({
+        where: { userId: dbUser.id },
+        select: { id: true, employeeNo: true, isActive: true },
+      });
+
+      session.user.name = dbUser.name;
+      (session.user as any).role = dbUser.role ?? "viewer";
+      (session.user as any).dbId = dbUser.id;
+
+      // hr.employees 매핑 추가 (없으면 null — 매핑 안 된 사용자)
+      (session.user as any).employeeId = employee?.id ?? null;
+      (session.user as any).employeeNo = employee?.employeeNo ?? null;
+      (session.user as any).employeeActive = employee?.isActive ?? false;
 
       return session;
     },
