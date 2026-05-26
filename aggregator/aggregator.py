@@ -3,11 +3,12 @@
 매 60초마다 활성 직원 각각의 오늘 presence_raw를 분석해 출퇴근 시각을 계산하고
 attendance_daily에 UPSERT. is_overridden=true 인 row는 건드리지 않음.
 
-출퇴근 정의 (단순 버전):
-- 출근: 그날 첫 'online'
-- 퇴근: 그날 마지막 'offline' (단, 그 후 'online'이 없을 때만)
-- Grace 정책 적용 안 함 (auto_status NULL)
-- 5분 디바운싱은 별도 로직 없이 위 정의로 자연 처리됨
+출퇴근 정의 (시나리오 A: employee 단위 통합 timeline, location 무관):
+- 출근: 그날 첫 'online'의 checked_at
+- 퇴근: 그날 마지막 'online'의 checked_at
+  (단, now - last_online >= grace_minutes 일 때만 확정)
+- grace_minutes는 hr.policy_settings.debounce_minutes에서 읽음 (기본 60)
+- auto_status 판정은 별도 단계 (현재 NULL)
 
 sync 단순 루프. asyncio 의존성 없음.
 """
