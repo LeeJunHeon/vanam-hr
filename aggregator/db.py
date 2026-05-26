@@ -40,6 +40,17 @@ class Database:
         except psycopg2.Error:
             self._connect()
 
+    def get_policy(self, key: str) -> Optional[str]:
+        """hr.policy_settings에서 단일 정책 값 조회."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                "SELECT value FROM hr.policy_settings WHERE key = %s",
+                (key,),
+            )
+            row = c.fetchone()
+            return row[0] if row else None
+
     def get_active_employees(self) -> list[dict]:
         """활성 직원 목록. {id, employee_no, name}.
 

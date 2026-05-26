@@ -15,7 +15,7 @@ sync 단순 루프. asyncio 의존성 없음.
 import signal
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from config import load_config
@@ -39,13 +39,21 @@ class Aggregator:
     def compute_check_in_out(
         self,
         raw_records: list[dict],
+        grace_minutes: int,
+        now: datetime,
     ) -> tuple[Optional[datetime], Optional[datetime]]:
-        """raw_records를 분석해 (check_in, check_out) 반환.
+        """raw_records를 분석해 (check_in, check_out) 반환 (시나리오 A).
 
-        - check_in: 첫 'online'의 checked_at
-        - check_out: 마지막 'offline'의 checked_at (단, 그 후 'online'이 없을 때만)
+        시나리오 A: employee 단위 통합 timeline (location 무관).
+        - check_in:  그날 첫 'online'의 checked_at
+        - check_out: 그날 마지막 'online'의 checked_at
+                     (단, now - last_online >= grace_minutes 일 때만 확정)
 
-        둘 다 없을 수 있음. raw_records는 checked_at 오름차순 정렬되어 있어야 함.
+        아직 grace 시간이 안 지났으면 check_out=None (사무실 또는 외출 가능성).
+        같은 날 다시 online이 잡히면 마지막 online이 갱신됨.
+
+        raw_records는 checked_at 오름차순 정렬되어 있어야 함.
+        now는 timezone-aware datetime (UTC 권장).
         """
         if not raw_records:
             return None, None
@@ -57,17 +65,19 @@ class Aggregator:
                 check_in = r["checked_at"]
                 break
 
-        # 마지막 offline (그 후 online 없을 때만)
-        # raw_records를 뒤에서부터 보며, 'offline'을 만나는데 그 후 'online'이 없으면 그게 퇴근
-        check_out = None
+        # 마지막 online
+        last_online = None
         for r in reversed(raw_records):
             if r["status"] == "online":
-                # 마지막 record가 online이거나, offline 이후에 online이 있음
-                # → check_out 없음 (아직 사무실에 있거나 외출 후 복귀)
+                last_online = r["checked_at"]
                 break
-            if r["status"] == "offline":
-                check_out = r["checked_at"]
-                break
+
+        # check_out 판정: 마지막 online 이후 grace_minutes 이상 경과 시 확정
+        check_out = None
+        if last_online is not None:
+            elapsed_seconds = (now - last_online).total_seconds()
+            if elapsed_seconds >= grace_minutes * 60:
+                check_out = last_online
 
         return check_in, check_out
 
@@ -76,6 +86,19 @@ class Aggregator:
         cycle_start = time.time()
         today = self.db.get_today_kst()
         self.logger.info(f"=== Aggregate 사이클 시작 (work_date={today}) ===")
+
+        # 정책 로드: grace_minutes (마지막 online 이후 N분 무재연결 = 퇴근 확정)
+        grace_raw = self.db.get_policy("debounce_minutes")
+        try:
+            grace_minutes = int(grace_raw) if grace_raw else 60
+        except ValueError:
+            self.logger.warning(
+                f"debounce_minutes 값 파싱 실패 ({grace_raw}), 기본 60 사용"
+            )
+            grace_minutes = 60
+
+        # 모든 직원 동일 기준 시각 사용 (UTC timezone-aware)
+        now = datetime.now(timezone.utc)
 
         # 활성 직원 조회
         t0 = time.time()
@@ -103,7 +126,7 @@ class Aggregator:
                 skip_no_data += 1
                 continue
 
-            check_in, check_out = self.compute_check_in_out(raw)
+            check_in, check_out = self.compute_check_in_out(raw, grace_minutes, now)
 
             # 둘 다 없으면 INSERT 의미 없음 (raw가 모두 status 이상값?)
             if check_in is None and check_out is None:
