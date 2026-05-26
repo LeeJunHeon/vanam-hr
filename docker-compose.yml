@@ -63,6 +63,30 @@ services:
       - internal
       - vanam-db-net
 
+  icc_poller:
+    build:
+      context: ./icc_poller
+      dockerfile: Dockerfile
+    container_name: hr-icc-poller
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TZ: Asia/Seoul
+      ICC_URL: ${ICC_URL:-http://192.168.0.210:8800}
+      ICC_USER: ${ICC_USER}
+      ICC_PASSWORD: ${ICC_PASSWORD}
+      ICC_SITE_ID: ${ICC_SITE_ID:-1}
+      POLLER_DB_HOST: ${POLLER_DB_HOST:-localhost}
+      POLLER_DB_PORT: ${POLLER_DB_PORT:-5433}
+      POLLER_DB_NAME: ${POLLER_DB_NAME}
+      POLLER_DB_USER: ${POLLER_DB_USER}
+      POLLER_DB_PASSWORD: ${POLLER_DB_PASSWORD}
+      POLLER_LOG_LEVEL: ${POLLER_LOG_LEVEL:-INFO}
+      POLLER_LOG_FILE: ${POLLER_LOG_FILE:-/app/logs/icc-poller.log}
+      POLLER_DRY_RUN: ${POLLER_DRY_RUN:-false}
+    volumes:
+      - ./icc_poller/logs:/app/logs
+
 networks:
   internal:
     driver: bridge
