@@ -103,7 +103,7 @@ class Database:
         status: str,
         ssid: Optional[str],
         raw_value: Optional[str],
-        location: str = '신도림',
+        location: str = '본사',
     ) -> int:
         """presence_raw INSERT. RETURNING으로 새 id 반환 (INSERT 검증).
 
@@ -111,8 +111,8 @@ class Database:
         새 id를 반환받지 못하면 INSERT 실패로 간주 (호출자에서 처리).
 
         location 인자:
-        - 기본값 '신도림' (이 폴러는 신도림 SNMP 폴러)
-        - 향후 다른 위치의 폴러(예: 공덕 ICC 폴러)가 같은 함수 재사용 시 명시적으로 지정
+        - 기본값 '본사' (신도림 사무실, 메인 사이트)
+        - 통합 폴러가 신도림 SNMP / 공덕 ICC 결과에 따라 호출 시 명시적으로 지정
         """
         self._ensure_connected()
         with self.conn.cursor() as c:
