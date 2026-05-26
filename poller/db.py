@@ -103,22 +103,27 @@ class Database:
         status: str,
         ssid: Optional[str],
         raw_value: Optional[str],
+        location: str = '신도림',
     ) -> int:
         """presence_raw INSERT. RETURNING으로 새 id 반환 (INSERT 검증).
 
         autocommit=True 환경에서 INSERT는 즉시 영구 저장됨.
         새 id를 반환받지 못하면 INSERT 실패로 간주 (호출자에서 처리).
+
+        location 인자:
+        - 기본값 '신도림' (이 폴러는 신도림 SNMP 폴러)
+        - 향후 다른 위치의 폴러(예: 공덕 ICC 폴러)가 같은 함수 재사용 시 명시적으로 지정
         """
         self._ensure_connected()
         with self.conn.cursor() as c:
             c.execute(
                 """
                 INSERT INTO hr.presence_raw
-                    (employee_id, device_id, checked_at, status, ssid, raw_value)
-                VALUES (%s, %s, NOW(), %s, %s, %s)
+                    (employee_id, device_id, checked_at, status, ssid, raw_value, location)
+                VALUES (%s, %s, NOW(), %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (employee_id, device_id, status, ssid, raw_value),
+                (employee_id, device_id, status, ssid, raw_value, location),
             )
             row = c.fetchone()
             if row is None:
