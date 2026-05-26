@@ -1,7 +1,8 @@
 """presence_raw → attendance_daily 변환 데몬 (메인 entry point).
 
-매 60초마다 활성 직원 각각의 오늘 presence_raw를 분석해 출퇴근 시각을 계산하고
-attendance_daily에 UPSERT. is_overridden=true 인 row는 건드리지 않음.
+매 60초마다 활성 직원 각각의 오늘+어제 work_date presence_raw를 분석해
+출퇴근 시각을 계산하고 attendance_daily에 UPSERT.
+is_overridden=true 인 row는 건드리지 않음.
 
 출퇴근 정의 (시나리오 A: employee 단위 통합 timeline, location 무관):
 - 출근: 그날 첫 'online'의 checked_at
@@ -10,13 +11,20 @@ attendance_daily에 UPSERT. is_overridden=true 인 row는 건드리지 않음.
 - grace_minutes는 hr.policy_settings.debounce_minutes에서 읽음 (기본 60)
 - auto_status 판정은 별도 단계 (현재 NULL)
 
+work_date 귀속 (야간 근무자 정책):
+- 새벽 cutoff_hour 시 이전 활동은 전일 work_date로 귀속
+- cutoff_hour는 hr.policy_settings.work_date_cutoff_hour 에서 읽음 (기본 4)
+- 예: 5/27 03:30 활동 → work_date=5/26 (어제 야간 시프트의 연장)
+- aggregator는 매 사이클마다 어제+오늘 두 work_date 모두 처리하여
+  04:00~05:00 사이 grace 60분 도달 시점도 정확히 잡힌다.
+
 sync 단순 루프. asyncio 의존성 없음.
 """
 
 import signal
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from config import load_config
@@ -83,10 +91,8 @@ class Aggregator:
         return check_in, check_out
 
     def aggregate_today(self):
-        """매 사이클 1회 실행. 활성 직원 각각 처리."""
+        """매 사이클 1회 실행. 활성 직원 각각에 대해 어제+오늘 두 work_date 처리."""
         cycle_start = time.time()
-        today = self.db.get_today_kst()
-        self.logger.info(f"=== Aggregate 사이클 시작 (work_date={today}) ===")
 
         # 정책 로드: grace_minutes (마지막 online 이후 N분 무재연결 = 퇴근 확정)
         grace_raw = self.db.get_policy("debounce_minutes")
@@ -97,6 +103,24 @@ class Aggregator:
                 f"debounce_minutes 값 파싱 실패 ({grace_raw}), 기본 60 사용"
             )
             grace_minutes = 60
+
+        # 정책 로드: cutoff_hour (새벽 N시 이전은 전일 work_date)
+        cutoff_raw = self.db.get_policy("work_date_cutoff_hour")
+        try:
+            cutoff_hour = int(cutoff_raw) if cutoff_raw else 4
+        except ValueError:
+            self.logger.warning(
+                f"work_date_cutoff_hour 값 파싱 실패 ({cutoff_raw}), 기본 4 사용"
+            )
+            cutoff_hour = 4
+
+        today = self.db.get_work_date_kst(cutoff_hour)
+        yesterday = today - timedelta(days=1)
+        self.logger.info(
+            f"=== Aggregate 사이클 시작 "
+            f"(work_date today={today}, yesterday={yesterday}, "
+            f"grace={grace_minutes}분, cutoff={cutoff_hour}시) ==="
+        )
 
         # 모든 직원 동일 기준 시각 사용 (UTC timezone-aware)
         now = datetime.now(timezone.utc)
@@ -112,60 +136,79 @@ class Aggregator:
             self.logger.debug("활성 직원 0건 — 사이클 건너뜀")
             return
 
-        # 직원별 처리
+        # 직원별 처리 (어제 + 오늘 두 work_date)
         upsert_count = 0
         skip_no_data = 0
         skip_overridden = 0
 
         for emp in employees:
-            emp_id = emp["id"]
-            emp_no = emp.get("employee_no", "?")
-            emp_name = emp.get("name", "?")
-
-            raw = self.db.get_today_presence_raw(emp_id)
-            if not raw:
-                skip_no_data += 1
-                continue
-
-            check_in, check_out = self.compute_check_in_out(raw, grace_minutes, now)
-
-            # 둘 다 없으면 INSERT 의미 없음 (raw가 모두 status 이상값?)
-            if check_in is None and check_out is None:
-                skip_no_data += 1
-                continue
-
-            # work_minutes 계산
-            work_minutes = None
-            if check_in is not None and check_out is not None:
-                delta = check_out - check_in
-                work_minutes = int(delta.total_seconds() // 60)
-
-            new_id = self.db.upsert_attendance_daily(
-                employee_id=emp_id,
-                work_date=today,
-                check_in=check_in,
-                check_out=check_out,
-                work_minutes=work_minutes,
-            )
-
-            if new_id is None:
-                skip_overridden += 1
-                self.logger.debug(
-                    f"  직원 {emp_id}({emp_no}/{emp_name}) — is_overridden=true 로 보호됨, 스킵"
+            for work_date in (yesterday, today):
+                result = self._process_employee_work_date(
+                    emp, work_date, grace_minutes, cutoff_hour, now
                 )
-            else:
-                upsert_count += 1
-                self.logger.info(
-                    f"  직원 {emp_id}({emp_no}/{emp_name}) — "
-                    f"check_in={check_in}, check_out={check_out}, "
-                    f"work_minutes={work_minutes}, id={new_id}"
-                )
+                if result == "upsert":
+                    upsert_count += 1
+                elif result == "overridden":
+                    skip_overridden += 1
+                else:
+                    skip_no_data += 1
 
         total = time.time() - cycle_start
         self.logger.info(
             f"=== 사이클 종료: {total:.3f}s "
             f"(upsert {upsert_count}, no_data {skip_no_data}, overridden {skip_overridden}) ==="
         )
+
+    def _process_employee_work_date(
+        self,
+        emp: dict,
+        work_date,
+        grace_minutes: int,
+        cutoff_hour: int,
+        now: datetime,
+    ) -> str:
+        """단일 직원 + 단일 work_date 처리. 반환: 'upsert' | 'overridden' | 'no_data'."""
+        emp_id = emp["id"]
+        emp_no = emp.get("employee_no", "?")
+        emp_name = emp.get("name", "?")
+
+        raw = self.db.get_presence_raw_by_work_date(emp_id, work_date, cutoff_hour)
+        if not raw:
+            return "no_data"
+
+        check_in, check_out = self.compute_check_in_out(raw, grace_minutes, now)
+
+        # 둘 다 없으면 INSERT 의미 없음
+        if check_in is None and check_out is None:
+            return "no_data"
+
+        # work_minutes 계산
+        work_minutes = None
+        if check_in is not None and check_out is not None:
+            delta = check_out - check_in
+            work_minutes = int(delta.total_seconds() // 60)
+
+        new_id = self.db.upsert_attendance_daily(
+            employee_id=emp_id,
+            work_date=work_date,
+            check_in=check_in,
+            check_out=check_out,
+            work_minutes=work_minutes,
+        )
+
+        if new_id is None:
+            self.logger.debug(
+                f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} "
+                f"— is_overridden=true 로 보호됨, 스킵"
+            )
+            return "overridden"
+        else:
+            self.logger.info(
+                f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} — "
+                f"check_in={check_in}, check_out={check_out}, "
+                f"work_minutes={work_minutes}, id={new_id}"
+            )
+            return "upsert"
 
     def run(self):
         """메인 루프. time.monotonic() 기반 fixed-rate scheduling.

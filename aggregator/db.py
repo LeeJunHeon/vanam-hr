@@ -68,8 +68,17 @@ class Database:
             )
             return [dict(r) for r in c.fetchall()]
 
-    def get_today_presence_raw(self, employee_id: int) -> list[dict]:
-        """오늘 (Asia/Seoul 기준) 해당 직원의 presence_raw 모두. checked_at 오름차순.
+    def get_presence_raw_by_work_date(
+        self,
+        employee_id: int,
+        work_date: date,
+        cutoff_hour: int,
+    ) -> list[dict]:
+        """특정 work_date의 presence_raw 모두. checked_at 오름차순.
+
+        work_date 귀속 규칙 (cutoff_hour=4 기준):
+        - 5/26 04:00 ~ 5/27 03:59:59 → work_date=5/26
+        - 5/27 04:00 ~ 5/28 03:59:59 → work_date=5/27
 
         반환: [{checked_at: datetime, status: 'online'|'offline'}, ...]
         """
@@ -80,19 +89,39 @@ class Database:
                 SELECT checked_at, status
                 FROM hr.presence_raw
                 WHERE employee_id = %s
-                  AND (checked_at AT TIME ZONE 'Asia/Seoul')::date
-                      = (NOW() AT TIME ZONE 'Asia/Seoul')::date
+                  AND CASE
+                      WHEN EXTRACT(HOUR FROM (checked_at AT TIME ZONE 'Asia/Seoul')) < %s
+                      THEN ((checked_at AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '1 day')::date
+                      ELSE (checked_at AT TIME ZONE 'Asia/Seoul')::date
+                  END = %s
                 ORDER BY checked_at ASC, id ASC
                 """,
-                (employee_id,),
+                (employee_id, cutoff_hour, work_date),
             )
             return [dict(r) for r in c.fetchall()]
 
-    def get_today_kst(self) -> date:
-        """현재 시각 기준 KST 날짜."""
+    def get_work_date_kst(self, cutoff_hour: int) -> date:
+        """현재 시각의 work_date 반환 (cutoff_hour 이전이면 전일로 귀속).
+
+        예: cutoff_hour=4 일 때
+        - 03:59 → 어제 work_date
+        - 04:00 → 오늘 work_date (정확히 4시 정각부터 새 날)
+        - 23:59 → 오늘 work_date
+
+        야간 근무자가 새벽까지 일하는 케이스를 위한 정책.
+        """
         self._ensure_connected()
         with self.conn.cursor() as c:
-            c.execute("SELECT (NOW() AT TIME ZONE 'Asia/Seoul')::date")
+            c.execute(
+                """
+                SELECT CASE
+                    WHEN EXTRACT(HOUR FROM (NOW() AT TIME ZONE 'Asia/Seoul')) < %s
+                    THEN ((NOW() AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '1 day')::date
+                    ELSE (NOW() AT TIME ZONE 'Asia/Seoul')::date
+                END
+                """,
+                (cutoff_hour,),
+            )
             row = c.fetchone()
             return row[0]
 
