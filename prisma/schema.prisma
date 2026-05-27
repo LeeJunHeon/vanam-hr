@@ -201,14 +201,14 @@ model CalendarColorMapping {
 // 직원 마스터
 model Employee {
   id           Int       @id @default(autoincrement())
-  employeeNo   String    @unique @map("employee_no") @db.VarChar(50)
+  employeeNo   String?   @unique @map("employee_no") @db.VarChar(50)
   userId       Int?      @unique @map("user_id")
   name         String    @db.VarChar(100)
   email        String?   @db.VarChar(255)
   departmentId Int?      @map("department_id")
   positionId   Int?      @map("position_id")
   phone        String?   @db.VarChar(50)
-  hiredAt      DateTime  @map("hired_at") @db.Date
+  hiredAt      DateTime? @map("hired_at") @db.Date
   resignedAt   DateTime? @map("resigned_at") @db.Date
   isActive     Boolean   @default(true) @map("is_active")
   note         String?

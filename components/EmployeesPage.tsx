@@ -17,7 +17,7 @@ import { exportCSV } from "@/lib/csvUtils";
 
 interface Employee {
   id: number;
-  employeeNo: string;
+  employeeNo: string | null;
   userId: number | null;
   name: string;
   email: string | null;
@@ -28,7 +28,7 @@ interface Employee {
   positionCode: string | null;
   positionName: string | null;
   phone: string | null;
-  hiredAt: string; // "YYYY-MM-DD"
+  hiredAt: string | null; // "YYYY-MM-DD" or null
   resignedAt: string | null;
   isActive: boolean;
   note: string | null;
@@ -158,8 +158,14 @@ export default function EmployeesPage() {
   }, []);
 
   const openCreate = () => {
+    // 직급 기본값 = EMPLOYEE (positions 마스터에서 code='EMPLOYEE' 찾기)
+    const employeePos = positions.find((p) => p.code === "EMPLOYEE");
     setEditTarget(null);
-    setForm({ ...EMPTY_FORM, hiredAt: today() });
+    setForm({
+      ...EMPTY_FORM,
+      hiredAt: today(),
+      positionId: employeePos ? String(employeePos.id) : "",
+    });
     setFormError("");
     setShowForm(true);
     loadUserOptions(null);
@@ -168,14 +174,14 @@ export default function EmployeesPage() {
   const openEdit = (e: Employee) => {
     setEditTarget(e);
     setForm({
-      employeeNo: e.employeeNo,
+      employeeNo: e.employeeNo ?? "",
       userId: e.userId === null ? "" : String(e.userId),
       name: e.name,
       email: e.email || "",
       departmentId: e.departmentId === null ? "" : String(e.departmentId),
       positionId: e.positionId === null ? "" : String(e.positionId),
       phone: e.phone || "",
-      hiredAt: e.hiredAt,
+      hiredAt: e.hiredAt ?? "",
       resignedAt: e.resignedAt || "",
       note: e.note || "",
     });
@@ -185,10 +191,6 @@ export default function EmployeesPage() {
   };
 
   const handleSave = async () => {
-    if (!form.employeeNo.trim() || !form.hiredAt) {
-      setFormError("사번, 입사일은 필수입니다.");
-      return;
-    }
     if (form.userId === "") {
       setFormError(
         "이름·이메일은 SSO 사용자 마스터에서 가져옵니다. SSO 사용자를 선택하세요."
@@ -199,7 +201,12 @@ export default function EmployeesPage() {
       setFormError("이름이 비어있습니다. SSO 사용자를 다시 선택하세요.");
       return;
     }
-    if (form.resignedAt && form.resignedAt < form.hiredAt) {
+    if (form.positionId === "") {
+      setFormError("직급은 필수입니다.");
+      return;
+    }
+    // 퇴사일은 입사일이 있을 때만 비교
+    if (form.resignedAt && form.hiredAt && form.resignedAt < form.hiredAt) {
       setFormError("퇴사일은 입사일 이후여야 합니다.");
       return;
     }
@@ -213,7 +220,7 @@ export default function EmployeesPage() {
       const method = editTarget ? "PUT" : "POST";
 
       const payload = {
-        employeeNo: form.employeeNo.trim(),
+        employeeNo: form.employeeNo.trim() || null,
         userId: form.userId === "" ? null : Number(form.userId),
         name: form.name.trim(),
         email: form.email.trim() || null,
@@ -221,7 +228,7 @@ export default function EmployeesPage() {
           form.departmentId === "" ? null : Number(form.departmentId),
         positionId: form.positionId === "" ? null : Number(form.positionId),
         phone: form.phone.trim() || null,
-        hiredAt: form.hiredAt,
+        hiredAt: form.hiredAt || null,
         resignedAt: form.resignedAt || null,
         note: form.note.trim() || null,
       };
@@ -266,7 +273,8 @@ export default function EmployeesPage() {
   };
 
   const handleDelete = async (e: Employee) => {
-    if (!confirm(`"${e.name}" (${e.employeeNo}) 직원을 삭제하시겠습니까?`)) return;
+    const empNoLabel = e.employeeNo ? ` (${e.employeeNo})` : "";
+    if (!confirm(`"${e.name}"${empNoLabel} 직원을 삭제하시겠습니까?`)) return;
     try {
       const res = await fetch(`/api/employees?id=${e.id}`, {
         method: "DELETE",
@@ -302,7 +310,7 @@ export default function EmployeesPage() {
         "메모",
       ],
       employees.map((e) => [
-        e.employeeNo,
+        e.employeeNo ?? "",
         e.name,
         e.email ?? "",
         e.departmentCode ?? "",
@@ -310,7 +318,7 @@ export default function EmployeesPage() {
         e.positionCode ?? "",
         e.positionName ?? "",
         e.phone ?? "",
-        e.hiredAt,
+        e.hiredAt ?? "",
         e.resignedAt ?? "",
         e.userId ?? "",
         e.isActive ? "Y" : "N",
@@ -403,7 +411,7 @@ export default function EmployeesPage() {
             {/* 사번 */}
             <div>
               <label className="block text-xs font-semibold text-blue-700 mb-1">
-                사번 <span className="text-rose-500">*</span>
+                사번
               </label>
               <input
                 value={form.employeeNo}
@@ -413,7 +421,7 @@ export default function EmployeesPage() {
                     employeeNo: e.target.value.toUpperCase(),
                   }))
                 }
-                placeholder="예: V2026001"
+                placeholder="예: V2026001 (선택)"
                 maxLength={50}
                 className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400 font-mono"
               />
@@ -507,7 +515,7 @@ export default function EmployeesPage() {
             {/* 직급 = 권한 */}
             <div>
               <label className="block text-xs font-semibold text-blue-700 mb-1">
-                직급 (권한)
+                직급 (권한) <span className="text-rose-500">*</span>
               </label>
               <select
                 value={form.positionId}
@@ -516,7 +524,6 @@ export default function EmployeesPage() {
                 }
                 className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
               >
-                <option value="">(미지정)</option>
                 {positions.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name} ({p.code})
@@ -547,7 +554,7 @@ export default function EmployeesPage() {
             {/* 입사일 */}
             <div>
               <label className="block text-xs font-semibold text-blue-700 mb-1">
-                입사일 <span className="text-rose-500">*</span>
+                입사일
               </label>
               <input
                 type="date"
@@ -557,6 +564,9 @@ export default function EmployeesPage() {
                 }
                 className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
               />
+              <p className="text-[10px] text-gray-500 mt-1">
+                선택 입력. 빈 값으로 두면 나중에 채울 수 있습니다.
+              </p>
             </div>
 
             {/* 퇴사일 */}
@@ -753,7 +763,7 @@ export default function EmployeesPage() {
                         }`}
                       >
                         <td className="px-5 py-3 text-sm text-gray-900 font-mono">
-                          {e.employeeNo}
+                          {e.employeeNo || <span className="text-xs text-gray-300">-</span>}
                         </td>
                         <td className="px-5 py-3 text-sm font-semibold text-gray-900">
                           <div className="flex items-center gap-2">
@@ -772,7 +782,7 @@ export default function EmployeesPage() {
                           )}
                         </td>
                         <td className="px-5 py-3 text-sm text-gray-500 font-mono">
-                          {e.hiredAt}
+                          {e.hiredAt || <span className="text-xs text-gray-300">-</span>}
                         </td>
                         <td className="px-5 py-3 text-sm">
                           {e.userId !== null ? (
@@ -853,7 +863,7 @@ export default function EmployeesPage() {
                         {e.name}
                       </span>
                       <span className="text-xs text-gray-400 font-mono shrink-0">
-                        {e.employeeNo}
+                        {e.employeeNo || "-"}
                       </span>
                     </div>
                     <div className="flex gap-1 shrink-0">
@@ -873,7 +883,8 @@ export default function EmployeesPage() {
                   </div>
                   <p className="text-xs text-gray-400">
                     {e.departmentName ?? "(부서 없음)"} ·{" "}
-                    {e.positionName ?? "(직급 없음)"} · 입사 {e.hiredAt}
+                    {e.positionName ?? "(직급 없음)"}
+                    {e.hiredAt && ` · 입사 ${e.hiredAt}`}
                     {e.resignedAt && ` · 퇴사 ${e.resignedAt}`}
                   </p>
                   {e.userId !== null && (

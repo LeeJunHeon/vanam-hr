@@ -103,19 +103,29 @@ export async function POST(request: NextRequest) {
       note,
     } = body;
 
-    if (!employeeNo?.trim() || !name?.trim() || !hiredAt) {
+    if (!name?.trim()) {
       return NextResponse.json(
-        { error: "사번, 이름, 입사일은 필수입니다." },
+        { error: "이름은 필수입니다." },
+        { status: 400 }
+      );
+    }
+    if (!positionId || positionId === "" || positionId === null) {
+      return NextResponse.json(
+        { error: "직급은 필수입니다." },
         { status: 400 }
       );
     }
 
-    const hiredAtDate = parseDate(hiredAt);
-    if (!hiredAtDate) {
-      return NextResponse.json(
-        { error: "입사일 형식이 잘못되었습니다 (YYYY-MM-DD)." },
-        { status: 400 }
-      );
+    // hiredAt: 빈 값 / null / undefined 모두 허용 (선택 입력)
+    let hiredAtDate: Date | null = null;
+    if (hiredAt) {
+      hiredAtDate = parseDate(hiredAt);
+      if (!hiredAtDate) {
+        return NextResponse.json(
+          { error: "입사일 형식이 잘못되었습니다 (YYYY-MM-DD)." },
+          { status: 400 }
+        );
+      }
     }
 
     let resignedAtDate: Date | null = null;
@@ -127,7 +137,8 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
-      if (resignedAtDate < hiredAtDate) {
+      // 입사일이 있을 때만 비교
+      if (hiredAtDate && resignedAtDate < hiredAtDate) {
         return NextResponse.json(
           { error: "퇴사일은 입사일 이후여야 합니다." },
           { status: 400 }
@@ -135,15 +146,17 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 사번 중복
-    const exists = await prisma.employee.findUnique({
-      where: { employeeNo: employeeNo.trim() },
-    });
-    if (exists) {
-      return NextResponse.json(
-        { error: `사번 "${employeeNo}"가 이미 존재합니다.` },
-        { status: 409 }
-      );
+    // 사번 중복 — 사번이 있을 때만 검사
+    if (employeeNo?.trim()) {
+      const exists = await prisma.employee.findUnique({
+        where: { employeeNo: employeeNo.trim() },
+      });
+      if (exists) {
+        return NextResponse.json(
+          { error: `사번 "${employeeNo}"가 이미 존재합니다.` },
+          { status: 409 }
+        );
+      }
     }
 
     // userId 검증
@@ -220,7 +233,7 @@ export async function POST(request: NextRequest) {
 
     const emp = await prisma.employee.create({
       data: {
-        employeeNo: employeeNo.trim(),
+        employeeNo: employeeNo?.trim() || null,
         userId: userIdNum,
         name: name.trim(),
         email: email?.trim() || null,
@@ -301,15 +314,24 @@ export async function PUT(request: NextRequest) {
     }
 
     // employeeNo 중복 검증 (변경되었을 때만)
-    if (employeeNo !== undefined && employeeNo.trim() !== before.employeeNo) {
-      const dup = await prisma.employee.findUnique({
-        where: { employeeNo: employeeNo.trim() },
-      });
-      if (dup && dup.id !== idNum) {
-        return NextResponse.json(
-          { error: `사번 "${employeeNo}"가 이미 존재합니다.` },
-          { status: 409 }
-        );
+    let employeeNoUpdate: string | null | undefined = undefined;
+    if (employeeNo !== undefined) {
+      const trimmed = (employeeNo ?? "").trim();
+      if (trimmed === "") {
+        employeeNoUpdate = null;
+      } else if (trimmed !== before.employeeNo) {
+        const dup = await prisma.employee.findUnique({
+          where: { employeeNo: trimmed },
+        });
+        if (dup && dup.id !== idNum) {
+          return NextResponse.json(
+            { error: `사번 "${trimmed}"가 이미 존재합니다.` },
+            { status: 409 }
+          );
+        }
+        employeeNoUpdate = trimmed;
+      } else {
+        employeeNoUpdate = trimmed;
       }
     }
 
@@ -401,17 +423,21 @@ export async function PUT(request: NextRequest) {
       }
     }
 
-    // hiredAt 검증
-    let hiredAtDate: Date | undefined = undefined;
+    // hiredAt 검증 — null/빈 문자열 허용
+    let hiredAtUpdate: Date | null | undefined = undefined;
     if (hiredAt !== undefined) {
-      const parsed = parseDate(hiredAt);
-      if (!parsed) {
-        return NextResponse.json(
-          { error: "입사일 형식이 잘못되었습니다 (YYYY-MM-DD)." },
-          { status: 400 }
-        );
+      if (hiredAt === null || hiredAt === "") {
+        hiredAtUpdate = null;
+      } else {
+        const parsed = parseDate(hiredAt);
+        if (!parsed) {
+          return NextResponse.json(
+            { error: "입사일 형식이 잘못되었습니다 (YYYY-MM-DD)." },
+            { status: 400 }
+          );
+        }
+        hiredAtUpdate = parsed;
       }
-      hiredAtDate = parsed;
     }
 
     // resignedAt 검증 + 입사일 이후 체크
@@ -427,8 +453,9 @@ export async function PUT(request: NextRequest) {
             { status: 400 }
           );
         }
-        const effectiveHired = hiredAtDate ?? before.hiredAt;
-        if (parsed < effectiveHired) {
+        // 입사일이 있는 경우에만 비교
+        const effectiveHired = hiredAtUpdate !== undefined ? hiredAtUpdate : before.hiredAt;
+        if (effectiveHired && parsed < effectiveHired) {
           return NextResponse.json(
             { error: "퇴사일은 입사일 이후여야 합니다." },
             { status: 400 }
@@ -436,9 +463,9 @@ export async function PUT(request: NextRequest) {
         }
         resignedAtUpdate = parsed;
       }
-    } else if (hiredAtDate) {
+    } else if (hiredAtUpdate) {
       // hiredAt만 바뀌고 resignedAt은 안 바뀐 경우, 기존 resignedAt이 새 hiredAt보다 이전이면 차단
-      if (before.resignedAt && before.resignedAt < hiredAtDate) {
+      if (before.resignedAt && before.resignedAt < hiredAtUpdate) {
         return NextResponse.json(
           {
             error: "변경한 입사일이 기존 퇴사일보다 이후입니다. 퇴사일도 함께 갱신하세요.",
@@ -451,14 +478,14 @@ export async function PUT(request: NextRequest) {
     const emp = await prisma.employee.update({
       where: { id: idNum },
       data: {
-        ...(employeeNo !== undefined && { employeeNo: employeeNo.trim() }),
+        ...(employeeNoUpdate !== undefined && { employeeNo: employeeNoUpdate }),
         ...(userIdUpdate !== undefined && { userId: userIdUpdate }),
         ...(name !== undefined && { name: name.trim() }),
         ...(email !== undefined && { email: email?.trim() || null }),
         ...(departmentIdUpdate !== undefined && { departmentId: departmentIdUpdate }),
         ...(positionIdUpdate !== undefined && { positionId: positionIdUpdate }),
         ...(phone !== undefined && { phone: phone?.trim() || null }),
-        ...(hiredAtDate !== undefined && { hiredAt: hiredAtDate }),
+        ...(hiredAtUpdate !== undefined && { hiredAt: hiredAtUpdate }),
         ...(resignedAtUpdate !== undefined && { resignedAt: resignedAtUpdate }),
         ...(note !== undefined && { note: note?.trim() || null }),
         ...(isActive !== undefined && { isActive: Boolean(isActive) }),
