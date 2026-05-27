@@ -21,6 +21,7 @@ interface AttendanceRow {
   checkIn: string | null;
   checkOut: string | null;
   workMinutes: number | null;
+  autoStatus: string | null;
   isOverridden: boolean;
 }
 
@@ -61,6 +62,27 @@ function formatWorkMinutes(min: number | null): string {
   if (h === 0) return `${m}분`;
   if (m === 0) return `${h}시간`;
   return `${h}시간 ${m}분`;
+}
+
+function StatusBadge({ status }: { status: string | null }) {
+  if (!status) return <span className="text-xs text-gray-300">-</span>;
+  const config: Record<string, { label: string; cls: string }> = {
+    normal: { label: "정상", cls: "bg-emerald-50 text-emerald-700" },
+    late: { label: "지각", cls: "bg-amber-50 text-amber-700" },
+    early_leave: { label: "조퇴", cls: "bg-rose-50 text-rose-700" },
+    absent: { label: "결근", cls: "bg-gray-100 text-gray-500" },
+  };
+  const c = config[status] ?? {
+    label: status,
+    cls: "bg-gray-100 text-gray-500",
+  };
+  return (
+    <span
+      className={`inline-flex text-xs font-semibold px-2 py-0.5 rounded-full ${c.cls}`}
+    >
+      {c.label}
+    </span>
+  );
 }
 
 function todayStr() {
@@ -178,6 +200,7 @@ export default function AttendanceOverviewPage() {
         "출근",
         "퇴근",
         "근무시간",
+        "상태",
         "관리자수정",
       ],
       data.rows.map((r) => [
@@ -189,6 +212,7 @@ export default function AttendanceOverviewPage() {
         r.checkIn ? formatTime(r.checkIn) : "",
         r.checkOut ? formatTime(r.checkOut) : "",
         r.workMinutes !== null ? String(r.workMinutes) : "",
+        r.autoStatus ?? "",
         r.isOverridden ? "Y" : "",
       ]),
       `출퇴근_${startDate}_${endDate}.csv`
@@ -447,11 +471,14 @@ export default function AttendanceOverviewPage() {
                       {formatWorkMinutes(r.workMinutes)}
                     </td>
                     <td className="px-5 py-3 text-center">
-                      {r.isOverridden && (
-                        <span className="text-xs font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
-                          수동수정
-                        </span>
-                      )}
+                      <div className="inline-flex items-center gap-1">
+                        <StatusBadge status={r.autoStatus} />
+                        {r.isOverridden && (
+                          <span className="text-xs font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
+                            수동수정
+                          </span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

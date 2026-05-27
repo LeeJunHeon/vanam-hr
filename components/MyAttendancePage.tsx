@@ -306,8 +306,6 @@ export default function MyAttendancePage() {
                         ? "text-blue-500"
                         : "text-gray-700";
 
-                    const statusColor = getStatusColor(daily?.autoStatus ?? null);
-
                     return (
                       <div
                         key={dateStr}
@@ -344,19 +342,30 @@ export default function MyAttendancePage() {
                               </div>
                             )}
                             {daily.autoStatus && (
-                              <div
-                                className="text-[10px] font-semibold px-1.5 py-0.5 rounded inline-block"
-                                style={
-                                  statusColor &&
-                                  statusColor.startsWith("#")
-                                    ? {
-                                        backgroundColor: `${statusColor}20`,
-                                        color: statusColor,
-                                      }
-                                    : { backgroundColor: "#f3f4f6", color: "#4b5563" }
-                                }
-                              >
-                                {getStatusLabel(daily.autoStatus)}
+                              <div className="mt-0.5">
+                                <span
+                                  className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                                    daily.autoStatus === "normal"
+                                      ? "bg-emerald-50 text-emerald-700"
+                                      : daily.autoStatus === "late"
+                                      ? "bg-amber-50 text-amber-700"
+                                      : daily.autoStatus === "early_leave"
+                                      ? "bg-rose-50 text-rose-700"
+                                      : daily.autoStatus === "absent"
+                                      ? "bg-gray-100 text-gray-500"
+                                      : "bg-gray-100 text-gray-500"
+                                  }`}
+                                >
+                                  {daily.autoStatus === "normal"
+                                    ? "정상"
+                                    : daily.autoStatus === "late"
+                                    ? "지각"
+                                    : daily.autoStatus === "early_leave"
+                                    ? "조퇴"
+                                    : daily.autoStatus === "absent"
+                                    ? "결근"
+                                    : daily.autoStatus}
+                                </span>
                               </div>
                             )}
                             {daily.categoryName && (

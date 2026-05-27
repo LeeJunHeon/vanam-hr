@@ -132,8 +132,12 @@ class Database:
         check_in: Optional[datetime],
         check_out: Optional[datetime],
         work_minutes: Optional[int],
+        auto_status: Optional[str] = None,
     ) -> Optional[int]:
         """attendance_daily UPSERT. is_overridden=true면 건드리지 않음.
+
+        auto_status: 자동 판정 결과 ('normal', 'absent' 등 또는 None).
+                     is_overridden=true인 row는 갱신 안 됨 (관리자 수동 보호).
 
         반환: 새/갱신된 row id. is_overridden=true로 막혀 변경 없으면 None.
         """
@@ -143,18 +147,19 @@ class Database:
                 """
                 INSERT INTO hr.attendance_daily
                     (employee_id, work_date, check_in, check_out, work_minutes,
-                     created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+                     auto_status, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
                 ON CONFLICT (employee_id, work_date)
                 DO UPDATE SET
                     check_in = EXCLUDED.check_in,
                     check_out = EXCLUDED.check_out,
                     work_minutes = EXCLUDED.work_minutes,
+                    auto_status = EXCLUDED.auto_status,
                     updated_at = NOW()
                 WHERE hr.attendance_daily.is_overridden = false
                 RETURNING id
                 """,
-                (employee_id, work_date, check_in, check_out, work_minutes),
+                (employee_id, work_date, check_in, check_out, work_minutes, auto_status),
             )
             row = c.fetchone()
             return row[0] if row else None

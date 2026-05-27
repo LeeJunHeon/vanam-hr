@@ -111,6 +111,7 @@ export async function GET(request: NextRequest) {
               checkIn: true,
               checkOut: true,
               workMinutes: true,
+              autoStatus: true,
               isOverridden: true,
             },
             orderBy: [{ workDate: "desc" }, { employeeId: "asc" }],
@@ -131,6 +132,7 @@ export async function GET(request: NextRequest) {
         checkIn: a.checkIn ? a.checkIn.toISOString() : null,
         checkOut: a.checkOut ? a.checkOut.toISOString() : null,
         workMinutes: a.workMinutes ?? null,
+        autoStatus: a.autoStatus ?? null,
         isOverridden: a.isOverridden,
       };
     });

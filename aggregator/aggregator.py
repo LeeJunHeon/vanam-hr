@@ -188,12 +188,25 @@ class Aggregator:
             delta = check_out - check_in
             work_minutes = int(delta.total_seconds() // 60)
 
+        # auto_status 판정 (단순 버전)
+        # - check_in/check_out 모두 있음 → 'normal'
+        # - 둘 다 없음 → 'absent'
+        # - 그 외 (출근만 또는 퇴근만) → NULL (판정 보류)
+        # 향후: 시프트 패턴 매칭 후 grace_in/out 정책으로 late/early_leave 세분화 예정
+        if check_in is not None and check_out is not None:
+            auto_status = "normal"
+        elif check_in is None and check_out is None:
+            auto_status = "absent"
+        else:
+            auto_status = None
+
         new_id = self.db.upsert_attendance_daily(
             employee_id=emp_id,
             work_date=work_date,
             check_in=check_in,
             check_out=check_out,
             work_minutes=work_minutes,
+            auto_status=auto_status,
         )
 
         if new_id is None:
