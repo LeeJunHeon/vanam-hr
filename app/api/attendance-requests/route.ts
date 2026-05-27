@@ -220,21 +220,40 @@ export async function POST(request: NextRequest) {
     let cciDate: Date | null = null;
     let ccoDate: Date | null = null;
     if (reqType === "correction") {
-      if (!correctedCheckIn || !correctedCheckOut) {
+      // 단일 날짜 강제
+      if (ymdFromDate(startD) !== ymdFromDate(endD)) {
         return NextResponse.json(
-          { error: "근태정정은 정정 출근/퇴근 시각이 모두 필요합니다." },
+          { error: "근태정정은 단일 날짜만 가능합니다." },
           { status: 400 }
         );
       }
-      cciDate = new Date(correctedCheckIn);
-      ccoDate = new Date(correctedCheckOut);
-      if (isNaN(cciDate.getTime()) || isNaN(ccoDate.getTime())) {
+      // 한쪽 이상 필수
+      if (!correctedCheckIn && !correctedCheckOut) {
         return NextResponse.json(
-          { error: "정정 시각 형식이 잘못되었습니다." },
+          { error: "정정 출근 시각과 정정 퇴근 시각 중 하나 이상 입력하세요." },
           { status: 400 }
         );
       }
-      if (ccoDate <= cciDate) {
+      if (correctedCheckIn) {
+        cciDate = new Date(correctedCheckIn);
+        if (isNaN(cciDate.getTime())) {
+          return NextResponse.json(
+            { error: "정정 출근 시각 형식이 잘못되었습니다." },
+            { status: 400 }
+          );
+        }
+      }
+      if (correctedCheckOut) {
+        ccoDate = new Date(correctedCheckOut);
+        if (isNaN(ccoDate.getTime())) {
+          return NextResponse.json(
+            { error: "정정 퇴근 시각 형식이 잘못되었습니다." },
+            { status: 400 }
+          );
+        }
+      }
+      // 둘 다 있을 때만 순서 비교
+      if (cciDate && ccoDate && ccoDate <= cciDate) {
         return NextResponse.json(
           { error: "정정 퇴근 시각은 정정 출근 시각 이후여야 합니다." },
           { status: 400 }

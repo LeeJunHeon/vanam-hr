@@ -255,17 +255,240 @@ export async function PUT(request: NextRequest) {
     const newStatus = action === "approve" ? "approved" : "rejected";
     const now = new Date();
 
-    const updated = await prisma.attendanceRequest.update({
-      where: { id: idNum },
-      data: {
-        status: newStatus,
-        approvedById: approverIdNum,
-        approvedAt: now,
-        rejectReason: action === "reject" ? rejectReason.trim() : null,
-      },
+    // 카테고리 정보 다시 조회 (type 필요)
+    const category = await prisma.attendanceCategory.findUnique({
+      where: { id: target.categoryId },
+    });
+    if (!category) {
+      return NextResponse.json(
+        { error: "카테고리 정보를 찾을 수 없습니다." },
+        { status: 500 }
+      );
+    }
+
+    // 정정의 경우 시프트 + grace 정책 미리 로드 (auto_status 재계산용)
+    let shiftStartHHMM: string | null = null;
+    let shiftEndHHMM: string | null = null;
+    let graceInMinutes = 10;
+    let graceOutMinutes = 0;
+
+    if (action === "approve" && category.type === "correction") {
+      // 시프트 조회 (정정 날짜 기준)
+      const workDateStr = target.startDate.toISOString().split("T")[0];
+      const shiftRows = await prisma.$queryRaw<
+        Array<{ start_time: string | null; end_time: string | null; type: string }>
+      >`
+        SELECT sp.start_time::text AS start_time, sp.end_time::text AS end_time, sp.type
+        FROM hr.employee_shifts es
+        JOIN hr.shift_patterns sp ON sp.id = es.pattern_id
+        WHERE es.employee_id = ${target.employeeId}
+          AND es.start_date <= ${workDateStr}::date
+          AND (es.end_date IS NULL OR es.end_date >= ${workDateStr}::date)
+          AND sp.is_active = true
+        LIMIT 1
+      `;
+      if (shiftRows.length > 0 && shiftRows[0].type !== "off") {
+        shiftStartHHMM = shiftRows[0].start_time;
+        shiftEndHHMM = shiftRows[0].end_time;
+      }
+
+      // 정책 조회
+      const policies = await prisma.policySetting.findMany({
+        where: { key: { in: ["grace_in_minutes", "grace_out_minutes"] } },
+      });
+      for (const p of policies) {
+        const v = parseInt(p.value, 10);
+        if (!isNaN(v)) {
+          if (p.key === "grace_in_minutes") graceInMinutes = v;
+          if (p.key === "grace_out_minutes") graceOutMinutes = v;
+        }
+      }
+    }
+
+    // auto_status 계산 헬퍼
+    function determineAutoStatus(
+      checkIn: Date | null,
+      checkOut: Date | null,
+      startHHMM: string | null,
+      endHHMM: string | null,
+      graceIn: number,
+      graceOut: number
+    ): string | null {
+      // 시프트 없음 → 단순 판정
+      if (!startHHMM || !endHHMM) {
+        if (checkIn && checkOut) return "normal";
+        if (!checkIn && !checkOut) return "absent";
+        return null;
+      }
+      // 시프트 있음 + 둘 다 NULL
+      if (!checkIn && !checkOut) return "absent";
+      // 한쪽만 NULL → 판정 보류
+      if (!checkIn || !checkOut) return null;
+      // 시프트 시각 파싱
+      const [shH, shM] = startHHMM.split(":").map(Number);
+      const [ehH, ehM] = endHHMM.split(":").map(Number);
+      if ([shH, shM, ehH, ehM].some(isNaN)) return "normal";
+      // 시프트 총 시간 (자정 넘김 처리)
+      let shiftMinutes = ehH * 60 + ehM - (shH * 60 + shM);
+      if (shiftMinutes <= 0) shiftMinutes += 24 * 60;
+      // 시프트 시작 datetime (check_in 날짜 기준)
+      const shiftStart = new Date(checkIn);
+      shiftStart.setHours(shH, shM, 0, 0);
+      const lateThreshold = new Date(shiftStart.getTime() + graceIn * 60 * 1000);
+      if (checkIn > lateThreshold) return "late";
+      // 근무시간 부족 (조퇴)
+      const actualMinutes = Math.floor(
+        (checkOut.getTime() - checkIn.getTime()) / (60 * 1000)
+      );
+      const requiredMinutes = shiftMinutes - graceOut;
+      if (actualMinutes < requiredMinutes) return "early_leave";
+      return "normal";
+    }
+
+    // YYYY-MM-DD 배열 생성 (startDate ~ endDate inclusive)
+    function daysBetween(start: Date, end: Date): string[] {
+      const days: string[] = [];
+      const cur = new Date(start);
+      while (cur <= end) {
+        days.push(cur.toISOString().split("T")[0]);
+        cur.setUTCDate(cur.getUTCDate() + 1);
+      }
+      return days;
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      // 1) attendance_request 상태 업데이트
+      const updated = await tx.attendanceRequest.update({
+        where: { id: idNum },
+        data: {
+          status: newStatus,
+          approvedById: approverIdNum,
+          approvedAt: now,
+          rejectReason: action === "reject" ? rejectReason.trim() : null,
+        },
+      });
+
+      // 반려는 attendance_daily 안 건드림
+      if (action !== "approve") {
+        return { updated, applied: 0 };
+      }
+
+      let applied = 0;
+
+      if (category.type === "correction") {
+        // 정정: 단일 날짜만, 기존 행이 있으면 선택적 컬럼 덮어쓰기
+        const existing = await tx.attendanceDaily.findUnique({
+          where: {
+            employeeId_workDate: {
+              employeeId: target.employeeId,
+              workDate: target.startDate,
+            },
+          },
+        });
+
+        const newCheckIn = target.correctedCheckIn ?? existing?.checkIn ?? null;
+        const newCheckOut = target.correctedCheckOut ?? existing?.checkOut ?? null;
+
+        // work_minutes 재계산
+        let newWorkMinutes: number | null = null;
+        if (newCheckIn && newCheckOut) {
+          newWorkMinutes = Math.floor(
+            (newCheckOut.getTime() - newCheckIn.getTime()) / (60 * 1000)
+          );
+        }
+
+        // auto_status 재계산
+        const newAutoStatus = determineAutoStatus(
+          newCheckIn,
+          newCheckOut,
+          shiftStartHHMM,
+          shiftEndHHMM,
+          graceInMinutes,
+          graceOutMinutes
+        );
+
+        await tx.attendanceDaily.upsert({
+          where: {
+            employeeId_workDate: {
+              employeeId: target.employeeId,
+              workDate: target.startDate,
+            },
+          },
+          create: {
+            employeeId: target.employeeId,
+            workDate: target.startDate,
+            checkIn: newCheckIn,
+            checkOut: newCheckOut,
+            workMinutes: newWorkMinutes,
+            autoStatus: newAutoStatus,
+            isOverridden: true,
+            note: `결재정정 #${updated.id}`,
+          },
+          update: {
+            checkIn: newCheckIn,
+            checkOut: newCheckOut,
+            workMinutes: newWorkMinutes,
+            autoStatus: newAutoStatus,
+            isOverridden: true,
+            note: existing?.note ?? `결재정정 #${updated.id}`,
+          },
+        });
+        applied = 1;
+      } else if (category.type === "leave" || category.type === "work") {
+        // 휴가 / 외근·출장·재택: startDate~endDate 각 날 categoryId 세팅
+        // 출퇴근 시각은 기존값 유지 (있으면 그대로, 없으면 NULL)
+        // auto_status='normal' 강제 (휴가/외근은 정상 처리)
+        const days = daysBetween(target.startDate, target.endDate);
+
+        for (const ymd of days) {
+          const wd = new Date(ymd + "T00:00:00.000Z");
+
+          const existing = await tx.attendanceDaily.findUnique({
+            where: {
+              employeeId_workDate: {
+                employeeId: target.employeeId,
+                workDate: wd,
+              },
+            },
+          });
+
+          await tx.attendanceDaily.upsert({
+            where: {
+              employeeId_workDate: {
+                employeeId: target.employeeId,
+                workDate: wd,
+              },
+            },
+            create: {
+              employeeId: target.employeeId,
+              workDate: wd,
+              checkIn: null,
+              checkOut: null,
+              categoryId: target.categoryId,
+              autoStatus: "normal",
+              isOverridden: true,
+              note: `결재 #${updated.id} (${category.name})`,
+            },
+            update: {
+              categoryId: target.categoryId,
+              autoStatus: "normal",
+              isOverridden: true,
+              note: existing?.note ?? `결재 #${updated.id} (${category.name})`,
+            },
+          });
+          applied++;
+        }
+      }
+      // 그 외 카테고리 type (없음 — correction/leave/work 3종만)
+
+      return { updated, applied };
     });
 
-    return NextResponse.json({ id: updated.id, status: updated.status });
+    return NextResponse.json({
+      id: result.updated.id,
+      status: result.updated.status,
+      appliedDays: result.applied,
+    });
   } catch (error) {
     console.error("PUT /api/approvals error:", error);
     return NextResponse.json({ error: "결재 처리 실패" }, { status: 500 });

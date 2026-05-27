@@ -92,6 +92,7 @@ const EMPTY_FORM = {
   reason: "",
   correctedCheckIn: "",
   correctedCheckOut: "",
+  correctionType: "both" as "in_only" | "out_only" | "both",
 };
 
 export default function RequestPage() {
@@ -110,6 +111,18 @@ export default function RequestPage() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const [toast, setToast] = useState("");
+
+  // 정정 — 선택한 날의 현재 attendance_daily 기록
+  const [currentDaily, setCurrentDaily] = useState<{
+    workDate: string;
+    checkIn: string | null;
+    checkOut: string | null;
+    autoStatus: string | null;
+    workMinutes: number | null;
+    isOverridden: boolean;
+  } | null>(null);
+  const [dailyLoading, setDailyLoading] = useState(false);
+  const [dailyFetched, setDailyFetched] = useState(false);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -167,6 +180,46 @@ export default function RequestPage() {
     fetchRequests();
   }, [fetchRequests]);
 
+  // 정정 카테고리 + 날짜 변경 시 그 날 attendance_daily 자동 fetch
+  useEffect(() => {
+    const selCat = categories.find((c) => c.id === Number(form.categoryId));
+    if (!showForm || !currentId || selCat?.type !== "correction" || !form.startDate) {
+      setCurrentDaily(null);
+      setDailyFetched(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setDailyLoading(true);
+      setDailyFetched(false);
+      try {
+        const params = new URLSearchParams();
+        params.set("employeeId", String(currentId));
+        params.set("from", form.startDate);
+        params.set("to", form.startDate);
+        const res = await fetch(`/api/attendance-daily?${params}`);
+        if (cancelled) return;
+        if (res.ok) {
+          const list = await res.json();
+          setCurrentDaily(list.length > 0 ? list[0] : null);
+        } else {
+          setCurrentDaily(null);
+        }
+        setDailyFetched(true);
+      } catch {
+        if (!cancelled) {
+          setCurrentDaily(null);
+          setDailyFetched(true);
+        }
+      } finally {
+        if (!cancelled) setDailyLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showForm, currentId, form.categoryId, form.startDate, categories]);
+
   // status / category helper
   const getStatusLabel = (code: string): string => {
     const lookup = statusLookups.find((l) => l.code === code);
@@ -193,6 +246,14 @@ export default function RequestPage() {
   const openEdit = (r: AttendanceRequest) => {
     if (r.status !== "pending") return;
     setEditTarget(r);
+
+    // 정정 종류 추론
+    let inferredType: "in_only" | "out_only" | "both" = "both";
+    if (r.categoryType === "correction") {
+      if (r.correctedCheckIn && !r.correctedCheckOut) inferredType = "in_only";
+      else if (!r.correctedCheckIn && r.correctedCheckOut) inferredType = "out_only";
+    }
+
     setForm({
       categoryId: String(r.categoryId),
       startDate: r.startDate,
@@ -200,6 +261,7 @@ export default function RequestPage() {
       reason: r.reason || "",
       correctedCheckIn: isoToLocalInput(r.correctedCheckIn),
       correctedCheckOut: isoToLocalInput(r.correctedCheckOut),
+      correctionType: inferredType,
     });
     setFormError("");
     setShowForm(true);
@@ -220,13 +282,27 @@ export default function RequestPage() {
       return;
     }
     if (selectedCategory?.type === "correction") {
-      if (!form.correctedCheckIn || !form.correctedCheckOut) {
-        setFormError("근태정정은 정정 출근/퇴근 시각이 모두 필요합니다.");
+      // 단일 날짜 강제
+      if (form.startDate !== form.endDate) {
+        setFormError("정정은 단일 날짜만 가능합니다.");
         return;
       }
-      if (form.correctedCheckOut <= form.correctedCheckIn) {
-        setFormError("정정 퇴근 시각은 정정 출근 시각 이후여야 합니다.");
+      // 정정 종류별 검증
+      const needIn = form.correctionType === "in_only" || form.correctionType === "both";
+      const needOut = form.correctionType === "out_only" || form.correctionType === "both";
+      if (needIn && !form.correctedCheckIn) {
+        setFormError("새 출근 시각을 입력하세요.");
         return;
+      }
+      if (needOut && !form.correctedCheckOut) {
+        setFormError("새 퇴근 시각을 입력하세요.");
+        return;
+      }
+      if (needIn && needOut && form.correctedCheckOut && form.correctedCheckIn) {
+        if (form.correctedCheckOut <= form.correctedCheckIn) {
+          setFormError("정정 퇴근 시각은 정정 출근 시각 이후여야 합니다.");
+          return;
+        }
       }
     }
 
@@ -246,8 +322,10 @@ export default function RequestPage() {
         reason: form.reason.trim() || null,
       };
       if (selectedCategory?.type === "correction") {
-        payload.correctedCheckIn = form.correctedCheckIn || null;
-        payload.correctedCheckOut = form.correctedCheckOut || null;
+        const needIn = form.correctionType === "in_only" || form.correctionType === "both";
+        const needOut = form.correctionType === "out_only" || form.correctionType === "both";
+        payload.correctedCheckIn = needIn ? (form.correctedCheckIn || null) : null;
+        payload.correctedCheckOut = needOut ? (form.correctedCheckOut || null) : null;
       } else {
         payload.correctedCheckIn = null;
         payload.correctedCheckOut = null;
@@ -460,81 +538,183 @@ export default function RequestPage() {
                 </div>
               )}
 
-              {/* 기간 */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* 정정 종류 라디오 (correction 타입만) */}
+              {selectedCategory?.type === "correction" && (
+                <div className="bg-white border border-blue-200 rounded-xl p-3 space-y-2">
+                  <label className="block text-xs font-semibold text-blue-700">
+                    정정 종류 <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="flex gap-2">
+                    {[
+                      { value: "in_only", label: "출근만" },
+                      { value: "out_only", label: "퇴근만" },
+                      { value: "both", label: "출근/퇴근" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() =>
+                          setForm((f) => ({
+                            ...f,
+                            correctionType: opt.value as "in_only" | "out_only" | "both",
+                            // 종류 변경 시 사용 안 하는 시각 비움
+                            correctedCheckIn:
+                              opt.value === "out_only" ? "" : f.correctedCheckIn,
+                            correctedCheckOut:
+                              opt.value === "in_only" ? "" : f.correctedCheckOut,
+                          }))
+                        }
+                        className={`flex-1 px-3 py-2 text-sm rounded-lg border transition-colors ${
+                          form.correctionType === opt.value
+                            ? "bg-blue-500 text-white border-blue-500"
+                            : "bg-white text-blue-700 border-blue-200 hover:bg-blue-50"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 기간 — correction이면 단일 날짜, 그 외는 시작/종료 두 개 */}
+              {selectedCategory?.type === "correction" ? (
                 <div>
                   <label className="block text-xs font-semibold text-blue-700 mb-1">
-                    시작일 <span className="text-rose-500">*</span>
+                    정정할 날짜 <span className="text-rose-500">*</span>
                   </label>
                   <input
                     type="date"
                     value={form.startDate}
+                    max={todayYmd()}
                     onChange={(e) =>
                       setForm((f) => ({
                         ...f,
                         startDate: e.target.value,
-                        // 종료가 시작보다 이전이면 동기화
-                        endDate:
-                          f.endDate < e.target.value ? e.target.value : f.endDate,
+                        endDate: e.target.value,
                       }))
                     }
                     className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
                   />
                 </div>
-                <div>
-                  <label className="block text-xs font-semibold text-blue-700 mb-1">
-                    종료일 <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="date"
-                    value={form.endDate}
-                    min={form.startDate || undefined}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, endDate: e.target.value }))
-                    }
-                    className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
-                  />
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-blue-700 mb-1">
+                      시작일 <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={form.startDate}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          startDate: e.target.value,
+                          endDate:
+                            f.endDate < e.target.value ? e.target.value : f.endDate,
+                        }))
+                      }
+                      className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-blue-700 mb-1">
+                      종료일 <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={form.endDate}
+                      min={form.startDate || undefined}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, endDate: e.target.value }))
+                      }
+                      className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                    />
+                  </div>
                 </div>
-              </div>
+              )}
 
-              {/* 정정 시각 (correction 타입만) */}
+              {/* 현재 기록 + 새 시각 입력 (correction 타입만) */}
               {selectedCategory?.type === "correction" && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-white border border-blue-200 rounded-xl p-3">
-                  <div className="sm:col-span-2 text-[10px] text-blue-700">
-                    근태정정은 정정 시각이 필수입니다
+                <div className="space-y-3">
+                  {/* 현재 기록 */}
+                  <div className="bg-white border border-gray-200 rounded-xl p-3">
+                    <div className="text-xs font-semibold text-gray-500 mb-2">
+                      현재 기록
+                    </div>
+                    {dailyLoading ? (
+                      <div className="flex items-center gap-2 text-sm text-gray-400">
+                        <Loader2 size={14} className="animate-spin" />
+                        불러오는 중...
+                      </div>
+                    ) : dailyFetched && !currentDaily ? (
+                      <div className="text-sm text-amber-700 bg-amber-50 rounded-lg px-3 py-2">
+                        이 날의 출퇴근 기록이 없습니다 (무단결근 정정 신청 가능)
+                      </div>
+                    ) : currentDaily ? (
+                      <div className="grid grid-cols-2 gap-2 text-sm font-mono">
+                        <div>
+                          <span className="text-gray-500">출근 </span>
+                          <span className="text-gray-900 font-semibold">
+                            {currentDaily.checkIn
+                              ? formatDateTime(currentDaily.checkIn).split(" ")[1]
+                              : "-"}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">퇴근 </span>
+                          <span className="text-gray-900 font-semibold">
+                            {currentDaily.checkOut
+                              ? formatDateTime(currentDaily.checkOut).split(" ")[1]
+                              : "-"}
+                          </span>
+                        </div>
+                        {currentDaily.workMinutes !== null && (
+                          <div className="col-span-2 text-xs text-gray-500">
+                            근무: {Math.floor(currentDaily.workMinutes / 60)}시간{" "}
+                            {currentDaily.workMinutes % 60}분
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-blue-700 mb-1">
-                      정정 출근 <span className="text-rose-500">*</span>
-                    </label>
-                    <input
-                      type="datetime-local"
-                      value={form.correctedCheckIn}
-                      onChange={(e) =>
-                        setForm((f) => ({
-                          ...f,
-                          correctedCheckIn: e.target.value,
-                        }))
-                      }
-                      className="w-full px-3 py-2 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-blue-700 mb-1">
-                      정정 퇴근 <span className="text-rose-500">*</span>
-                    </label>
-                    <input
-                      type="datetime-local"
-                      value={form.correctedCheckOut}
-                      min={form.correctedCheckIn || undefined}
-                      onChange={(e) =>
-                        setForm((f) => ({
-                          ...f,
-                          correctedCheckOut: e.target.value,
-                        }))
-                      }
-                      className="w-full px-3 py-2 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
-                    />
+
+                  {/* 새 시각 입력 */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-white border border-blue-200 rounded-xl p-3">
+                    {(form.correctionType === "in_only" || form.correctionType === "both") && (
+                      <div>
+                        <label className="block text-xs font-semibold text-blue-700 mb-1">
+                          새 출근 시각 <span className="text-rose-500">*</span>
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={form.correctedCheckIn}
+                          onChange={(e) =>
+                            setForm((f) => ({ ...f, correctedCheckIn: e.target.value }))
+                          }
+                          className="w-full px-3 py-2 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                        />
+                      </div>
+                    )}
+                    {(form.correctionType === "out_only" || form.correctionType === "both") && (
+                      <div>
+                        <label className="block text-xs font-semibold text-blue-700 mb-1">
+                          새 퇴근 시각 <span className="text-rose-500">*</span>
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={form.correctedCheckOut}
+                          min={form.correctedCheckIn || undefined}
+                          onChange={(e) =>
+                            setForm((f) => ({ ...f, correctedCheckOut: e.target.value }))
+                          }
+                          className="w-full px-3 py-2 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                        />
+                      </div>
+                    )}
+                    <div className="sm:col-span-2 text-[10px] text-blue-700">
+                      선택한 시각만 결재 승인 후 적용됨. 다른 쪽은 기존 기록 유지.
+                    </div>
                   </div>
                 </div>
               )}
