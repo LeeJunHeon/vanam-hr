@@ -327,7 +327,9 @@ export default function AttendanceOverviewPage() {
               직원별 요약 ({summary.length}명)
             </h3>
           </div>
-          <div className="overflow-x-auto">
+
+          {/* 데스크탑 테이블 */}
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full">
               <thead>
                 <tr className="bg-white border-b border-gray-100">
@@ -380,6 +382,31 @@ export default function AttendanceOverviewPage() {
               </tbody>
             </table>
           </div>
+
+          {/* 모바일 카드 */}
+          <div className="md:hidden divide-y divide-gray-50">
+            {summary.map((s) => (
+              <div key={s.employeeId} className="px-4 py-3 space-y-1">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm font-semibold text-gray-900 truncate">
+                      {s.name}
+                    </span>
+                    <span className="text-xs text-gray-400 font-mono shrink-0">
+                      {s.employeeNo}
+                    </span>
+                  </div>
+                  <span className="text-xs text-gray-500 font-mono shrink-0">
+                    {s.attendedDays}일 · {formatWorkMinutes(s.totalMinutes)}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-400">
+                  {s.departmentName ?? "(부서 없음)"} ·{" "}
+                  {s.positionName ?? "(직급 없음)"}
+                </p>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -413,78 +440,122 @@ export default function AttendanceOverviewPage() {
             조회된 출퇴근 기록이 없습니다
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="bg-white border-b border-gray-100">
-                  <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
-                    날짜
-                  </th>
-                  <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
-                    사번
-                  </th>
-                  <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
-                    이름
-                  </th>
-                  <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
-                    부서
-                  </th>
-                  <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
-                    출근
-                  </th>
-                  <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
-                    퇴근
-                  </th>
-                  <th className="text-right text-xs font-semibold text-gray-500 px-5 py-3">
-                    근무시간
-                  </th>
-                  <th className="text-center text-xs font-semibold text-gray-500 px-5 py-3">
-                    상태
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.rows.map((r, idx) => (
-                  <tr
-                    key={`${r.employeeId}-${r.workDate}-${idx}`}
-                    className="border-b border-gray-50 hover:bg-blue-50/30"
-                  >
-                    <td className="px-5 py-3 text-sm text-gray-500 font-mono">
-                      {r.workDate}
-                    </td>
-                    <td className="px-5 py-3 text-sm text-gray-500 font-mono">
-                      {r.employeeNo}
-                    </td>
-                    <td className="px-5 py-3 text-sm font-semibold text-gray-900">
-                      {r.name}
-                    </td>
-                    <td className="px-5 py-3 text-sm text-gray-500">
-                      {r.departmentName ?? "-"}
-                    </td>
-                    <td className="px-5 py-3 text-sm text-gray-900 font-mono">
-                      {formatTime(r.checkIn)}
-                    </td>
-                    <td className="px-5 py-3 text-sm text-gray-900 font-mono">
-                      {formatTime(r.checkOut)}
-                    </td>
-                    <td className="px-5 py-3 text-sm text-gray-900 font-mono text-right">
-                      {formatWorkMinutes(r.workMinutes)}
-                    </td>
-                    <td className="px-5 py-3 text-center">
-                      <div className="inline-flex items-center gap-1">
-                        <StatusBadge status={r.autoStatus} />
-                        {r.isOverridden && (
-                          <span className="text-xs font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
-                            수동수정
-                          </span>
-                        )}
-                      </div>
-                    </td>
+          <>
+            {/* 데스크탑 테이블 */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-white border-b border-gray-100">
+                    <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
+                      날짜
+                    </th>
+                    <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
+                      사번
+                    </th>
+                    <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
+                      이름
+                    </th>
+                    <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
+                      부서
+                    </th>
+                    <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
+                      출근
+                    </th>
+                    <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
+                      퇴근
+                    </th>
+                    <th className="text-right text-xs font-semibold text-gray-500 px-5 py-3">
+                      근무시간
+                    </th>
+                    <th className="text-center text-xs font-semibold text-gray-500 px-5 py-3">
+                      상태
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {data.rows.map((r, idx) => (
+                    <tr
+                      key={`${r.employeeId}-${r.workDate}-${idx}`}
+                      className="border-b border-gray-50 hover:bg-blue-50/30"
+                    >
+                      <td className="px-5 py-3 text-sm text-gray-500 font-mono">
+                        {r.workDate}
+                      </td>
+                      <td className="px-5 py-3 text-sm text-gray-500 font-mono">
+                        {r.employeeNo}
+                      </td>
+                      <td className="px-5 py-3 text-sm font-semibold text-gray-900">
+                        {r.name}
+                      </td>
+                      <td className="px-5 py-3 text-sm text-gray-500">
+                        {r.departmentName ?? "-"}
+                      </td>
+                      <td className="px-5 py-3 text-sm text-gray-900 font-mono">
+                        {formatTime(r.checkIn)}
+                      </td>
+                      <td className="px-5 py-3 text-sm text-gray-900 font-mono">
+                        {formatTime(r.checkOut)}
+                      </td>
+                      <td className="px-5 py-3 text-sm text-gray-900 font-mono text-right">
+                        {formatWorkMinutes(r.workMinutes)}
+                      </td>
+                      <td className="px-5 py-3 text-center">
+                        <div className="inline-flex items-center gap-1">
+                          <StatusBadge status={r.autoStatus} />
+                          {r.isOverridden && (
+                            <span className="text-xs font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
+                              수동수정
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* 모바일 카드 */}
+            <div className="md:hidden divide-y divide-gray-50">
+              {data.rows.map((r, idx) => (
+                <div
+                  key={`${r.employeeId}-${r.workDate}-${idx}`}
+                  className="px-4 py-3 space-y-1.5"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-sm font-semibold text-gray-900 truncate">
+                        {r.name}
+                      </span>
+                      <span className="text-xs text-gray-400 font-mono shrink-0">
+                        {r.employeeNo}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <StatusBadge status={r.autoStatus} />
+                      {r.isOverridden && (
+                        <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-full">
+                          수동
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-gray-500 font-mono">{r.workDate}</span>
+                    <span className="text-gray-500">{r.departmentName ?? "-"}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-gray-900 font-mono">
+                      {formatTime(r.checkIn)} - {formatTime(r.checkOut)}
+                    </span>
+                    <span className="text-gray-700 font-mono font-semibold">
+                      {formatWorkMinutes(r.workMinutes)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
         )}
       </div>
     </div>
