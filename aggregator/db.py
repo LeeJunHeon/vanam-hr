@@ -125,6 +125,72 @@ class Database:
             row = c.fetchone()
             return row[0]
 
+    def get_employee_shift(
+        self,
+        employee_id: int,
+        work_date: date,
+    ) -> Optional[dict]:
+        """직원의 work_date 기준 시프트 schedule point 반환.
+
+        employee_shifts에서 (start_date <= work_date) AND (end_date IS NULL OR end_date >= work_date)
+        인 row를 찾고, 그 패턴의 schedule에서 (work_date - start_date).days % cycle_days
+        인덱스의 point를 반환.
+
+        반환: {patternId, patternName, dayIndex, start: 'HH:MM' | None, end: 'HH:MM' | None, type: str} or None
+        - type='off' 또는 start/end가 None이면 그 날은 휴무 — 호출자가 판정
+        - 매칭되는 시프트가 없으면 None (시프트 미배정)
+        """
+        self._ensure_connected()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute(
+                """
+                SELECT es.pattern_id, sp.name AS pattern_name,
+                       es.start_date, sp.cycle_days, sp.schedule
+                FROM hr.employee_shifts es
+                JOIN hr.shift_patterns sp ON sp.id = es.pattern_id
+                WHERE es.employee_id = %s
+                  AND es.start_date <= %s
+                  AND (es.end_date IS NULL OR es.end_date >= %s)
+                  AND sp.is_active = true
+                ORDER BY es.start_date DESC
+                LIMIT 1
+                """,
+                (employee_id, work_date, work_date),
+            )
+            row = c.fetchone()
+            if not row:
+                return None
+
+            pattern_id = row["pattern_id"]
+            pattern_name = row["pattern_name"]
+            start_date = row["start_date"]
+            cycle_days = row["cycle_days"]
+            schedule = row["schedule"]
+
+            if not isinstance(schedule, list) or cycle_days < 1:
+                return None
+
+            # day_offset 계산
+            day_offset = (work_date - start_date).days % cycle_days
+
+            # schedule에서 dayIndex == day_offset 인 point 찾기
+            point = None
+            for p in schedule:
+                if isinstance(p, dict) and p.get("dayIndex") == day_offset:
+                    point = p
+                    break
+            if point is None:
+                return None
+
+            return {
+                "patternId": pattern_id,
+                "patternName": pattern_name,
+                "dayIndex": day_offset,
+                "start": point.get("start"),
+                "end": point.get("end"),
+                "type": point.get("type", "day"),
+            }
+
     def upsert_attendance_daily(
         self,
         employee_id: int,

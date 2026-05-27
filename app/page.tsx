@@ -19,6 +19,7 @@ import CalendarPage from "@/components/CalendarPage";
 import LookupsPage from "@/components/LookupsPage";
 import NotMappedNoticePage from "@/components/NotMappedNoticePage";
 import AttendanceOverviewPage from "@/components/AttendanceOverviewPage";
+import EmployeeShiftsPage from "@/components/EmployeeShiftsPage";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 
 const PAGE_TITLES: Record<PageId, string> = {
@@ -31,6 +32,7 @@ const PAGE_TITLES: Record<PageId, string> = {
   org: "부서/직급",
   devices: "디바이스 관리",
   shifts: "시프트 패턴",
+  "employee-shifts": "직원별 시프트",
   "approval-lines": "결재선 설정",
   categories: "근태 항목",
   policies: "정책 설정",
@@ -89,6 +91,7 @@ export default function Home() {
       case "org":             return <OrgPage />;
       case "devices":         return <DevicesPage />;
       case "shifts":          return <ShiftsPage />;
+      case "employee-shifts": return <EmployeeShiftsPage />;
       case "approval-lines":  return <ApprovalLinesPage />;
       case "categories":      return <CategoriesPage />;
       case "policies":        return <PoliciesPage />;

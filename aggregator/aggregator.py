@@ -12,8 +12,16 @@ is_overridden=true 인 row는 건드리지 않음.
      → last_online (폴러 장애 등 안전망)
   3) 마지막 INSERT가 online + grace 미경과 → None (아직 사무실)
 - grace_minutes는 hr.policy_settings.debounce_minutes에서 읽음 (기본 60)
-- auto_status: check_in+check_out 둘 다 있음 → 'normal',
-  둘 다 없음 → 'absent', 그 외 → None (판정 보류)
+- auto_status: 시프트 매칭 후 정책 A 판정 (지각/조퇴 정교화)
+  - 시프트 없음 또는 휴무: 단순 (normal/absent/None)
+  - 시프트 있음:
+    - check_in > 시프트시작 + grace_in_minutes → 'late'
+    - 근무시간 < 시프트시간 - grace_out_minutes → 'early_leave'
+    - 그 외 둘 다 있음 → 'normal'
+    - 둘 다 없음 → 'absent'
+    - 한쪽만 → None (판정 보류)
+  - grace_in_minutes는 hr.policy_settings (기본 10)
+  - grace_out_minutes는 hr.policy_settings (기본 0)
 
 work_date 귀속 (야간 근무자 정책):
 - 새벽 cutoff_hour 시 이전 활동은 전일 work_date로 귀속
@@ -125,12 +133,32 @@ class Aggregator:
             )
             cutoff_hour = 4
 
+        # 시프트 매칭 정책 (정책 A 기반)
+        grace_in_raw = self.db.get_policy("grace_in_minutes")
+        try:
+            grace_in_minutes = int(grace_in_raw) if grace_in_raw else 10
+        except ValueError:
+            self.logger.warning(
+                f"grace_in_minutes 값 파싱 실패 ({grace_in_raw}), 기본 10 사용"
+            )
+            grace_in_minutes = 10
+
+        grace_out_raw = self.db.get_policy("grace_out_minutes")
+        try:
+            grace_out_minutes = int(grace_out_raw) if grace_out_raw else 0
+        except ValueError:
+            self.logger.warning(
+                f"grace_out_minutes 값 파싱 실패 ({grace_out_raw}), 기본 0 사용"
+            )
+            grace_out_minutes = 0
+
         today = self.db.get_work_date_kst(cutoff_hour)
         yesterday = today - timedelta(days=1)
         self.logger.info(
             f"=== Aggregate 사이클 시작 "
             f"(work_date today={today}, yesterday={yesterday}, "
-            f"grace={grace_minutes}분, cutoff={cutoff_hour}시) ==="
+            f"grace={grace_minutes}분, cutoff={cutoff_hour}시, "
+            f"grace_in={grace_in_minutes}분, grace_out={grace_out_minutes}분) ==="
         )
 
         # 모든 직원 동일 기준 시각 사용 (UTC timezone-aware)
@@ -155,7 +183,13 @@ class Aggregator:
         for emp in employees:
             for work_date in (yesterday, today):
                 result = self._process_employee_work_date(
-                    emp, work_date, grace_minutes, cutoff_hour, now
+                    emp,
+                    work_date,
+                    grace_minutes,
+                    cutoff_hour,
+                    grace_in_minutes,
+                    grace_out_minutes,
+                    now,
                 )
                 if result == "upsert":
                     upsert_count += 1
@@ -176,6 +210,8 @@ class Aggregator:
         work_date,
         grace_minutes: int,
         cutoff_hour: int,
+        grace_in_minutes: int,
+        grace_out_minutes: int,
         now: datetime,
     ) -> str:
         """단일 직원 + 단일 work_date 처리. 반환: 'upsert' | 'overridden' | 'no_data'."""
@@ -199,17 +235,17 @@ class Aggregator:
             delta = check_out - check_in
             work_minutes = int(delta.total_seconds() // 60)
 
-        # auto_status 판정 (단순 버전)
-        # - check_in/check_out 모두 있음 → 'normal'
-        # - 둘 다 없음 → 'absent'
-        # - 그 외 (출근만 또는 퇴근만) → NULL (판정 보류)
-        # 향후: 시프트 패턴 매칭 후 grace_in/out 정책으로 late/early_leave 세분화 예정
-        if check_in is not None and check_out is not None:
-            auto_status = "normal"
-        elif check_in is None and check_out is None:
-            auto_status = "absent"
-        else:
-            auto_status = None
+        # 시프트 매칭 (없으면 None)
+        shift_info = self.db.get_employee_shift(emp_id, work_date)
+
+        # auto_status 판정
+        auto_status = self._determine_auto_status(
+            check_in=check_in,
+            check_out=check_out,
+            shift_info=shift_info,
+            grace_in_minutes=grace_in_minutes,
+            grace_out_minutes=grace_out_minutes,
+        )
 
         new_id = self.db.upsert_attendance_daily(
             employee_id=emp_id,
@@ -227,12 +263,97 @@ class Aggregator:
             )
             return "overridden"
         else:
+            shift_label = (
+                f"shift={shift_info['patternName']}({shift_info['start']}~{shift_info['end']})"
+                if shift_info and shift_info.get("start") and shift_info.get("end")
+                else "shift=none"
+            )
             self.logger.info(
                 f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} — "
                 f"check_in={check_in}, check_out={check_out}, "
-                f"work_minutes={work_minutes}, id={new_id}"
+                f"work_minutes={work_minutes}, auto_status={auto_status}, "
+                f"{shift_label}, id={new_id}"
             )
             return "upsert"
+
+    def _determine_auto_status(
+        self,
+        check_in: Optional[datetime],
+        check_out: Optional[datetime],
+        shift_info: Optional[dict],
+        grace_in_minutes: int,
+        grace_out_minutes: int,
+    ) -> Optional[str]:
+        """정책 A 기반 auto_status 판정.
+
+        규칙:
+        1) 시프트 정보 없거나 휴무 → 단순 판정 (normal/absent)
+        2) 시프트 있음 + 둘 다 NULL → 'absent'
+        3) 시프트 있음 + 둘 중 하나 NULL → None (판정 보류)
+        4) 시프트 있음 + 둘 다 있음:
+           - 출근 시각이 시프트 시작 + grace_in_minutes 초과 → 'late'
+           - 근무시간 < 시프트 총 근무시간 - grace_out_minutes → 'early_leave'
+           - 그 외 → 'normal'
+        """
+        # 시프트 없거나 휴무 → 단순 판정
+        if (
+            shift_info is None
+            or shift_info.get("type") == "off"
+            or not shift_info.get("start")
+            or not shift_info.get("end")
+        ):
+            if check_in is not None and check_out is not None:
+                return "normal"
+            elif check_in is None and check_out is None:
+                return "absent"
+            else:
+                return None
+
+        # 시프트 있음 + 둘 다 NULL → absent
+        if check_in is None and check_out is None:
+            return "absent"
+
+        # 시프트 있음 + 한쪽만 → 판정 보류
+        if check_in is None or check_out is None:
+            return None
+
+        # 시프트 시작/종료 시각 파싱
+        shift_start_str = shift_info["start"]  # "HH:MM"
+        shift_end_str = shift_info["end"]
+        try:
+            sh_h, sh_m = map(int, shift_start_str.split(":"))
+            eh_h, eh_m = map(int, shift_end_str.split(":"))
+        except (ValueError, AttributeError):
+            # 시프트 시각 파싱 실패 — 단순 'normal'
+            return "normal"
+
+        # 시프트 총 근무시간 (분) — 자정 넘김 처리
+        shift_minutes = (eh_h * 60 + eh_m) - (sh_h * 60 + sh_m)
+        if shift_minutes <= 0:
+            shift_minutes += 24 * 60  # 야간 시프트 (예: 22:00~06:00)
+
+        # 시프트 시작 시각을 check_in 날짜 기준 datetime으로 변환
+        check_in_date = check_in.date()
+        shift_start_dt = check_in.replace(
+            hour=sh_h, minute=sh_m, second=0, microsecond=0
+        )
+
+        # 만약 check_in이 시프트 시작 시각보다 너무 일찍이면 (예: 7시 출근, 9시 시프트):
+        # → 일찍 도착한 것이므로 지각 아님
+
+        # 1) 출근 지각 체크
+        from datetime import timedelta
+        late_threshold = shift_start_dt + timedelta(minutes=grace_in_minutes)
+        if check_in > late_threshold:
+            return "late"
+
+        # 2) 근무시간 부족 (조퇴) 체크
+        actual_minutes = int((check_out - check_in).total_seconds() / 60)
+        required_minutes = shift_minutes - grace_out_minutes
+        if actual_minutes < required_minutes:
+            return "early_leave"
+
+        return "normal"
 
     def run(self):
         """메인 루프. time.monotonic() 기반 fixed-rate scheduling.

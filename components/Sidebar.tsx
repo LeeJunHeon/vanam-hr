@@ -12,7 +12,8 @@ import {
 export type PageId =
   | "dashboard" | "my-attendance" | "request" | "approval"
   | "attendance-overview"
-  | "employees" | "org" | "devices" | "shifts" | "approval-lines"
+  | "employees" | "org" | "devices" | "shifts" | "employee-shifts"
+  | "approval-lines"
   | "categories" | "policies" | "calendar" | "lookups";
 
 interface NavItem {
@@ -36,6 +37,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "org",            label: "부서/직급",      icon: Building2,   group: "관리자", adminOnly: true },
   { id: "devices",        label: "디바이스 관리",  icon: Smartphone,  group: "관리자", adminOnly: true },
   { id: "shifts",         label: "시프트 패턴",    icon: Clock,       group: "관리자", adminOnly: true },
+  { id: "employee-shifts", label: "직원별 시프트",  icon: Clock,       group: "관리자", adminOnly: true },
   { id: "approval-lines", label: "결재선 설정",    icon: Users,       group: "관리자", adminOnly: true },
   // 시스템
   { id: "categories",     label: "근태 항목",      icon: Layers,      group: "시스템", adminOnly: true },
