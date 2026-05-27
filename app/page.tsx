@@ -18,6 +18,7 @@ import PoliciesPage from "@/components/PoliciesPage";
 import CalendarPage from "@/components/CalendarPage";
 import LookupsPage from "@/components/LookupsPage";
 import NotMappedNoticePage from "@/components/NotMappedNoticePage";
+import AttendanceOverviewPage from "@/components/AttendanceOverviewPage";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 
 const PAGE_TITLES: Record<PageId, string> = {
@@ -25,6 +26,7 @@ const PAGE_TITLES: Record<PageId, string> = {
   "my-attendance": "내 근태",
   request: "휴가/근태 신청",
   approval: "결재함",
+  "attendance-overview": "전체 근태 조회",
   employees: "직원 관리",
   org: "부서/직급",
   devices: "디바이스 관리",
@@ -78,11 +80,12 @@ export default function Home() {
       return <DashboardPage />;
     }
     switch (page) {
-      case "dashboard":       return <DashboardPage />;
-      case "my-attendance":   return <MyAttendancePage />;
-      case "request":         return <RequestPage />;
-      case "approval":        return <ApprovalPage />;
-      case "employees":       return <EmployeesPage />;
+      case "dashboard":          return <DashboardPage />;
+      case "my-attendance":      return <MyAttendancePage />;
+      case "request":            return <RequestPage />;
+      case "approval":           return <ApprovalPage />;
+      case "attendance-overview": return <AttendanceOverviewPage />;
+      case "employees":          return <EmployeesPage />;
       case "org":             return <OrgPage />;
       case "devices":         return <DevicesPage />;
       case "shifts":          return <ShiftsPage />;

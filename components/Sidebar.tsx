@@ -6,11 +6,12 @@ import {
   Home, Calendar, FileText, CheckSquare,
   Users, Building2, Smartphone, Clock,
   Layers, Settings, CalendarDays, Tag,
-  LogOut, X, ArrowLeft,
+  LogOut, X, ArrowLeft, BarChart3,
 } from "lucide-react";
 
 export type PageId =
   | "dashboard" | "my-attendance" | "request" | "approval"
+  | "attendance-overview"
   | "employees" | "org" | "devices" | "shifts" | "approval-lines"
   | "categories" | "policies" | "calendar" | "lookups";
 
@@ -30,6 +31,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "request",        label: "휴가/근태 신청", icon: FileText },
   { id: "approval",       label: "결재함",         icon: CheckSquare },
   // 관리자
+  { id: "attendance-overview", label: "전체 근태 조회", icon: BarChart3,   group: "관리자", adminOnly: true },
   { id: "employees",      label: "직원 관리",      icon: Users,       group: "관리자", adminOnly: true },
   { id: "org",            label: "부서/직급",      icon: Building2,   group: "관리자", adminOnly: true },
   { id: "devices",        label: "디바이스 관리",  icon: Smartphone,  group: "관리자", adminOnly: true },
