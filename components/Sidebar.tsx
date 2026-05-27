@@ -142,7 +142,7 @@ export default function Sidebar({
                 <Users size={18} className="text-white" />
               </div>
               <div>
-                <h1 className="text-sm font-bold text-gray-900">인사·근태 시스템</h1>
+                <h1 className="text-sm font-bold text-gray-900">근태 관리</h1>
                 <p className="text-[10px] text-gray-400">HR System</p>
               </div>
             </div>

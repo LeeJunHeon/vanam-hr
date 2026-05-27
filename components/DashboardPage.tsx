@@ -374,7 +374,7 @@ function PresenceCard() {
     <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold text-gray-900">
-          오늘 사무실 연결 상태
+          오늘 나의 연결 상태
         </h3>
         <button
           onClick={() => fetchPresence(true)}
