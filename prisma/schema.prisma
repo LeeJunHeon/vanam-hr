@@ -259,7 +259,7 @@ model Device {
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  employee     Employee      @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  employee     Employee      @relation(fields: [employeeId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   presenceRaws PresenceRaw[]
 
   @@index([employeeId, isActive], map: "idx_devices_employee")
@@ -278,7 +278,7 @@ model EmployeeShift {
   createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  employee Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  employee Employee     @relation(fields: [employeeId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   pattern  ShiftPattern @relation(fields: [patternId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([employeeId, startDate], map: "idx_employee_shifts")
@@ -319,7 +319,7 @@ model PresenceRaw {
   rawValue   String?  @map("raw_value")
 
   employee Employee? @relation(fields: [employeeId], references: [id], onUpdate: NoAction)
-  device   Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  device   Device    @relation(fields: [deviceId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@index([deviceId, checkedAt(sort: Desc)], map: "idx_presence_raw_dev_time")
   @@index([employeeId, checkedAt(sort: Desc)], map: "idx_presence_raw_emp_time")
@@ -346,7 +346,7 @@ model AttendanceDaily {
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  employee     Employee            @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  employee     Employee            @relation(fields: [employeeId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   category     AttendanceCategory? @relation(fields: [categoryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   shiftPattern ShiftPattern?       @relation(fields: [shiftPatternId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
@@ -379,7 +379,7 @@ model AttendanceRequest {
   requestedAt       DateTime  @default(now()) @map("requested_at") @db.Timestamptz(6)
   updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  employee        Employee           @relation("RequestEmployee", fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  employee        Employee           @relation("RequestEmployee", fields: [employeeId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   category        AttendanceCategory @relation(fields: [categoryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   primaryApprover Employee?          @relation("RequestPrimaryApprover", fields: [primaryApproverId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   deputyApprover  Employee?          @relation("RequestDeputyApprover", fields: [deputyApproverId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -431,7 +431,7 @@ model MonthlyConfirmation {
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@unique([employeeId, yearMonth], map: "uk_monthly_confirm")
   @@index([yearMonth, confirmedAt], map: "idx_monthly_confirm")

@@ -60,14 +60,20 @@ class Database:
             return row[0] if row else None
 
     def get_active_devices(self) -> list[dict]:
-        """활성 디바이스 목록. {id, employee_id, mac_address}."""
+        """활성 디바이스 목록 (활성 직원만). {id, employee_id, mac_address}.
+
+        직원이 비활성(is_active=false)이면 그 디바이스도 폴링 대상에서 제외.
+        이렇게 해서 비활성 직원의 raw 기록이 쌓이지 않도록 보장.
+        """
         self._ensure_connected()
         with self.conn.cursor(cursor_factory=RealDictCursor) as c:
             c.execute(
                 """
-                SELECT id, employee_id, mac_address
-                FROM hr.devices
-                WHERE is_active = true
+                SELECT d.id, d.employee_id, d.mac_address
+                FROM hr.devices d
+                JOIN hr.employees e ON e.id = d.employee_id
+                WHERE d.is_active = true
+                  AND e.is_active = true
                 """
             )
             return [dict(r) for r in c.fetchall()]
