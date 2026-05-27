@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import { exportCSV } from "@/lib/csvUtils";
+import DatePicker from "@/components/DatePicker";
 
 interface AttendanceRequest {
   id: number;
@@ -76,13 +77,11 @@ function formatDateTime(iso: string | null): string {
   )} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
-// datetime-local input value 변환 (ISO → "YYYY-MM-DDTHH:MM")
-function isoToLocalInput(iso: string | null): string {
+// ISO 문자열에서 시간만 "HH:MM" 형태로 추출 (시간대 변환 후 로컬 시간 기준)
+function isoToTimeInput(iso: string | null): string {
   if (!iso) return "";
   const d = new Date(iso);
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(
-    d.getDate()
-  )}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
 const EMPTY_FORM = {
@@ -259,8 +258,8 @@ export default function RequestPage() {
       startDate: r.startDate,
       endDate: r.endDate,
       reason: r.reason || "",
-      correctedCheckIn: isoToLocalInput(r.correctedCheckIn),
-      correctedCheckOut: isoToLocalInput(r.correctedCheckOut),
+      correctedCheckIn: isoToTimeInput(r.correctedCheckIn),
+      correctedCheckOut: isoToTimeInput(r.correctedCheckOut),
       correctionType: inferredType,
     });
     setFormError("");
@@ -324,8 +323,13 @@ export default function RequestPage() {
       if (selectedCategory?.type === "correction") {
         const needIn = form.correctionType === "in_only" || form.correctionType === "both";
         const needOut = form.correctionType === "out_only" || form.correctionType === "both";
-        payload.correctedCheckIn = needIn ? (form.correctedCheckIn || null) : null;
-        payload.correctedCheckOut = needOut ? (form.correctedCheckOut || null) : null;
+        // form.startDate (YYYY-MM-DD) + form.correctedCheckIn (HH:MM) → ISO
+        payload.correctedCheckIn = needIn && form.correctedCheckIn
+          ? `${form.startDate}T${form.correctedCheckIn}:00`
+          : null;
+        payload.correctedCheckOut = needOut && form.correctedCheckOut
+          ? `${form.startDate}T${form.correctedCheckOut}:00`
+          : null;
       } else {
         payload.correctedCheckIn = null;
         payload.correctedCheckOut = null;
@@ -583,18 +587,13 @@ export default function RequestPage() {
                   <label className="block text-xs font-semibold text-blue-700 mb-1">
                     정정할 날짜 <span className="text-rose-500">*</span>
                   </label>
-                  <input
-                    type="date"
+                  <DatePicker
                     value={form.startDate}
                     max={todayYmd()}
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        startDate: e.target.value,
-                        endDate: e.target.value,
-                      }))
+                    placeholder="정정할 날짜 선택"
+                    onChange={(val) =>
+                      setForm((f) => ({ ...f, startDate: val, endDate: val }))
                     }
-                    className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
                   />
                 </div>
               ) : (
@@ -603,32 +602,27 @@ export default function RequestPage() {
                     <label className="block text-xs font-semibold text-blue-700 mb-1">
                       시작일 <span className="text-rose-500">*</span>
                     </label>
-                    <input
-                      type="date"
+                    <DatePicker
                       value={form.startDate}
-                      onChange={(e) =>
+                      placeholder="시작일 선택"
+                      onChange={(val) =>
                         setForm((f) => ({
                           ...f,
-                          startDate: e.target.value,
-                          endDate:
-                            f.endDate < e.target.value ? e.target.value : f.endDate,
+                          startDate: val,
+                          endDate: f.endDate < val ? val : f.endDate,
                         }))
                       }
-                      className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
                     />
                   </div>
                   <div>
                     <label className="block text-xs font-semibold text-blue-700 mb-1">
                       종료일 <span className="text-rose-500">*</span>
                     </label>
-                    <input
-                      type="date"
+                    <DatePicker
                       value={form.endDate}
                       min={form.startDate || undefined}
-                      onChange={(e) =>
-                        setForm((f) => ({ ...f, endDate: e.target.value }))
-                      }
-                      className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                      placeholder="종료일 선택"
+                      onChange={(val) => setForm((f) => ({ ...f, endDate: val }))}
                     />
                   </div>
                 </div>
@@ -687,7 +681,7 @@ export default function RequestPage() {
                           새 출근 시각 <span className="text-rose-500">*</span>
                         </label>
                         <input
-                          type="datetime-local"
+                          type="time"
                           value={form.correctedCheckIn}
                           onChange={(e) =>
                             setForm((f) => ({ ...f, correctedCheckIn: e.target.value }))
@@ -702,7 +696,7 @@ export default function RequestPage() {
                           새 퇴근 시각 <span className="text-rose-500">*</span>
                         </label>
                         <input
-                          type="datetime-local"
+                          type="time"
                           value={form.correctedCheckOut}
                           min={form.correctedCheckIn || undefined}
                           onChange={(e) =>

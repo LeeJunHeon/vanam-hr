@@ -11,6 +11,7 @@ import {
   User,
   AlertCircle,
 } from "lucide-react";
+import DatePicker from "@/components/DatePicker";
 
 interface Assignment {
   id: number;
@@ -348,13 +349,10 @@ export default function EmployeeShiftsPage() {
               <label className="block text-xs font-semibold text-blue-700 mb-1">
                 시작일 <span className="text-rose-500">*</span>
               </label>
-              <input
-                type="date"
+              <DatePicker
                 value={form.startDate}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, startDate: e.target.value }))
-                }
-                className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                placeholder="시작일 선택"
+                onChange={(val) => setForm((f) => ({ ...f, startDate: val }))}
               />
               <p className="text-[10px] text-gray-500 mt-1">
                 시프트 사이클의 첫 날 (dayIndex 0 시작 기준일)
@@ -366,14 +364,11 @@ export default function EmployeeShiftsPage() {
               <label className="block text-xs font-semibold text-blue-700 mb-1">
                 종료일
               </label>
-              <input
-                type="date"
+              <DatePicker
                 value={form.endDate}
                 min={form.startDate || undefined}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, endDate: e.target.value }))
-                }
-                className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                placeholder="종료일 선택"
+                onChange={(val) => setForm((f) => ({ ...f, endDate: val }))}
               />
               <p className="text-[10px] text-gray-500 mt-1">
                 비우면 무기한 (현재 시프트)

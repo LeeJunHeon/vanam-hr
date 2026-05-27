@@ -14,6 +14,7 @@ import {
   Info,
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
+import DatePicker from "@/components/DatePicker";
 
 interface Employee {
   id: number;
@@ -556,13 +557,10 @@ export default function EmployeesPage() {
               <label className="block text-xs font-semibold text-blue-700 mb-1">
                 입사일
               </label>
-              <input
-                type="date"
+              <DatePicker
                 value={form.hiredAt}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, hiredAt: e.target.value }))
-                }
-                className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                placeholder="입사일 선택"
+                onChange={(val) => setForm((f) => ({ ...f, hiredAt: val }))}
               />
               <p className="text-[10px] text-gray-500 mt-1">
                 선택 입력. 빈 값으로 두면 나중에 채울 수 있습니다.
@@ -574,14 +572,11 @@ export default function EmployeesPage() {
               <label className="block text-xs font-semibold text-blue-700 mb-1">
                 퇴사일
               </label>
-              <input
-                type="date"
+              <DatePicker
                 value={form.resignedAt}
                 min={form.hiredAt || undefined}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, resignedAt: e.target.value }))
-                }
-                className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                placeholder="퇴사일 선택"
+                onChange={(val) => setForm((f) => ({ ...f, resignedAt: val }))}
               />
               <p className="text-[10px] text-gray-500 mt-1">
                 입사일 이후여야 합니다. 빈 값 = 재직 중.

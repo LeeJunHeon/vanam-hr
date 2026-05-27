@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
+import DatePicker from "@/components/DatePicker";
 
 interface AttendanceRow {
   employeeId: number;
@@ -340,23 +341,21 @@ export default function AttendanceOverviewPage() {
             <label className="block text-xs font-semibold text-gray-500 mb-1">
               시작일
             </label>
-            <input
-              type="date"
+            <DatePicker
               value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+              placeholder="시작일 선택"
+              onChange={(val) => setStartDate(val)}
             />
           </div>
           <div>
             <label className="block text-xs font-semibold text-gray-500 mb-1">
               종료일
             </label>
-            <input
-              type="date"
+            <DatePicker
               value={endDate}
               min={startDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+              placeholder="종료일 선택"
+              onChange={(val) => setEndDate(val)}
             />
           </div>
           {canChooseDepartment && (

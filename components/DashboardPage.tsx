@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import type { PageId } from "@/components/Sidebar";
+import DatePicker from "@/components/DatePicker";
 
 // ============================================
 // 공통 타입
@@ -282,11 +283,10 @@ function PeriodPicker({
 }: PeriodPickerProps) {
   if (period === "day") {
     return (
-      <input
-        type="date"
+      <DatePicker
         value={targetDate}
-        onChange={(e) => onChangeDate(e.target.value)}
-        className="px-3 py-1.5 text-xs font-semibold bg-white border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+        placeholder="날짜 선택"
+        onChange={(val) => onChangeDate(val)}
       />
     );
   }
