@@ -53,7 +53,7 @@ export default function Home() {
 
   const userName = session?.user?.name ?? "로딩중...";
   const userRole = session?.user?.role ?? "";
-  const isAdmin = userRole === "admin";
+  const isAdmin = userRole === "admin" || userRole === "ceo";
   // /api/me 응답 기반 — admin은 매핑 없이도 통과
   const isMapped = me?.isMapped ?? false;
   const showNotMapped = !meLoading && !isAdmin && !isMapped;
@@ -77,10 +77,10 @@ export default function Home() {
     }
     // 권한 부족 가드 (effect 동기화 전 한 프레임 보호)
     if (!isAdmin && isAdminOnlyPage(page)) {
-      return <DashboardPage />;
+      return <DashboardPage onNavigate={setPage} />;
     }
     switch (page) {
-      case "dashboard":          return <DashboardPage />;
+      case "dashboard":          return <DashboardPage onNavigate={setPage} />;
       case "my-attendance":      return <MyAttendancePage />;
       case "request":            return <RequestPage />;
       case "approval":           return <ApprovalPage />;
@@ -94,7 +94,7 @@ export default function Home() {
       case "policies":        return <PoliciesPage />;
       case "calendar":        return <CalendarPage />;
       case "lookups":         return <LookupsPage />;
-      default:                return <DashboardPage />;
+      default:                return <DashboardPage onNavigate={setPage} />;
     }
   };
 

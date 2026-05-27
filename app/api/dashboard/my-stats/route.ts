@@ -1,15 +1,16 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
 
-// GET /api/dashboard/my-stats
-// 본인 대시보드용 통계 — admin이 아니거나 매핑된 일반 사용자가 사용.
-// 카드 4종:
-//   1) myThisMonthAttended   : 이번달 본인 출근일 수 (checkIn != null)
-//   2) myThisMonthLeaveDays  : 이번달 본인 휴가 사용일 (category.annual_leave_deduct 합)
-//   3) myPendingRequests     : 본인이 신청한 pending 요청 수
-//   4) myPendingApprovals    : 본인이 결재해야 할 pending 요청 수 (primary 또는 deputy)
-export async function GET() {
+// GET /api/dashboard/my-stats?period=day|month|year&targetDate=...&targetMonth=...&targetYear=...
+//
+// 본인 대시보드용 통계 (period 적용)
+// 카드 4종 (모두 동적):
+//   1) myAttended : 기간 내 본인 출근일 수
+//   2) myLeaveDays : 기간 내 본인 휴가 사용일
+//   3) myPendingRequests : 기간 내 본인이 신청한 것 중 pending
+//   4) myCompletedRequests : 기간 내 본인이 신청한 것 중 approved
+export async function GET(request: NextRequest) {
   const r = await requireSession();
   if (!r.ok) return r.response;
   const { session } = r;
@@ -26,37 +27,65 @@ export async function GET() {
   }
 
   try {
-    // KST 기준 이번달 시작/끝 계산 (raw query로 안전하게)
-    const monthRange = await prisma.$queryRaw<
-      Array<{ month_start: Date; next_month_start: Date }>
-    >`
-      WITH t AS (
-        SELECT date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')::date AS month_start
-      )
-      SELECT
-        month_start,
-        (month_start + interval '1 month')::date AS next_month_start
-      FROM t
-    `;
-    const { month_start, next_month_start } = monthRange[0];
+    const { searchParams } = new URL(request.url);
+    const period = (searchParams.get("period") || "month") as
+      | "day"
+      | "month"
+      | "year";
+    const targetDate = searchParams.get("targetDate");
+    const targetMonth = searchParams.get("targetMonth");
+    const targetYear = searchParams.get("targetYear");
+
+    const now = new Date();
+    let rangeStart: Date;
+    let rangeEnd: Date;
+
+    if (period === "day") {
+      const d = targetDate
+        ? new Date(targetDate + "T00:00:00.000Z")
+        : new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      rangeStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      rangeEnd = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+    } else if (period === "month") {
+      let y: number, m: number;
+      if (targetMonth && /^\d{4}-\d{2}$/.test(targetMonth)) {
+        const parts = targetMonth.split("-");
+        y = Number(parts[0]);
+        m = Number(parts[1]) - 1;
+      } else {
+        y = now.getFullYear();
+        m = now.getMonth();
+      }
+      rangeStart = new Date(y, m, 1);
+      rangeEnd = new Date(y, m + 1, 1);
+    } else {
+      let y: number;
+      if (targetYear && /^\d{4}$/.test(targetYear)) {
+        y = Number(targetYear);
+      } else {
+        y = now.getFullYear();
+      }
+      rangeStart = new Date(y, 0, 1);
+      rangeEnd = new Date(y + 1, 0, 1);
+    }
 
     const [
-      myThisMonthAttended,
-      myThisMonthLeaveRows,
+      myAttended,
+      myLeaveRaw,
       myPendingRequests,
-      myPendingApprovals,
+      myCompletedRequests,
     ] = await Promise.all([
       prisma.attendanceDaily.count({
         where: {
           employeeId: employeeId as number,
-          workDate: { gte: month_start, lt: next_month_start },
+          workDate: { gte: rangeStart, lt: rangeEnd },
           checkIn: { not: null },
         },
       }),
       prisma.attendanceDaily.findMany({
         where: {
           employeeId: employeeId as number,
-          workDate: { gte: month_start, lt: next_month_start },
+          workDate: { gte: rangeStart, lt: rangeEnd },
           category: { annualLeaveDeduct: { not: null } },
         },
         include: { category: { select: { annualLeaveDeduct: true } } },
@@ -65,33 +94,35 @@ export async function GET() {
         where: {
           employeeId: employeeId as number,
           status: "pending",
+          requestedAt: { gte: rangeStart, lt: rangeEnd },
         },
       }),
       prisma.attendanceRequest.count({
         where: {
-          status: "pending",
-          OR: [
-            { primaryApproverId: employeeId as number },
-            { deputyApproverId: employeeId as number },
-          ],
-          // 본인 신청 제외
-          NOT: { employeeId: employeeId as number },
+          employeeId: employeeId as number,
+          status: "approved",
+          requestedAt: { gte: rangeStart, lt: rangeEnd },
         },
       }),
     ]);
 
-    const myThisMonthLeaveDays = myThisMonthLeaveRows.reduce(
+    const myLeaveDays = myLeaveRaw.reduce(
       (sum, d) => sum + Number(d.category?.annualLeaveDeduct ?? 0),
       0
     );
 
     return NextResponse.json({
       employeeId,
-      myThisMonthAttended,
-      myThisMonthLeaveDays,
+      period,
+      range: {
+        start: rangeStart.toISOString(),
+        end: rangeEnd.toISOString(),
+      },
+      myAttended,
+      myLeaveDays,
       myPendingRequests,
-      myPendingApprovals,
-      asOf: new Date().toISOString(),
+      myCompletedRequests,
+      asOf: now.toISOString(),
     });
   } catch (error) {
     console.error("GET /api/dashboard/my-stats error:", error);
