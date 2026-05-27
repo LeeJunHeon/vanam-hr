@@ -69,6 +69,69 @@ export function isCeoSession(session: Session | null | undefined): boolean {
 }
 
 /**
+ * 세션이 전체 직원 조회 권한이 있는지.
+ * - CEO: 항상 true
+ * - ADMIN + departmentId가 NULL: true (인사 담당 패턴)
+ * - 그 외: false
+ */
+export function canViewAllEmployees(session: Session | null | undefined): boolean {
+  if (!session?.user) return false;
+  if (session.user.role === "ceo") return true;
+  if (session.user.role === "admin" && session.user.departmentId == null) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 세션이 특정 부서의 직원 정보를 조회할 권한이 있는지.
+ * - canViewAllEmployees가 true이면 모든 부서 OK
+ * - ADMIN + departmentId === targetDepartmentId: OK
+ * - 그 외: false
+ */
+export function canViewDepartment(
+  session: Session | null | undefined,
+  targetDepartmentId: number | null,
+): boolean {
+  if (canViewAllEmployees(session)) return true;
+  if (
+    session?.user?.role === "admin" &&
+    session.user.departmentId != null &&
+    session.user.departmentId === targetDepartmentId
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 세션이 특정 직원 한 명의 데이터를 조회할 권한이 있는지.
+ * - canViewAllEmployees가 true이면 OK
+ * - 본인이면 OK
+ * - ADMIN이고 대상 직원이 자기 부서면 OK (조회용 — 대상 직원의 departmentId를 별도 인자로 받음)
+ *
+ * 호출 예:
+ *   const target = await prisma.employee.findUnique({ where: { id }, select: { departmentId: true } });
+ *   if (!canViewEmployee(session, id, target?.departmentId ?? null)) return 403;
+ */
+export function canViewEmployee(
+  session: Session | null | undefined,
+  targetEmployeeId: number,
+  targetEmployeeDepartmentId: number | null,
+): boolean {
+  if (canViewAllEmployees(session)) return true;
+  if (session?.user?.employeeId === targetEmployeeId) return true;
+  if (
+    session?.user?.role === "admin" &&
+    session.user.departmentId != null &&
+    session.user.departmentId === targetEmployeeDepartmentId
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * 관리자 권한을 요구한다. 미로그인은 401, 비관리자는 403.
  */
 export async function requireAdmin(): Promise<

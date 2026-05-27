@@ -74,7 +74,8 @@ export default function Sidebar({
     if (typeof window !== "undefined" && window.innerWidth < 1024) onClose();
   };
 
-  const isAdmin = userRole === "admin";
+  // CEO와 ADMIN 둘 다 관리자 메뉴 접근 가능
+  const isAdmin = userRole === "admin" || userRole === "ceo";
   const visibleItems = NAV_ITEMS.filter((i) => isAdmin || !i.adminOnly);
 
   const renderNavItems = () => {
@@ -161,7 +162,15 @@ export default function Sidebar({
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-gray-900 truncate">{userName}</p>
               <p className="text-[10px] text-gray-400">
-                {userRole === "admin" ? "관리자" : userRole === "viewer" ? "조회자" : userRole || "-"}
+                {userRole === "ceo"
+                  ? "대표"
+                  : userRole === "admin"
+                  ? "관리자"
+                  : userRole === "employee"
+                  ? "직원"
+                  : userRole === "viewer"
+                  ? "조회자"
+                  : userRole || "-"}
               </p>
             </div>
             <button

@@ -504,10 +504,10 @@ export default function EmployeesPage() {
               </select>
             </div>
 
-            {/* 직급 */}
+            {/* 직급 = 권한 */}
             <div>
               <label className="block text-xs font-semibold text-blue-700 mb-1">
-                직급
+                직급 (권한)
               </label>
               <select
                 value={form.positionId}
@@ -523,6 +523,9 @@ export default function EmployeesPage() {
                   </option>
                 ))}
               </select>
+              <p className="text-[10px] text-gray-500 mt-1">
+                CEO=전체 조회 / ADMIN=자기 부서 (부서 미지정 시 전체) / EMPLOYEE=본인만
+              </p>
             </div>
 
             {/* 전화 */}
