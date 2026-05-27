@@ -52,6 +52,37 @@ function ymd(date: Date): string {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 }
 
+function AutoStatusBadge({ status }: { status: string | null }) {
+  if (!status) return null;
+  const cls =
+    status === "normal"
+      ? "bg-emerald-50 text-emerald-700"
+      : status === "late"
+      ? "bg-amber-50 text-amber-700"
+      : status === "early_leave"
+      ? "bg-rose-50 text-rose-700"
+      : status === "absent"
+      ? "bg-gray-100 text-gray-500"
+      : "bg-gray-100 text-gray-500";
+  const label =
+    status === "normal"
+      ? "정상"
+      : status === "late"
+      ? "지각"
+      : status === "early_leave"
+      ? "조퇴"
+      : status === "absent"
+      ? "결근"
+      : status;
+  return (
+    <span
+      className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded ${cls}`}
+    >
+      {label}
+    </span>
+  );
+}
+
 export default function MyAttendancePage() {
   const { currentId, current, loading: empLoading } = useCurrentEmployee();
 
@@ -122,12 +153,7 @@ export default function MyAttendancePage() {
     return map;
   }, [dailies]);
 
-  // status helper
-  const getStatusLabel = (code: string | null): string => {
-    if (!code) return "";
-    const lookup = statusLookups.find((l) => l.code === code);
-    return lookup ? lookup.label : code;
-  };
+  // status helper (summary 카드용 색상만 — autoStatus 배지는 AutoStatusBadge 사용)
   const getStatusColor = (code: string | null): string | null => {
     if (!code) return null;
     const lookup = statusLookups.find((l) => l.code === code);
@@ -343,29 +369,7 @@ export default function MyAttendancePage() {
                             )}
                             {daily.autoStatus && (
                               <div className="mt-0.5">
-                                <span
-                                  className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-                                    daily.autoStatus === "normal"
-                                      ? "bg-emerald-50 text-emerald-700"
-                                      : daily.autoStatus === "late"
-                                      ? "bg-amber-50 text-amber-700"
-                                      : daily.autoStatus === "early_leave"
-                                      ? "bg-rose-50 text-rose-700"
-                                      : daily.autoStatus === "absent"
-                                      ? "bg-gray-100 text-gray-500"
-                                      : "bg-gray-100 text-gray-500"
-                                  }`}
-                                >
-                                  {daily.autoStatus === "normal"
-                                    ? "정상"
-                                    : daily.autoStatus === "late"
-                                    ? "지각"
-                                    : daily.autoStatus === "early_leave"
-                                    ? "조퇴"
-                                    : daily.autoStatus === "absent"
-                                    ? "결근"
-                                    : daily.autoStatus}
-                                </span>
+                                <AutoStatusBadge status={daily.autoStatus} />
                               </div>
                             )}
                             {daily.categoryName && (
@@ -404,7 +408,6 @@ export default function MyAttendancePage() {
                   </div>
                 ) : (
                   dailies.map((d) => {
-                    const statusColor = getStatusColor(d.autoStatus);
                     return (
                       <div
                         key={d.id}
@@ -427,19 +430,7 @@ export default function MyAttendancePage() {
                         </div>
                         <div className="flex flex-col items-end gap-1 shrink-0">
                           {d.autoStatus && (
-                            <span
-                              className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                              style={
-                                statusColor && statusColor.startsWith("#")
-                                  ? {
-                                      backgroundColor: `${statusColor}20`,
-                                      color: statusColor,
-                                    }
-                                  : { backgroundColor: "#f3f4f6", color: "#4b5563" }
-                              }
-                            >
-                              {getStatusLabel(d.autoStatus)}
-                            </span>
+                            <AutoStatusBadge status={d.autoStatus} />
                           )}
                           {d.categoryName && (
                             <span

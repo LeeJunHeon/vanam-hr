@@ -4,12 +4,16 @@
 출퇴근 시각을 계산하고 attendance_daily에 UPSERT.
 is_overridden=true 인 row는 건드리지 않음.
 
-출퇴근 정의 (시나리오 A: employee 단위 통합 timeline, location 무관):
+출퇴근 정의 (employee 단위 통합 timeline, location 무관):
 - 출근: 그날 첫 'online'의 checked_at
-- 퇴근: 그날 마지막 'online'의 checked_at
-  (단, now - last_online >= grace_minutes 일 때만 확정)
+- 퇴근: 마지막 INSERT 종류에 따라 분기
+  1) 마지막 INSERT가 offline → 그 offline 시각 (정상 99%)
+  2) 마지막 INSERT가 online + (now - last_online >= grace_minutes)
+     → last_online (폴러 장애 등 안전망)
+  3) 마지막 INSERT가 online + grace 미경과 → None (아직 사무실)
 - grace_minutes는 hr.policy_settings.debounce_minutes에서 읽음 (기본 60)
-- auto_status 판정은 별도 단계 (현재 NULL)
+- auto_status: check_in+check_out 둘 다 있음 → 'normal',
+  둘 다 없음 → 'absent', 그 외 → None (판정 보류)
 
 work_date 귀속 (야간 근무자 정책):
 - 새벽 cutoff_hour 시 이전 활동은 전일 work_date로 귀속
@@ -51,15 +55,20 @@ class Aggregator:
         grace_minutes: int,
         now: datetime,
     ) -> tuple[Optional[datetime], Optional[datetime]]:
-        """raw_records를 분석해 (check_in, check_out) 반환 (시나리오 A).
+        """raw_records를 분석해 (check_in, check_out) 반환.
 
-        시나리오 A: employee 단위 통합 timeline (location 무관).
-        - check_in:  그날 첫 'online'의 checked_at
-        - check_out: 그날 마지막 'online'의 checked_at
-                     (단, now - last_online >= grace_minutes 일 때만 확정)
+        employee 단위 통합 timeline (location 무관).
 
-        아직 grace 시간이 안 지났으면 check_out=None (사무실 또는 외출 가능성).
-        같은 날 다시 online이 잡히면 마지막 online이 갱신됨.
+        규칙:
+        - check_in: 그날 첫 'online'의 checked_at
+        - check_out:
+          1) 마지막 INSERT가 offline → 그 offline 시각 (정상 케이스 99%)
+             예: 09:18 online → ... → 16:29 online → 18:30 offline
+                 → check_out = 18:30
+          2) 마지막 INSERT가 online + now - last_online >= grace_minutes
+             → last_online (폴러 장애 등 비상 안전망)
+          3) 마지막 INSERT가 online + grace 미경과
+             → None (아직 사무실에 있을 가능성)
 
         raw_records는 checked_at 오름차순 정렬되어 있어야 함.
         now는 timezone-aware datetime (UTC 권장).
@@ -74,19 +83,21 @@ class Aggregator:
                 check_in = r["checked_at"]
                 break
 
-        # 마지막 online
-        last_online = None
-        for r in reversed(raw_records):
-            if r["status"] == "online":
-                last_online = r["checked_at"]
-                break
-
-        # check_out 판정: 마지막 online 이후 grace_minutes 이상 경과 시 확정
+        # 마지막 record 확인
+        last_record = raw_records[-1]
         check_out = None
-        if last_online is not None:
+
+        if last_record["status"] == "offline":
+            # 정상 케이스: 마지막이 offline → 퇴근 확정
+            check_out = last_record["checked_at"]
+        elif last_record["status"] == "online":
+            # 비정상: 마지막이 online인데 그 후 offline 못 잡힘 (폴러 장애 등)
+            # grace 시간 지나면 last_online으로 안전망 적용
+            last_online = last_record["checked_at"]
             elapsed_seconds = (now - last_online).total_seconds()
             if elapsed_seconds >= grace_minutes * 60:
                 check_out = last_online
+            # else: None (아직 사무실에 있을 가능성)
 
         return check_in, check_out
 
