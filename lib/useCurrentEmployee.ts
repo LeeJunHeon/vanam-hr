@@ -18,9 +18,11 @@ export interface MeInfo {
   departmentName: string | null;
   positionId: number | null;
   positionName: string | null;
+  positionCode: string | null;
   isActive: boolean;
   role: string;
   isAdmin: boolean;
+  isCeo: boolean;
   isMapped: boolean;
 }
 
@@ -77,6 +79,7 @@ export function useCurrentEmployee() {
     loading,
     me,
     isAdmin: me?.isAdmin ?? false,
+    isCeo: me?.isCeo ?? false,
     isMapped: me?.isMapped ?? false,
     // 호환성 stub (사용처에서 호출하지만 더 이상 의미 없음)
     employees: [] as CurrentEmployeeOption[],

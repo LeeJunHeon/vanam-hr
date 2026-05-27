@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireSession, isAdminSession } from "@/lib/auth-helpers";
+import { requireSession, isAdminSession, isCeoSession } from "@/lib/auth-helpers";
 
 // GET /api/me
 // 현재 로그인 세션 기반 본인 정보 반환.
@@ -12,6 +12,7 @@ export async function GET() {
 
   const employeeId = session.user.employeeId;
   const isAdmin = isAdminSession(session);
+  const isCeo = isCeoSession(session);
 
   // employeeId가 없으면 매핑되지 않은 사용자
   if (!Number.isInteger(employeeId)) {
@@ -24,9 +25,11 @@ export async function GET() {
       departmentName: null,
       positionId: null,
       positionName: null,
+      positionCode: null,
       isActive: false,
-      role: session.user.role ?? "viewer",
+      role: session.user.role ?? "employee",
       isAdmin,
+      isCeo,
       isMapped: false,
     });
   }
@@ -35,7 +38,7 @@ export async function GET() {
     where: { id: employeeId as number },
     include: {
       department: { select: { id: true, name: true } },
-      position: { select: { id: true, name: true } },
+      position: { select: { id: true, name: true, code: true } },
     },
   });
 
@@ -50,9 +53,11 @@ export async function GET() {
       departmentName: null,
       positionId: null,
       positionName: null,
+      positionCode: null,
       isActive: false,
-      role: session.user.role ?? "viewer",
+      role: session.user.role ?? "employee",
       isAdmin,
+      isCeo,
       isMapped: false,
     });
   }
@@ -66,9 +71,11 @@ export async function GET() {
     departmentName: employee.department?.name ?? null,
     positionId: employee.positionId,
     positionName: employee.position?.name ?? null,
+    positionCode: employee.position?.code ?? null,
     isActive: employee.isActive,
-    role: session.user.role ?? "viewer",
+    role: session.user.role ?? "employee",
     isAdmin,
+    isCeo,
     isMapped: true,
   });
 }

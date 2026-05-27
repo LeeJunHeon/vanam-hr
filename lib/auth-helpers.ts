@@ -19,7 +19,9 @@ function makeDevSession(): Session {
       name: "Dev User",
       email: "dev@local",
       dbId: 0,
-      role: "admin",
+      role: "ceo",
+      positionCode: "CEO",
+      departmentId: null,
       employeeId: Number.isInteger(devEmployeeId) ? devEmployeeId : null,
       employeeNo: null,
       employeeActive: true,
@@ -55,9 +57,15 @@ export async function requireSession(): Promise<
   return { ok: true, session };
 }
 
-/** 세션이 admin role인지 */
+/** 세션이 admin 또는 ceo 권한인지 (관리 기능 접근용) */
 export function isAdminSession(session: Session | null | undefined): boolean {
-  return session?.user?.role === "admin";
+  const role = session?.user?.role;
+  return role === "admin" || role === "ceo";
+}
+
+/** 세션이 ceo 권한인지 (전체 조회 가능 여부) */
+export function isCeoSession(session: Session | null | undefined): boolean {
+  return session?.user?.role === "ceo";
 }
 
 /**

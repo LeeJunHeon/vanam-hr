@@ -21,35 +21,54 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async session({ session }) {
       if (!session.user?.email) return session;
 
-      // public.user (inventory) 조회
+      // public.user (inventory) 조회 — 이름/이메일/userId 매핑 용도만
       const dbUser = await prisma.user.findUnique({
         where: { email: session.user.email },
         select: {
           id: true,
           name: true,
-          role: true,
         },
       });
 
       if (!dbUser) {
-        // 매핑 안 된 사용자 — 기본값으로 채워 타입 호환 유지
+        // 매핑 안 된 사용자 — 기본값 채워 타입 호환 유지
         session.user.dbId = null;
-        session.user.role = "viewer";
+        session.user.role = "employee";
+        session.user.positionCode = null;
+        session.user.departmentId = null;
         session.user.employeeId = null;
         session.user.employeeNo = null;
         session.user.employeeActive = false;
         return session;
       }
 
-      // hr.employees에서 user_id로 본인 직원 row 찾기
+      // hr.employees + position + department 조회
       const employee = await prisma.employee.findUnique({
         where: { userId: dbUser.id },
-        select: { id: true, employeeNo: true, isActive: true },
+        select: {
+          id: true,
+          employeeNo: true,
+          isActive: true,
+          departmentId: true,
+          position: { select: { code: true } },
+        },
       });
+
+      // hr 권한 source = position.code (CEO/ADMIN/EMPLOYEE)
+      // 매핑 안 됐거나 position 미지정 시 'employee' (최소 권한)
+      const positionCode = employee?.position?.code ?? null;
+      const role =
+        positionCode === "CEO"
+          ? "ceo"
+          : positionCode === "ADMIN"
+          ? "admin"
+          : "employee";
 
       session.user.name = dbUser.name;
       session.user.dbId = dbUser.id;
-      session.user.role = dbUser.role ?? "viewer";
+      session.user.role = role;
+      session.user.positionCode = positionCode;
+      session.user.departmentId = employee?.departmentId ?? null;
       session.user.employeeId = employee?.id ?? null;
       session.user.employeeNo = employee?.employeeNo ?? null;
       session.user.employeeActive = employee?.isActive ?? false;
