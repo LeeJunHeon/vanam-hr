@@ -79,6 +79,145 @@ const COLOR_MAP: Record<
   sky:     { bg: "bg-sky-50",     text: "text-sky-600",     iconBg: "bg-sky-100" },
 };
 
+type PeriodType = "day" | "month" | "year";
+
+const PERIOD_OPTIONS: { value: PeriodType; label: string }[] = [
+  { value: "day", label: "일별" },
+  { value: "month", label: "월별" },
+  { value: "year", label: "연별" },
+];
+
+function PeriodTabs({
+  value,
+  onChange,
+}: {
+  value: PeriodType;
+  onChange: (v: PeriodType) => void;
+}) {
+  return (
+    <div className="inline-flex bg-gray-100 rounded-xl p-1">
+      {PERIOD_OPTIONS.map((opt) => (
+        <button
+          key={opt.value}
+          onClick={() => onChange(opt.value)}
+          className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+            value === opt.value
+              ? "bg-white text-gray-900 shadow-sm"
+              : "text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+interface PresenceInfo {
+  currentStatus: "online" | "offline" | "unknown";
+  lastOnlineAt: string | null;
+  lastOfflineAt: string | null;
+  lastLocation: string | null;
+}
+
+function PresenceCard() {
+  const [info, setInfo] = useState<PresenceInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchPresence = useCallback(async (showRefresh = false) => {
+    if (showRefresh) setRefreshing(true);
+    else setLoading(true);
+    try {
+      const res = await fetch("/api/presence");
+      if (res.ok) {
+        const data = await res.json();
+        setInfo({
+          currentStatus: data.currentStatus ?? "unknown",
+          lastOnlineAt: data.lastOnlineAt ?? null,
+          lastOfflineAt: data.lastOfflineAt ?? null,
+          lastLocation: data.lastLocation ?? null,
+        });
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchPresence();
+  }, [fetchPresence]);
+
+  const isOnline = info?.currentStatus === "online";
+  const statusLabel =
+    info?.currentStatus === "online"
+      ? "사무실"
+      : info?.currentStatus === "offline"
+      ? "끊김"
+      : "확인 불가";
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 p-5">
+      <div className="flex items-start justify-between mb-3">
+        <h3 className="text-sm font-bold text-gray-900">
+          오늘 현재 연결 상태
+        </h3>
+        <button
+          onClick={() => fetchPresence(true)}
+          disabled={refreshing || loading}
+          className="text-xs text-gray-500 hover:text-gray-700 disabled:opacity-40"
+        >
+          <RefreshCw
+            size={12}
+            className={refreshing ? "animate-spin" : ""}
+          />
+        </button>
+      </div>
+      {loading ? (
+        <div className="flex items-center gap-2 text-sm text-gray-400">
+          <Loader2 size={14} className="animate-spin" />
+          로딩 중...
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span
+              className={`inline-block w-2.5 h-2.5 rounded-full ${
+                isOnline
+                  ? "bg-emerald-500"
+                  : info?.currentStatus === "offline"
+                  ? "bg-gray-300"
+                  : "bg-amber-400"
+              }`}
+            />
+            <span className="text-lg font-bold text-gray-900">
+              {statusLabel}
+            </span>
+            {info?.lastLocation && isOnline && (
+              <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
+                @ {info.lastLocation}
+              </span>
+            )}
+          </div>
+          {info?.lastOnlineAt && (
+            <p className="text-xs text-gray-500">
+              최근 연결: {new Date(info.lastOnlineAt).toLocaleString("ko-KR")}
+            </p>
+          )}
+          {info?.lastOfflineAt && (
+            <p className="text-xs text-gray-500">
+              최근 끊김: {new Date(info.lastOfflineAt).toLocaleString("ko-KR")}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StatCard({
   card,
   value,
@@ -112,8 +251,11 @@ function AdminDashboard() {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [period, setPeriod] = useState<PeriodType>("month");
 
   const fetchStats = useCallback(async (showRefresh = false) => {
+    // period는 다음 세션에서 API에 전달 예정 (현재는 UI 탭만 노출)
+    void period;
     if (showRefresh) setRefreshing(true);
     else setLoading(true);
     try {
@@ -125,7 +267,7 @@ function AdminDashboard() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [period]);
 
   useEffect(() => {
     fetchStats();
@@ -147,14 +289,17 @@ function AdminDashboard() {
             )}
           </p>
         </div>
-        <button
-          onClick={() => fetchStats(true)}
-          disabled={refreshing}
-          className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40"
-        >
-          <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
-          새로고침
-        </button>
+        <div className="flex items-center gap-2">
+          <PeriodTabs value={period} onChange={setPeriod} />
+          <button
+            onClick={() => fetchStats(true)}
+            disabled={refreshing}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40"
+          >
+            <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
+            새로고침
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -181,8 +326,11 @@ function MyDashboard() {
   const [stats, setStats] = useState<MyStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [period, setPeriod] = useState<PeriodType>("month");
 
   const fetchStats = useCallback(async (showRefresh = false) => {
+    // period는 다음 세션에서 API에 전달 예정 (현재는 UI 탭만 노출)
+    void period;
     if (showRefresh) setRefreshing(true);
     else setLoading(true);
     try {
@@ -194,7 +342,7 @@ function MyDashboard() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [period]);
 
   useEffect(() => {
     fetchStats();
@@ -216,15 +364,20 @@ function MyDashboard() {
             )}
           </p>
         </div>
-        <button
-          onClick={() => fetchStats(true)}
-          disabled={refreshing}
-          className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40"
-        >
-          <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
-          새로고침
-        </button>
+        <div className="flex items-center gap-2">
+          <PeriodTabs value={period} onChange={setPeriod} />
+          <button
+            onClick={() => fetchStats(true)}
+            disabled={refreshing}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40"
+          >
+            <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
+            새로고침
+          </button>
+        </div>
       </div>
+
+      <PresenceCard />
 
       {loading ? (
         <div className="flex items-center justify-center h-64">
