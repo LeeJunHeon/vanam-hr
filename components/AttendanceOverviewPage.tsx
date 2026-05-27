@@ -7,6 +7,9 @@ import {
   Loader2,
   RefreshCw,
   Filter,
+  CheckCircle,
+  AlertCircle,
+  XCircle,
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
@@ -29,12 +32,21 @@ interface OverviewResponse {
   range: { startDate: string; endDate: string };
   scope: "all" | "department";
   departmentId: number | null;
+  employeeId: number | null;
   rows: AttendanceRow[];
 }
 
 interface DeptOption {
   id: number;
   name: string;
+}
+
+interface EmployeeOption {
+  id: number;
+  employeeNo: string | null;
+  name: string;
+  departmentId: number | null;
+  departmentName: string | null;
 }
 
 interface EmpSummary {
@@ -45,6 +57,10 @@ interface EmpSummary {
   positionName: string | null;
   attendedDays: number;
   totalMinutes: number;
+  normalDays: number;
+  lateDays: number;
+  earlyLeaveDays: number;
+  absentDays: number;
 }
 
 function formatTime(iso: string | null): string {
@@ -101,6 +117,7 @@ export default function AttendanceOverviewPage() {
   const [startDate, setStartDate] = useState(firstOfMonthStr());
   const [endDate, setEndDate] = useState(todayStr());
   const [departmentFilter, setDepartmentFilter] = useState<string>("all");
+  const [employeeFilter, setEmployeeFilter] = useState<string>("all");
 
   const [data, setData] = useState<OverviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -108,6 +125,7 @@ export default function AttendanceOverviewPage() {
   const [error, setError] = useState("");
 
   const [departments, setDepartments] = useState<DeptOption[]>([]);
+  const [employees, setEmployees] = useState<EmployeeOption[]>([]);
 
   // 부서 옵션 로드 (CEO/ADMIN_전체만 의미 있음)
   // ADMIN_부서지정은 본인 부서로 강제됨 (필터 UI는 숨김)
@@ -125,6 +143,35 @@ export default function AttendanceOverviewPage() {
     })();
   }, [canChooseDepartment]);
 
+  // 직원 마스터 로드 (셀렉트 옵션용)
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/employees?includeInactive=false");
+        if (res.ok) {
+          const data = await res.json();
+          setEmployees(
+            data.map((e: {
+              id: number;
+              employeeNo: string | null;
+              name: string;
+              departmentId: number | null;
+              departmentName: string | null;
+            }) => ({
+              id: e.id,
+              employeeNo: e.employeeNo,
+              name: e.name,
+              departmentId: e.departmentId,
+              departmentName: e.departmentName,
+            }))
+          );
+        }
+      } catch (e) {
+        console.error("employees fetch error:", e);
+      }
+    })();
+  }, []);
+
   const fetchData = useCallback(
     async (showRefresh = false) => {
       if (showRefresh) setRefreshing(true);
@@ -137,6 +184,9 @@ export default function AttendanceOverviewPage() {
         });
         if (canChooseDepartment && departmentFilter !== "all") {
           params.set("departmentId", departmentFilter);
+        }
+        if (employeeFilter !== "all") {
+          params.set("employeeId", employeeFilter);
         }
         const res = await fetch(`/api/attendance/overview?${params}`);
         if (!res.ok) {
@@ -154,7 +204,7 @@ export default function AttendanceOverviewPage() {
         setRefreshing(false);
       }
     },
-    [startDate, endDate, departmentFilter, canChooseDepartment]
+    [startDate, endDate, departmentFilter, employeeFilter, canChooseDepartment]
   );
 
   useEffect(() => {
@@ -177,16 +227,37 @@ export default function AttendanceOverviewPage() {
           positionName: r.positionName,
           attendedDays: 0,
           totalMinutes: 0,
+          normalDays: 0,
+          lateDays: 0,
+          earlyLeaveDays: 0,
+          absentDays: 0,
         });
       }
       const g = grouped.get(r.employeeId)!;
       if (r.checkIn) g.attendedDays += 1;
       if (r.workMinutes !== null) g.totalMinutes += r.workMinutes;
+      if (r.autoStatus === "normal") g.normalDays += 1;
+      else if (r.autoStatus === "late") g.lateDays += 1;
+      else if (r.autoStatus === "early_leave") g.earlyLeaveDays += 1;
+      else if (r.autoStatus === "absent") g.absentDays += 1;
     }
     return Array.from(grouped.values()).sort((a, b) =>
       a.employeeNo.localeCompare(b.employeeNo)
     );
   }, [data]);
+
+  // 전체 통계 (모든 직원 합계)
+  const totals = useMemo(() => {
+    return summary.reduce(
+      (acc, s) => ({
+        normal: acc.normal + s.normalDays,
+        late: acc.late + s.lateDays,
+        earlyLeave: acc.earlyLeave + s.earlyLeaveDays,
+        absent: acc.absent + s.absentDays,
+      }),
+      { normal: 0, late: 0, earlyLeave: 0, absent: 0 }
+    );
+  }, [summary]);
 
   const handleExportCSV = () => {
     if (!data || data.rows.length === 0) return;
@@ -262,9 +333,9 @@ export default function AttendanceOverviewPage() {
       <div className="bg-white rounded-2xl border border-gray-100 p-4 space-y-3">
         <div className="flex items-center gap-2 text-sm font-semibold text-gray-700">
           <Filter size={14} />
-          기간 / 부서
+          기간 / 부서 / 직원
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           <div>
             <label className="block text-xs font-semibold text-gray-500 mb-1">
               시작일
@@ -295,7 +366,10 @@ export default function AttendanceOverviewPage() {
               </label>
               <select
                 value={departmentFilter}
-                onChange={(e) => setDepartmentFilter(e.target.value)}
+                onChange={(e) => {
+                  setDepartmentFilter(e.target.value);
+                  setEmployeeFilter("all"); // 부서 바꾸면 직원 필터 리셋
+                }}
                 className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
               >
                 <option value="all">전체 부서</option>
@@ -307,6 +381,30 @@ export default function AttendanceOverviewPage() {
               </select>
             </div>
           )}
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 mb-1">
+              직원
+            </label>
+            <select
+              value={employeeFilter}
+              onChange={(e) => setEmployeeFilter(e.target.value)}
+              className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+            >
+              <option value="all">전체 직원</option>
+              {employees
+                .filter((emp) => {
+                  if (!canChooseDepartment) return true; // ADMIN 부서지정은 서버에서 강제
+                  if (departmentFilter === "all") return true;
+                  return String(emp.departmentId) === departmentFilter;
+                })
+                .map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.name}
+                    {emp.employeeNo && ` (${emp.employeeNo})`}
+                  </option>
+                ))}
+            </select>
+          </div>
           <div className="flex items-end">
             <button
               onClick={() => fetchData()}
@@ -318,6 +416,68 @@ export default function AttendanceOverviewPage() {
           </div>
         </div>
       </div>
+
+      {/* 이상 통계 카드 4개 */}
+      {data && data.rows.length > 0 && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+          <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
+            <div className="flex items-start justify-between mb-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-emerald-100">
+                <CheckCircle size={18} className="text-emerald-600" />
+              </div>
+            </div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              정상
+            </p>
+            <p className="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 font-mono">
+              {totals.normal}
+            </p>
+            <p className="text-xs text-gray-400 mt-1">정상 출근 일수</p>
+          </div>
+          <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
+            <div className="flex items-start justify-between mb-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-amber-100">
+                <AlertCircle size={18} className="text-amber-600" />
+              </div>
+            </div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              지각
+            </p>
+            <p className="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 font-mono">
+              {totals.late}
+            </p>
+            <p className="text-xs text-gray-400 mt-1">출근 시각 늦음</p>
+          </div>
+          <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
+            <div className="flex items-start justify-between mb-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-rose-100">
+                <AlertCircle size={18} className="text-rose-600" />
+              </div>
+            </div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              조퇴
+            </p>
+            <p className="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 font-mono">
+              {totals.earlyLeave}
+            </p>
+            <p className="text-xs text-gray-400 mt-1">근무시간 부족</p>
+          </div>
+          <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
+            <div className="flex items-start justify-between mb-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-gray-100">
+                <XCircle size={18} className="text-gray-500" />
+              </div>
+            </div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              결근
+            </p>
+            <p className="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 font-mono">
+              {totals.absent}
+            </p>
+            <p className="text-xs text-gray-400 mt-1">출퇴근 기록 없음</p>
+          </div>
+        </div>
+      )}
 
       {/* 직원별 요약 */}
       {data && summary.length > 0 && (
@@ -342,14 +502,23 @@ export default function AttendanceOverviewPage() {
                   <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
                     부서
                   </th>
-                  <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
-                    직급
-                  </th>
                   <th className="text-right text-xs font-semibold text-gray-500 px-5 py-3">
                     출근일
                   </th>
                   <th className="text-right text-xs font-semibold text-gray-500 px-5 py-3">
                     누적 근무
+                  </th>
+                  <th className="text-center text-xs font-semibold text-emerald-600 px-3 py-3">
+                    정상
+                  </th>
+                  <th className="text-center text-xs font-semibold text-amber-600 px-3 py-3">
+                    지각
+                  </th>
+                  <th className="text-center text-xs font-semibold text-rose-600 px-3 py-3">
+                    조퇴
+                  </th>
+                  <th className="text-center text-xs font-semibold text-gray-500 px-3 py-3">
+                    결근
                   </th>
                 </tr>
               </thead>
@@ -357,7 +526,9 @@ export default function AttendanceOverviewPage() {
                 {summary.map((s) => (
                   <tr
                     key={s.employeeId}
-                    className="border-b border-gray-50 hover:bg-blue-50/30"
+                    className="border-b border-gray-50 hover:bg-blue-50/30 cursor-pointer"
+                    onClick={() => setEmployeeFilter(String(s.employeeId))}
+                    title="클릭하여 이 직원만 필터링"
                   >
                     <td className="px-5 py-3 text-sm text-gray-900 font-mono">
                       {s.employeeNo}
@@ -368,14 +539,23 @@ export default function AttendanceOverviewPage() {
                     <td className="px-5 py-3 text-sm text-gray-500">
                       {s.departmentName ?? "-"}
                     </td>
-                    <td className="px-5 py-3 text-sm text-gray-500">
-                      {s.positionName ?? "-"}
-                    </td>
                     <td className="px-5 py-3 text-sm text-gray-900 font-mono text-right">
                       {s.attendedDays}일
                     </td>
                     <td className="px-5 py-3 text-sm text-gray-900 font-mono text-right">
                       {formatWorkMinutes(s.totalMinutes)}
+                    </td>
+                    <td className="px-3 py-3 text-sm font-mono text-center text-emerald-700">
+                      {s.normalDays || "-"}
+                    </td>
+                    <td className="px-3 py-3 text-sm font-mono text-center text-amber-700">
+                      {s.lateDays || "-"}
+                    </td>
+                    <td className="px-3 py-3 text-sm font-mono text-center text-rose-700">
+                      {s.earlyLeaveDays || "-"}
+                    </td>
+                    <td className="px-3 py-3 text-sm font-mono text-center text-gray-500">
+                      {s.absentDays || "-"}
                     </td>
                   </tr>
                 ))}
@@ -386,7 +566,11 @@ export default function AttendanceOverviewPage() {
           {/* 모바일 카드 */}
           <div className="md:hidden divide-y divide-gray-50">
             {summary.map((s) => (
-              <div key={s.employeeId} className="px-4 py-3 space-y-1">
+              <div
+                key={s.employeeId}
+                className="px-4 py-3 space-y-1.5 cursor-pointer"
+                onClick={() => setEmployeeFilter(String(s.employeeId))}
+              >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-sm font-semibold text-gray-900 truncate">
@@ -401,9 +585,22 @@ export default function AttendanceOverviewPage() {
                   </span>
                 </div>
                 <p className="text-xs text-gray-400">
-                  {s.departmentName ?? "(부서 없음)"} ·{" "}
-                  {s.positionName ?? "(직급 없음)"}
+                  {s.departmentName ?? "(부서 없음)"}
                 </p>
+                <div className="flex gap-2 text-[11px] font-mono">
+                  {s.normalDays > 0 && (
+                    <span className="text-emerald-700">정상 {s.normalDays}</span>
+                  )}
+                  {s.lateDays > 0 && (
+                    <span className="text-amber-700">지각 {s.lateDays}</span>
+                  )}
+                  {s.earlyLeaveDays > 0 && (
+                    <span className="text-rose-700">조퇴 {s.earlyLeaveDays}</span>
+                  )}
+                  {s.absentDays > 0 && (
+                    <span className="text-gray-500">결근 {s.absentDays}</span>
+                  )}
+                </div>
               </div>
             ))}
           </div>

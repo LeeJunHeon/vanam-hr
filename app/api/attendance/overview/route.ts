@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import {
   requireSession,
   canViewAllEmployees,
+  canViewEmployee,
 } from "@/lib/auth-helpers";
 
 // GET /api/attendance/overview
@@ -37,12 +38,21 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
     const requestedDept = searchParams.get("departmentId");
+    const requestedEmpRaw = searchParams.get("employeeId");
 
     if (!startDate || !endDate) {
       return NextResponse.json(
         { error: "startDate, endDate 필수" },
         { status: 400 }
       );
+    }
+
+    let requestedEmployeeId: number | null = null;
+    if (requestedEmpRaw) {
+      const n = Number(requestedEmpRaw);
+      if (Number.isInteger(n)) {
+        requestedEmployeeId = n;
+      }
     }
 
     // 부서 필터 결정
@@ -74,11 +84,38 @@ export async function GET(request: NextRequest) {
       scope = "department";
     }
 
+    // 특정 직원 지정 시 권한 체크
+    if (requestedEmployeeId !== null) {
+      const target = await prisma.employee.findUnique({
+        where: { id: requestedEmployeeId },
+        select: { id: true, departmentId: true, isActive: true },
+      });
+      if (!target) {
+        return NextResponse.json(
+          { error: "직원을 찾을 수 없습니다." },
+          { status: 404 }
+        );
+      }
+      if (
+        !canViewEmployee(
+          session,
+          requestedEmployeeId,
+          target.departmentId ?? null
+        )
+      ) {
+        return NextResponse.json(
+          { error: "해당 직원 조회 권한이 없습니다." },
+          { status: 403 }
+        );
+      }
+    }
+
     // 직원 + attendance_daily 조회
     const employees = await prisma.employee.findMany({
       where: {
         isActive: true,
         ...(departmentFilter !== null && { departmentId: departmentFilter }),
+        ...(requestedEmployeeId !== null && { id: requestedEmployeeId }),
       },
       select: {
         id: true,
@@ -141,6 +178,7 @@ export async function GET(request: NextRequest) {
       range: { startDate, endDate },
       scope,
       departmentId: departmentFilter,
+      employeeId: requestedEmployeeId,
       rows,
     });
   } catch (error) {
