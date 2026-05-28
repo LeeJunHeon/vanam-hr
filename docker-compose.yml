@@ -68,6 +68,32 @@ services:
       - internal
       - vanam-db-net
 
+  calendar-syncer:
+    build:
+      context: ./calendar-syncer
+      dockerfile: Dockerfile
+    container_name: hr-calendar-syncer
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Seoul
+      CALENDAR_DB_HOST: ${CALENDAR_DB_HOST:-inventory-web-postgres}
+      CALENDAR_DB_PORT: ${CALENDAR_DB_PORT:-5432}
+      CALENDAR_DB_NAME: ${CALENDAR_DB_NAME}
+      CALENDAR_DB_USER: ${CALENDAR_DB_USER}
+      CALENDAR_DB_PASSWORD: ${CALENDAR_DB_PASSWORD}
+      CALENDAR_SUBJECT_EMAIL: ${CALENDAR_SUBJECT_EMAIL}
+      CALENDAR_KEY_FILE: ${CALENDAR_KEY_FILE:-/app/secrets/service-account-key.json}
+      CALENDAR_SYNC_INTERVAL: ${CALENDAR_SYNC_INTERVAL:-1800}
+      CALENDAR_READ_DAYS_AHEAD: ${CALENDAR_READ_DAYS_AHEAD:-7}
+      CALENDAR_LOG_LEVEL: ${CALENDAR_LOG_LEVEL:-INFO}
+      CALENDAR_LOG_FILE: ${CALENDAR_LOG_FILE:-/app/logs/calendar-syncer.log}
+    volumes:
+      - ./calendar-syncer/logs:/app/logs
+      - ./calendar-syncer/secrets:/app/secrets:ro
+    networks:
+      - internal
+      - vanam-db-net
+
 networks:
   internal:
     driver: bridge

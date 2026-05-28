@@ -211,3 +211,7 @@ poller/.env
 
 # Attendance poller logs
 attendance-poller.log
+
+# calendar-syncer secrets & logs
+# (secrets/ · *.log · service-account*.json 은 위에서 이미 처리됨)
+*.json.key
