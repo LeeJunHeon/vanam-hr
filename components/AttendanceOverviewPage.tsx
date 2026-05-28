@@ -218,7 +218,7 @@ function RealtimeStatusSection({
           <p className="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 font-mono">
             {workingCount}
           </p>
-          <p className="text-xs text-gray-400 mt-1">현재 연결됨</p>
+          <p className="text-xs text-gray-400 mt-1">사무실에 있음</p>
         </div>
 
         <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
@@ -234,7 +234,7 @@ function RealtimeStatusSection({
             {disconnectedCount}
           </p>
           <p className="text-xs text-gray-400 mt-1">
-            grace {data.graceMinutes}분 초과
+            {data.graceMinutes}분 이상 미감지
           </p>
         </div>
 
@@ -245,15 +245,17 @@ function RealtimeStatusSection({
             </div>
           </div>
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-            위치별
+            위치별 근무 중
           </p>
           <div className="mt-1 space-y-0.5">
             {Object.keys(locationCounts).length === 0 ? (
-              <p className="text-sm text-gray-400">-</p>
+              <p className="text-2xl sm:text-3xl font-bold text-gray-300 font-mono">-</p>
             ) : (
               Object.entries(locationCounts).map(([loc, count]) => (
-                <p key={loc} className="text-sm font-mono text-gray-700">
-                  {loc} <span className="font-bold">{count}</span>명
+                <p key={loc} className="text-base sm:text-lg font-bold text-gray-900">
+                  <span className="text-gray-500 font-normal text-sm">{loc}</span>{" "}
+                  <span className="font-mono">{count}</span>
+                  <span className="text-gray-500 font-normal text-sm">명</span>
                 </p>
               ))
             )}
@@ -297,7 +299,7 @@ function RealtimeStatusSection({
                   위치
                 </th>
                 <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
-                  마지막 감지
+                  마지막 활동
                 </th>
                 <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
                   오늘 출근
@@ -406,7 +408,7 @@ export default function AttendanceOverviewPage() {
   const [employeeFilter, setEmployeeFilter] = useState<string>("all");
 
   const [data, setData] = useState<OverviewResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
 
