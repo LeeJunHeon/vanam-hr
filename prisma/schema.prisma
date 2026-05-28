@@ -317,6 +317,7 @@ model PresenceRaw {
   status     String   @db.VarChar(20)
   ssid       String?  @db.VarChar(100)
   rawValue   String?  @map("raw_value")
+  location   String   @default("본사") @db.VarChar(10)
 
   employee Employee? @relation(fields: [employeeId], references: [id], onUpdate: NoAction)
   device   Device    @relation(fields: [deviceId], references: [id], onDelete: Restrict, onUpdate: NoAction)

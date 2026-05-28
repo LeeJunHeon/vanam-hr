@@ -10,6 +10,12 @@ import {
   CheckCircle,
   AlertCircle,
   XCircle,
+  Users,
+  Wifi,
+  WifiOff,
+  ChevronDown,
+  ChevronUp,
+  Briefcase,
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
@@ -51,6 +57,27 @@ interface EmployeeOption {
   departmentName: string | null;
 }
 
+interface RealtimeRow {
+  employeeId: number;
+  employeeNo: string;
+  name: string;
+  departmentName: string | null;
+  positionName: string | null;
+  realtimeStatus: "working" | "disconnected";
+  latestStatus: string | null;
+  latestCheckedAt: string | null;
+  latestLocation: string | null;
+  todayCheckIn: string | null;
+}
+
+interface RealtimeResponse {
+  scope: "all" | "department";
+  departmentId: number | null;
+  asOf: string;
+  graceMinutes: number;
+  rows: RealtimeRow[];
+}
+
 interface EmpSummary {
   employeeId: number;
   employeeNo: string;
@@ -86,6 +113,7 @@ function StatusBadge({ status }: { status: string | null }) {
   if (!status) return <span className="text-xs text-gray-300">-</span>;
   const config: Record<string, { label: string; cls: string }> = {
     normal: { label: "정상", cls: "bg-emerald-50 text-emerald-700" },
+    working: { label: "근무 중", cls: "bg-blue-50 text-blue-700" },
     late: { label: "지각", cls: "bg-amber-50 text-amber-700" },
     early_leave: { label: "조퇴", cls: "bg-rose-50 text-rose-700" },
     absent: { label: "결근", cls: "bg-gray-100 text-gray-500" },
@@ -100,6 +128,272 @@ function StatusBadge({ status }: { status: string | null }) {
     >
       {c.label}
     </span>
+  );
+}
+
+function formatRelativeTime(iso: string | null): string {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+
+  if (diffMin < 1) return "방금 전";
+  if (diffMin < 60) return `${diffMin}분 전`;
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour}시간 전`;
+  return `${Math.floor(diffHour / 24)}일 전`;
+}
+
+function RealtimeStatusSection({
+  data,
+  loading,
+}: {
+  data: RealtimeResponse | null;
+  loading: boolean;
+}) {
+  if (loading && !data) {
+    return (
+      <div className="bg-white rounded-2xl border border-gray-100 p-8 flex items-center justify-center">
+        <Loader2 size={20} className="animate-spin text-blue-500" />
+        <span className="ml-2 text-sm text-gray-500">실시간 현황 로딩 중...</span>
+      </div>
+    );
+  }
+
+  if (!data || data.rows.length === 0) {
+    return (
+      <div className="bg-white rounded-2xl border border-gray-100 p-8 text-center">
+        <Users size={32} className="mx-auto mb-2 text-gray-300" />
+        <p className="text-sm text-gray-400">활성 직원이 없습니다</p>
+      </div>
+    );
+  }
+
+  const totalCount = data.rows.length;
+  const workingCount = data.rows.filter(
+    (r) => r.realtimeStatus === "working"
+  ).length;
+  const disconnectedCount = totalCount - workingCount;
+
+  // 위치별 근무 중 인원수
+  const locationCounts = data.rows.reduce<Record<string, number>>(
+    (acc, r) => {
+      if (r.realtimeStatus === "working" && r.latestLocation) {
+        acc[r.latestLocation] = (acc[r.latestLocation] || 0) + 1;
+      }
+      return acc;
+    },
+    {}
+  );
+
+  return (
+    <div className="space-y-3">
+      {/* 요약 카드 그리드 */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
+          <div className="flex items-start justify-between mb-3">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-blue-100">
+              <Users size={18} className="text-blue-600" />
+            </div>
+          </div>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            전체
+          </p>
+          <p className="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 font-mono">
+            {totalCount}
+          </p>
+          <p className="text-xs text-gray-400 mt-1">활성 직원</p>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
+          <div className="flex items-start justify-between mb-3">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-emerald-100">
+              <Wifi size={18} className="text-emerald-600" />
+            </div>
+          </div>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            근무 중
+          </p>
+          <p className="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 font-mono">
+            {workingCount}
+          </p>
+          <p className="text-xs text-gray-400 mt-1">현재 연결됨</p>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
+          <div className="flex items-start justify-between mb-3">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-gray-100">
+              <WifiOff size={18} className="text-gray-500" />
+            </div>
+          </div>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            연결 끊김
+          </p>
+          <p className="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 font-mono">
+            {disconnectedCount}
+          </p>
+          <p className="text-xs text-gray-400 mt-1">
+            grace {data.graceMinutes}분 초과
+          </p>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
+          <div className="flex items-start justify-between mb-3">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-purple-100">
+              <Briefcase size={18} className="text-purple-600" />
+            </div>
+          </div>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            위치별
+          </p>
+          <div className="mt-1 space-y-0.5">
+            {Object.keys(locationCounts).length === 0 ? (
+              <p className="text-sm text-gray-400">-</p>
+            ) : (
+              Object.entries(locationCounts).map(([loc, count]) => (
+                <p key={loc} className="text-sm font-mono text-gray-700">
+                  {loc} <span className="font-bold">{count}</span>명
+                </p>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 직원별 실시간 상세 */}
+      <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+        <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
+          <h3 className="text-sm font-bold text-gray-900">
+            직원별 실시간 상태
+          </h3>
+          <span className="text-xs text-gray-400">
+            {new Date(data.asOf).toLocaleTimeString("ko-KR", {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}{" "}
+            기준 (30초마다 자동 갱신)
+          </span>
+        </div>
+
+        {/* 데스크탑 테이블 */}
+        <div className="hidden md:block overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="bg-white border-b border-gray-100">
+                <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
+                  사번
+                </th>
+                <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
+                  이름
+                </th>
+                <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
+                  부서
+                </th>
+                <th className="text-center text-xs font-semibold text-gray-500 px-5 py-3">
+                  상태
+                </th>
+                <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
+                  위치
+                </th>
+                <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
+                  마지막 감지
+                </th>
+                <th className="text-left text-xs font-semibold text-gray-500 px-5 py-3">
+                  오늘 출근
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.map((r) => (
+                <tr
+                  key={r.employeeId}
+                  className="border-b border-gray-50 hover:bg-blue-50/30"
+                >
+                  <td className="px-5 py-3 text-sm text-gray-500 font-mono">
+                    {r.employeeNo}
+                  </td>
+                  <td className="px-5 py-3 text-sm font-semibold text-gray-900">
+                    {r.name}
+                  </td>
+                  <td className="px-5 py-3 text-sm text-gray-500">
+                    {r.departmentName ?? "-"}
+                  </td>
+                  <td className="px-5 py-3 text-center">
+                    {r.realtimeStatus === "working" ? (
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                        근무 중
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
+                        <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+                        끊김
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-5 py-3 text-sm text-gray-700">
+                    {r.realtimeStatus === "working" && r.latestLocation
+                      ? r.latestLocation
+                      : "-"}
+                  </td>
+                  <td className="px-5 py-3 text-sm text-gray-500">
+                    {formatRelativeTime(r.latestCheckedAt)}
+                  </td>
+                  <td className="px-5 py-3 text-sm text-gray-900 font-mono">
+                    {r.todayCheckIn ? formatTime(r.todayCheckIn) : "-"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* 모바일 카드 */}
+        <div className="md:hidden divide-y divide-gray-50">
+          {data.rows.map((r) => (
+            <div key={r.employeeId} className="px-4 py-3 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-sm font-semibold text-gray-900 truncate">
+                    {r.name}
+                  </span>
+                  <span className="text-xs text-gray-400 font-mono shrink-0">
+                    {r.employeeNo}
+                  </span>
+                </div>
+                {r.realtimeStatus === "working" ? (
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 shrink-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    근무 중
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 shrink-0">
+                    끊김
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-500">
+                  {r.departmentName ?? "(부서 없음)"}
+                  {r.realtimeStatus === "working" && r.latestLocation
+                    ? ` · ${r.latestLocation}`
+                    : ""}
+                </span>
+                <span className="text-gray-400">
+                  {formatRelativeTime(r.latestCheckedAt)}
+                </span>
+              </div>
+              {r.todayCheckIn && (
+                <div className="text-xs text-gray-400 font-mono">
+                  출근 {formatTime(r.todayCheckIn)}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -118,6 +412,14 @@ export default function AttendanceOverviewPage() {
 
   const [departments, setDepartments] = useState<DeptOption[]>([]);
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
+
+  // 실시간 현황
+  const [realtimeData, setRealtimeData] = useState<RealtimeResponse | null>(null);
+  const [realtimeLoading, setRealtimeLoading] = useState(true);
+
+  // 과거 기록 펼침 여부
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyFetched, setHistoryFetched] = useState(false);
 
   // 부서 옵션 로드 (CEO/ADMIN_전체만 의미 있음)
   // ADMIN_부서지정은 본인 부서로 강제됨 (필터 UI는 숨김)
@@ -199,9 +501,33 @@ export default function AttendanceOverviewPage() {
     [startDate, endDate, departmentFilter, employeeFilter, canChooseDepartment]
   );
 
+  // 실시간 현황 fetch
+  const fetchRealtime = useCallback(async (silent = false) => {
+    if (!silent) setRealtimeLoading(true);
+    try {
+      const res = await fetch("/api/attendance/realtime");
+      if (res.ok) {
+        setRealtimeData(await res.json());
+      }
+    } catch (e) {
+      console.error("realtime fetch error:", e);
+    } finally {
+      setRealtimeLoading(false);
+    }
+  }, []);
+
+  // 첫 진입 시 실시간 현황만 자동 fetch (과거 기록은 사용자가 [과거 기록 조회] 클릭 시)
   useEffect(() => {
-    fetchData();
-    // 처음 1회만 자동 fetch. 이후는 사용자가 명시적으로 조회 버튼 누름.
+    fetchRealtime();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 실시간 현황 30초마다 자동 갱신
+  useEffect(() => {
+    const timer = setInterval(() => {
+      fetchRealtime(true);
+    }, 30000);
+    return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -291,10 +617,10 @@ export default function AttendanceOverviewPage() {
             전체 근태 조회
           </h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            {data?.scope === "all"
-              ? "전체 직원 출퇴근 기록을 조회합니다"
-              : data?.scope === "department"
-              ? "본인 부서 직원 출퇴근 기록을 조회합니다"
+            {realtimeData?.scope === "all"
+              ? "전체 직원 현황을 조회합니다"
+              : realtimeData?.scope === "department"
+              ? "본인 부서 직원 현황을 조회합니다"
               : "직원 출퇴근 기록을 조회합니다"}
           </p>
         </div>
@@ -308,18 +634,49 @@ export default function AttendanceOverviewPage() {
             CSV
           </button>
           <button
-            onClick={() => fetchData(true)}
-            disabled={refreshing}
+            onClick={() => fetchRealtime()}
+            disabled={realtimeLoading}
             className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40"
           >
             <RefreshCw
               size={14}
-              className={refreshing ? "animate-spin" : ""}
+              className={realtimeLoading ? "animate-spin" : ""}
             />
             새로고침
           </button>
         </div>
       </div>
+
+      {/* 실시간 현황 카드 */}
+      <RealtimeStatusSection
+        data={realtimeData}
+        loading={realtimeLoading}
+      />
+
+      {/* 과거 기록 조회 토글 */}
+      <button
+        onClick={() => setHistoryOpen((o) => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 bg-white border border-gray-100 rounded-2xl hover:bg-gray-50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <Calendar size={16} className="text-gray-500" />
+          <span className="text-sm font-bold text-gray-900">
+            과거 기록 조회
+          </span>
+          <span className="text-xs text-gray-400">
+            (기간/부서/직원 필터)
+          </span>
+        </div>
+        {historyOpen ? (
+          <ChevronUp size={18} className="text-gray-400" />
+        ) : (
+          <ChevronDown size={18} className="text-gray-400" />
+        )}
+      </button>
+
+      {/* 과거 기록 영역 (펼침) */}
+      {historyOpen && (
+        <>
 
       {/* 필터 */}
       <div className="bg-white rounded-2xl border border-gray-100 p-4 space-y-3">
@@ -397,7 +754,10 @@ export default function AttendanceOverviewPage() {
           </div>
           <div className="flex items-end">
             <button
-              onClick={() => fetchData()}
+              onClick={() => {
+                fetchData();
+                setHistoryFetched(true);
+              }}
               disabled={loading}
               className="w-full px-4 py-2.5 text-sm font-bold text-white bg-blue-500 rounded-xl hover:bg-blue-600 disabled:opacity-60"
             >
@@ -407,6 +767,9 @@ export default function AttendanceOverviewPage() {
         </div>
       </div>
 
+      {/* historyFetched일 때만 통계/요약/상세 표시 */}
+      {historyFetched && (
+        <>
       {/* 이상 통계 카드 4개 */}
       {data && data.rows.length > 0 && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
@@ -745,6 +1108,10 @@ export default function AttendanceOverviewPage() {
           </>
         )}
       </div>
+        </>
+      )}
+        </>
+      )}
     </div>
   );
 }

@@ -287,13 +287,17 @@ class Aggregator:
         """정책 A 기반 auto_status 판정.
 
         규칙:
-        1) 시프트 정보 없거나 휴무 → 단순 판정 (normal/absent)
+        1) 시프트 정보 없거나 휴무:
+          - check_in + check_out 둘 다 → 'normal'
+          - check_in만 → 'working' (근무 중)
+          - 둘 다 NULL → 'absent'
         2) 시프트 있음 + 둘 다 NULL → 'absent'
-        3) 시프트 있음 + 둘 중 하나 NULL → None (판정 보류)
-        4) 시프트 있음 + 둘 다 있음:
-           - 출근 시각이 시프트 시작 + grace_in_minutes 초과 → 'late'
-           - 근무시간 < 시프트 총 근무시간 - grace_out_minutes → 'early_leave'
-           - 그 외 → 'normal'
+        3) 시프트 있음 + check_in만 → 'working' (근무 중)
+        4) 시프트 있음 + check_out만 → None (판정 보류)
+        5) 시프트 있음 + 둘 다 있음:
+          - 출근 시각이 시프트 시작 + grace_in_minutes 초과 → 'late'
+          - 근무시간 < 시프트 총 근무시간 - grace_out_minutes → 'early_leave'
+          - 그 외 → 'normal'
         """
         # 시프트 없거나 휴무 → 단순 판정
         if (
@@ -304,6 +308,8 @@ class Aggregator:
         ):
             if check_in is not None and check_out is not None:
                 return "normal"
+            elif check_in is not None and check_out is None:
+                return "working"  # 시프트 없을 때도 출근만 있으면 근무 중
             elif check_in is None and check_out is None:
                 return "absent"
             else:
@@ -313,8 +319,12 @@ class Aggregator:
         if check_in is None and check_out is None:
             return "absent"
 
-        # 시프트 있음 + 한쪽만 → 판정 보류
-        if check_in is None or check_out is None:
+        # 시프트 있음 + check_in만 → 'working' (근무 중)
+        if check_in is not None and check_out is None:
+            return "working"
+
+        # 시프트 있음 + check_out만 (이론상 거의 없음) → None (판정 보류)
+        if check_in is None and check_out is not None:
             return None
 
         # 시프트 시작/종료 시각 파싱
