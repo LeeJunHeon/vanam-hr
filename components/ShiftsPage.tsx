@@ -13,6 +13,12 @@ import {
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
 import { todayYmd } from "@/lib/dateUtils";
+import TimePicker, {
+  normalizeTimeForDb,
+  denormalizeTimeForDisplay,
+  calcWorkMinutes,
+  formatWorkDuration,
+} from "@/components/TimePicker";
 
 interface SchedulePoint {
   dayIndex: number;
@@ -152,7 +158,13 @@ export default function ShiftsPage() {
       description: p.description || "",
       cycleDays: p.cycleDays,
       // schedule을 dayIndex 기준 정렬 후 복사 (방어적)
-      schedule: [...p.schedule].sort((a, b) => a.dayIndex - b.dayIndex),
+      // end가 23:59이면 화면에선 24:00으로 표시
+      schedule: [...p.schedule]
+        .sort((a, b) => a.dayIndex - b.dayIndex)
+        .map((sp) => ({
+          ...sp,
+          end: sp.end ? denormalizeTimeForDisplay(sp.end) : sp.end,
+        })),
     });
     setFormError("");
     setShowForm(true);
@@ -224,10 +236,12 @@ export default function ShiftsPage() {
     for (let i = 0; i < form.schedule.length; i++) {
       const p = form.schedule[i];
       if (p.type === "off") continue;
+      // 시작 시간: HH:MM (24:00 불허)
       if (!p.start || !TIME_RE.test(p.start)) {
         return `${i + 1}일째 시작 시간이 HH:MM 형식이 아닙니다.`;
       }
-      if (!p.end || !TIME_RE.test(p.end)) {
+      // 종료 시간: HH:MM 또는 24:00 허용
+      if (!p.end || (!TIME_RE.test(p.end) && p.end !== "24:00")) {
         return `${i + 1}일째 종료 시간이 HH:MM 형식이 아닙니다.`;
       }
     }
@@ -249,11 +263,18 @@ export default function ShiftsPage() {
         : "/api/shifts";
       const method = editTarget ? "PUT" : "POST";
 
+      // 24:00 가상 표기를 23:59로 정규화한 후 저장
+      const normalizedSchedule = form.schedule.map((sp) => ({
+        ...sp,
+        start: sp.start ? normalizeTimeForDb(sp.start) : sp.start,
+        end: sp.end ? normalizeTimeForDb(sp.end) : sp.end,
+      }));
+
       const payload = {
         name: form.name.trim(),
         description: form.description.trim() || null,
         cycleDays: form.cycleDays,
-        schedule: form.schedule,
+        schedule: normalizedSchedule,
       };
 
       const res = await fetch(url, {
@@ -477,35 +498,46 @@ export default function ShiftsPage() {
                           </option>
                         ))}
                       </select>
-                      <input
-                        type="time"
-                        value={p.start ?? ""}
-                        disabled={isOff}
-                        onChange={(e) =>
-                          onScheduleTimeChange(idx, "start", e.target.value)
-                        }
-                        className="col-span-3 sm:col-span-2 px-2 py-1.5 border border-gray-200 rounded-lg text-xs bg-white outline-none focus:ring-2 focus:ring-blue-400 disabled:bg-gray-100 disabled:text-gray-400"
-                      />
+                      <div className="col-span-3 sm:col-span-3">
+                        <TimePicker
+                          value={p.start ?? ""}
+                          disabled={isOff}
+                          placeholder="시작"
+                          onChange={(val) =>
+                            onScheduleTimeChange(idx, "start", val)
+                          }
+                        />
+                      </div>
                       <span className="col-span-1 text-center text-gray-400 text-xs">
                         ~
                       </span>
-                      <input
-                        type="time"
-                        value={p.end ?? ""}
-                        disabled={isOff}
-                        onChange={(e) =>
-                          onScheduleTimeChange(idx, "end", e.target.value)
-                        }
-                        className="col-span-2 sm:col-span-2 px-2 py-1.5 border border-gray-200 rounded-lg text-xs bg-white outline-none focus:ring-2 focus:ring-blue-400 disabled:bg-gray-100 disabled:text-gray-400"
-                      />
+                      <div className="col-span-3 sm:col-span-3">
+                        <TimePicker
+                          value={p.end ?? ""}
+                          disabled={isOff}
+                          placeholder="종료"
+                          allowMidnight={true}
+                          onChange={(val) =>
+                            onScheduleTimeChange(idx, "end", val)
+                          }
+                        />
+                      </div>
                       <div
-                        className={`hidden sm:block sm:col-span-3 ml-2 px-2 py-1 rounded-lg text-[10px] text-center text-gray-600 ${getTypeBg(
+                        className={`hidden sm:block sm:col-span-1 px-2 py-1 rounded-lg text-[10px] text-center text-gray-600 ${getTypeBg(
                           p.type
                         )} bg-opacity-30`}
                       >
                         {getTypeLabel(p.type)}
                       </div>
                     </div>
+                    {!isOff && p.start && p.end && (
+                      <div className="px-3 pb-2 -mt-1">
+                        <div className="text-[10px] text-gray-500 pl-[8.33%]">
+                          근무 시간:{" "}
+                          {formatWorkDuration(calcWorkMinutes(p.start, p.end))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
