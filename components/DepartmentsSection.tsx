@@ -12,6 +12,7 @@ import {
   Building2,
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
+import { todayYmd } from "@/lib/dateUtils";
 
 interface Department {
   id: number;
@@ -205,7 +206,7 @@ export default function DepartmentsSection() {
         d.sortOrder,
         d.isActive ? "Y" : "N",
       ]),
-      `부서_${new Date().toISOString().split("T")[0]}.csv`
+      `부서_${todayYmd()}.csv`
     );
   };
 

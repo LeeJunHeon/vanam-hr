@@ -12,6 +12,7 @@ import {
   Briefcase,
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
+import { todayYmd } from "@/lib/dateUtils";
 
 interface Position {
   id: number;
@@ -178,7 +179,7 @@ export default function PositionsSection() {
         p.sortOrder,
         p.isActive ? "Y" : "N",
       ]),
-      `직급_${new Date().toISOString().split("T")[0]}.csv`
+      `직급_${todayYmd()}.csv`
     );
   };
 

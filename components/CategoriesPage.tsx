@@ -12,6 +12,7 @@ import {
   Shield,
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
+import { todayYmd } from "@/lib/dateUtils";
 
 interface Category {
   id: number;
@@ -250,7 +251,7 @@ export default function CategoriesPage() {
         c.isActive ? "Y" : "N",
         c.description ?? "",
       ]),
-      `근태항목_${new Date().toISOString().split("T")[0]}.csv`
+      `근태항목_${todayYmd()}.csv`
     );
   };
 

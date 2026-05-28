@@ -20,6 +20,7 @@ import {
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import type { PageId } from "@/components/Sidebar";
 import DatePicker from "@/components/DatePicker";
+import { todayYmd } from "@/lib/dateUtils";
 
 // ============================================
 // 공통 타입
@@ -544,12 +545,8 @@ function StatCard({
 }
 
 // ============================================
-// Picker 초기값 헬퍼
+// Picker 초기값 헬퍼 (todayYmd는 lib/dateUtils 사용)
 // ============================================
-function todayStr(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
 function thisMonthStr(): string {
   const d = new Date();
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
@@ -570,7 +567,7 @@ function AdminDashboard({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [period, setPeriod] = useState<PeriodType>("month");
-  const [targetDate, setTargetDate] = useState(todayStr());
+  const [targetDate, setTargetDate] = useState(todayYmd());
   const [targetMonth, setTargetMonth] = useState(thisMonthStr());
   const [targetYear, setTargetYear] = useState(thisYearStr());
 
@@ -684,7 +681,7 @@ function MyDashboard({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [period, setPeriod] = useState<PeriodType>("month");
-  const [targetDate, setTargetDate] = useState(todayStr());
+  const [targetDate, setTargetDate] = useState(todayYmd());
   const [targetMonth, setTargetMonth] = useState(thisMonthStr());
   const [targetYear, setTargetYear] = useState(thisYearStr());
 

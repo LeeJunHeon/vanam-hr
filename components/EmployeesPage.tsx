@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
 import DatePicker from "@/components/DatePicker";
+import { todayYmd } from "@/lib/dateUtils";
 
 interface Employee {
   id: number;
@@ -52,7 +53,6 @@ interface UserOption {
   role: string | null;
 }
 
-const today = () => new Date().toISOString().split("T")[0];
 
 const EMPTY_FORM = {
   employeeNo: "",
@@ -62,7 +62,7 @@ const EMPTY_FORM = {
   departmentId: "" as "" | string,
   positionId: "" as "" | string,
   phone: "",
-  hiredAt: today(),
+  hiredAt: todayYmd(),
   resignedAt: "",
   note: "",
 };
@@ -164,7 +164,7 @@ export default function EmployeesPage() {
     setEditTarget(null);
     setForm({
       ...EMPTY_FORM,
-      hiredAt: today(),
+      hiredAt: todayYmd(),
       positionId: employeePos ? String(employeePos.id) : "",
     });
     setFormError("");
@@ -325,7 +325,7 @@ export default function EmployeesPage() {
         e.isActive ? "Y" : "N",
         e.note ?? "",
       ]),
-      `직원_${new Date().toISOString().split("T")[0]}.csv`
+      `직원_${todayYmd()}.csv`
     );
   };
 

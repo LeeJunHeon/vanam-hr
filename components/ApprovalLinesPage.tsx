@@ -14,6 +14,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
+import { todayYmd } from "@/lib/dateUtils";
 
 interface ApprovalLine {
   id: number;
@@ -259,7 +260,7 @@ export default function ApprovalLinesPage() {
         l.deputyApproverName ?? "",
         l.autoDelegateHours,
       ]),
-      `결재선_${new Date().toISOString().split("T")[0]}.csv`
+      `결재선_${todayYmd()}.csv`
     );
   };
 

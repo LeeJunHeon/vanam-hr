@@ -13,6 +13,7 @@ import {
   Wifi,
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
+import { todayYmd } from "@/lib/dateUtils";
 import { normalizeMacAddress, formatMacAddress } from "@/lib/macAddress";
 
 interface Device {
@@ -290,7 +291,7 @@ export default function DevicesPage() {
         d.isActive ? "Y" : "N",
         new Date(d.registeredAt).toLocaleString("ko-KR"),
       ]),
-      `디바이스_${new Date().toISOString().split("T")[0]}.csv`
+      `디바이스_${todayYmd()}.csv`
     );
   };
 

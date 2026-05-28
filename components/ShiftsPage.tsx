@@ -12,6 +12,7 @@ import {
   Clock,
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
+import { todayYmd } from "@/lib/dateUtils";
 
 interface SchedulePoint {
   dayIndex: number;
@@ -321,7 +322,7 @@ export default function ShiftsPage() {
         p.isActive ? "Y" : "N",
         JSON.stringify(p.schedule),
       ]),
-      `시프트패턴_${new Date().toISOString().split("T")[0]}.csv`
+      `시프트패턴_${todayYmd()}.csv`
     );
   };
 

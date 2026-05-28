@@ -18,6 +18,7 @@ import {
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import { exportCSV } from "@/lib/csvUtils";
 import DatePicker from "@/components/DatePicker";
+import { todayYmd } from "@/lib/dateUtils";
 
 interface AttendanceRequest {
   id: number;
@@ -62,11 +63,6 @@ interface StatusLookup {
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
-}
-
-function todayYmd(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
 function formatDateTime(iso: string | null): string {
@@ -404,7 +400,7 @@ export default function RequestPage() {
           (r.status === "auto_approved" ? "자동 승인" : ""),
         new Date(r.requestedAt).toLocaleString("ko-KR"),
       ]),
-      `결재요청_${new Date().toISOString().split("T")[0]}.csv`
+      `결재요청_${todayYmd()}.csv`
     );
   };
 

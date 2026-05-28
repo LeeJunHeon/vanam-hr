@@ -14,6 +14,7 @@ import {
 import { exportCSV } from "@/lib/csvUtils";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import DatePicker from "@/components/DatePicker";
+import { todayYmd, firstOfMonthYmd } from "@/lib/dateUtils";
 
 interface AttendanceRow {
   employeeId: number;
@@ -102,21 +103,11 @@ function StatusBadge({ status }: { status: string | null }) {
   );
 }
 
-function todayStr() {
-  return new Date().toISOString().split("T")[0];
-}
-
-function firstOfMonthStr() {
-  const d = new Date();
-  d.setDate(1);
-  return d.toISOString().split("T")[0];
-}
-
 export default function AttendanceOverviewPage() {
   const { me, isCeo } = useCurrentEmployee();
 
-  const [startDate, setStartDate] = useState(firstOfMonthStr());
-  const [endDate, setEndDate] = useState(todayStr());
+  const [startDate, setStartDate] = useState(firstOfMonthYmd());
+  const [endDate, setEndDate] = useState(todayYmd());
   const [departmentFilter, setDepartmentFilter] = useState<string>("all");
   const [employeeFilter, setEmployeeFilter] = useState<string>("all");
 

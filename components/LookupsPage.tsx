@@ -12,6 +12,7 @@ import {
   Shield,
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
+import { todayYmd } from "@/lib/dateUtils";
 
 interface Lookup {
   id: number;
@@ -207,7 +208,7 @@ export default function LookupsPage() {
         l.isActive ? "Y" : "N",
         l.description ?? "",
       ]),
-      `코드룩업_${new Date().toISOString().split("T")[0]}.csv`
+      `코드룩업_${todayYmd()}.csv`
     );
   };
 

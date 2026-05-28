@@ -12,6 +12,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import DatePicker from "@/components/DatePicker";
+import { todayYmd } from "@/lib/dateUtils";
 
 interface Assignment {
   id: number;
@@ -41,12 +42,11 @@ interface PatternOption {
   cycleDays: number;
 }
 
-const today = () => new Date().toISOString().split("T")[0];
 
 const EMPTY_FORM = {
   employeeId: "",
   patternId: "",
-  startDate: today(),
+  startDate: todayYmd(),
   endDate: "",
 };
 
@@ -120,7 +120,7 @@ export default function EmployeeShiftsPage() {
 
   const openCreate = () => {
     setEditTarget(null);
-    setForm({ ...EMPTY_FORM, startDate: today() });
+    setForm({ ...EMPTY_FORM, startDate: todayYmd() });
     setFormError("");
     setShowForm(true);
   };

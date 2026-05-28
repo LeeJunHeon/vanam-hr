@@ -16,6 +16,7 @@ import {
   Globe,
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
+import { todayYmd } from "@/lib/dateUtils";
 
 interface Policy {
   key: string;
@@ -127,7 +128,7 @@ export default function PoliciesPage() {
         p.description ?? "",
         new Date(p.updatedAt).toLocaleString("ko-KR"),
       ]),
-      `정책설정_${new Date().toISOString().split("T")[0]}.csv`
+      `정책설정_${todayYmd()}.csv`
     );
   };
 
