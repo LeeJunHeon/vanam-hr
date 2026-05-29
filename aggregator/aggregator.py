@@ -6,22 +6,26 @@ is_overridden=true 인 row는 건드리지 않음.
 
 출퇴근 정의 (employee 단위 통합 timeline, location 무관):
 - 출근: 그날 첫 'online'의 checked_at
-- 퇴근: 마지막 INSERT 종류에 따라 분기
-  1) 마지막 INSERT가 offline → 그 offline 시각 (정상 99%)
-  2) 마지막 INSERT가 online + (now - last_online >= grace_minutes)
-     → last_online (폴러 장애 등 안전망)
-  3) 마지막 INSERT가 online + grace 미경과 → None (아직 사무실)
+- 퇴근: 마지막 record가 offline이고 그 후 grace 동안 재연결 없을 때만 확정
+  1) 마지막=offline + grace 경과 → 그 offline 시각이 퇴근 (정상)
+  2) 마지막=offline + grace 미경과 → None (잠깐 자리 비움, 근무중 유지)
+  3) 마지막=online → None (자리에 있음, 근무중)
+     ※ poller는 상태 전환 시에만 INSERT하므로 침묵은 "online 유지" 의미.
+       가만히 있는 사람을 퇴근 처리하지 않는다.
 - grace_minutes는 hr.policy_settings.debounce_minutes에서 읽음 (기본 60)
+- 새벽 cutoff(4시) 전 재online은 work_date 귀속 + UPSERT로 자동 취소됨
+  (퇴근 확정 후 야간 재방문 시 working으로 자동 복원)
 - auto_status: 시프트 매칭 후 정책 A 판정 (지각/조퇴 정교화)
-  - 시프트 없음 또는 휴무: 단순 (normal/absent/None)
-  - 시프트 있음:
-    - check_in > 시프트시작 + grace_in_minutes → 'late'
-    - 근무시간 < 시프트시간 - grace_out_minutes → 'early_leave'
-    - 그 외 둘 다 있음 → 'normal'
-    - 둘 다 없음 → 'absent'
-    - 한쪽만 → None (판정 보류)
-  - grace_in_minutes는 hr.policy_settings (기본 10)
-  - grace_out_minutes는 hr.policy_settings (기본 0)
+- 시프트 없음 또는 휴무: 단순 (normal/working/absent/None)
+- 시프트 있음:
+  - check_in > 시프트시작 + grace_in_minutes → 'late'
+  - 근무시간 < 시프트시간 - grace_out_minutes → 'early_leave'
+  - 그 외 둘 다 있음 → 'normal'
+  - 둘 다 없음 → 'absent'
+  - check_in만 있음 → 'working' (근무중)
+  - check_out만 있음 → None (판정 보류)
+- grace_in_minutes는 hr.policy_settings (기본 10)
+- grace_out_minutes는 hr.policy_settings (기본 0)
 
 work_date 귀속 (야간 근무자 정책):
 - 새벽 cutoff_hour 시 이전 활동은 전일 work_date로 귀속
@@ -70,13 +74,20 @@ class Aggregator:
         규칙:
         - check_in: 그날 첫 'online'의 checked_at
         - check_out:
-          1) 마지막 INSERT가 offline → 그 offline 시각 (정상 케이스 99%)
-             예: 09:18 online → ... → 16:29 online → 18:30 offline
-                 → check_out = 18:30
-          2) 마지막 INSERT가 online + now - last_online >= grace_minutes
-             → last_online (폴러 장애 등 비상 안전망)
-          3) 마지막 INSERT가 online + grace 미경과
-             → None (아직 사무실에 있을 가능성)
+          1) 마지막 record가 offline + grace 경과 → 그 offline 시각 (정상 퇴근 확정)
+             예: 09:18 online → ... → 18:30 offline (지금이 19:31+) → check_out = 18:30
+          2) 마지막 record가 offline + grace 미경과 → None (잠깐 자리 비움, 근무중)
+             예: 12:00 offline (지금이 12:30) → 점심 외출 가능성 → 근무중 유지
+          3) 마지막 record가 online → None (자리에 있음, 근무중)
+             예: poller가 "상태 전환 시에만 INSERT"하는 설계이므로, 가만히 online
+                  유지인 사람은 presence_raw에 추가 INSERT가 없다 (정상).
+                  이 침묵을 폴러 장애로 오해해서 퇴근 처리하면 안 됨.
+
+        새벽 cutoff(4시) 전 재online은 work_date 귀속 + UPSERT 메커니즘으로 자동 처리:
+        - 4시 이전 활동은 전일 work_date에 귀속
+        - aggregate_today가 매 사이클 어제+오늘 두 work_date 모두 재처리
+        - 이전에 퇴근 확정됐어도 새 online이 들어오면 마지막 record가 online으로 바뀌어
+          자동으로 working으로 되돌아감 (is_overridden=true 제외).
 
         raw_records는 checked_at 오름차순 정렬되어 있어야 함.
         now는 timezone-aware datetime (UTC 권장).
@@ -84,7 +95,7 @@ class Aggregator:
         if not raw_records:
             return None, None
 
-        # 첫 online
+        # 첫 online → check_in
         check_in = None
         for r in raw_records:
             if r["status"] == "online":
@@ -96,16 +107,17 @@ class Aggregator:
         check_out = None
 
         if last_record["status"] == "offline":
-            # 정상 케이스: 마지막이 offline → 퇴근 확정
-            check_out = last_record["checked_at"]
-        elif last_record["status"] == "online":
-            # 비정상: 마지막이 online인데 그 후 offline 못 잡힘 (폴러 장애 등)
-            # grace 시간 지나면 last_online으로 안전망 적용
-            last_online = last_record["checked_at"]
-            elapsed_seconds = (now - last_online).total_seconds()
+            # 마지막이 offline → grace 경과 후에만 퇴근 확정
+            # (잠깐 자리 비움 보호: 점심/화장실/외출 등)
+            last_offline = last_record["checked_at"]
+            elapsed_seconds = (now - last_offline).total_seconds()
             if elapsed_seconds >= grace_minutes * 60:
-                check_out = last_online
-            # else: None (아직 사무실에 있을 가능성)
+                check_out = last_offline  # grace 동안 재연결 없음 → 진짜 퇴근
+            # else: None (잠깐 자리 비움, 근무중)
+        elif last_record["status"] == "online":
+            # 마지막이 online → 자리에 있음, 무조건 근무중
+            # (poller가 상태 전환 시에만 INSERT하므로 침묵은 "online 유지" 의미)
+            check_out = None
 
         return check_in, check_out
 
