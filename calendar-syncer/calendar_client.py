@@ -9,10 +9,10 @@ from datetime import datetime
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-# 1단계는 읽기 전용이므로 readonly scope 사용.
-# 도메인 위임 admin 콘솔에는 https://www.googleapis.com/auth/calendar 로 등록돼 있으나
-# readonly(https://www.googleapis.com/auth/calendar.readonly)는 그 하위 집합이라 정상 동작한다.
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+# 도메인 위임 admin 콘솔에 등록된 scope(calendar)와 일치시킴.
+# 1단계는 코드에 쓰기 메서드를 두지 않아 실제로는 읽기만 한다.
+# readonly로 좁히려면 admin 콘솔에 calendar.readonly도 추가 등록 필요.
+SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 
 class CalendarClient:
