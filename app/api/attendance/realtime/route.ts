@@ -21,6 +21,10 @@ import {
 //     latestCheckedAt: ISO string | null,
 //     latestLocation: string | null,
 //     todayCheckIn: ISO string | null,
+//     todayCheckOut: ISO string | null,
+//     todayWorkMinutes: number | null,
+//     todayAutoStatus: string | null,
+//     progressStatus: 'working' | 'away' | 'completed' | 'absent_today',
 //   }>
 // }
 export async function GET(request: NextRequest) {
@@ -100,6 +104,9 @@ export async function GET(request: NextRequest) {
       latest_checked_at: Date | null;
       latest_location: string | null;
       today_check_in: Date | null;
+      today_check_out: Date | null;
+      today_work_minutes: number | null;
+      today_auto_status: string | null;
     };
 
     const latestRows = await prisma.$queryRaw<LatestRow[]>`
@@ -126,7 +133,7 @@ export async function GET(request: NextRequest) {
         ORDER BY employee_id, checked_at DESC
       ),
       today_daily AS (
-        SELECT employee_id, check_in
+        SELECT employee_id, check_in, check_out, work_minutes, auto_status
         FROM hr.attendance_daily
         WHERE employee_id = ANY(${employeeIds}::int[])
           AND work_date = (SELECT d FROM today_kst)
@@ -136,7 +143,10 @@ export async function GET(request: NextRequest) {
         l.latest_status,
         l.latest_checked_at,
         l.latest_location,
-        d.check_in AS today_check_in
+        d.check_in AS today_check_in,
+        d.check_out AS today_check_out,
+        d.work_minutes AS today_work_minutes,
+        d.auto_status AS today_auto_status
       FROM (SELECT UNNEST(${employeeIds}::int[]) AS id) e
       LEFT JOIN latest_per_emp l ON l.employee_id = e.id
       LEFT JOIN today_daily d ON d.employee_id = e.id
@@ -162,6 +172,24 @@ export async function GET(request: NextRequest) {
         }
       }
 
+      // progressStatus: 클라이언트 편의 4단계 분류
+      // - latestStatus 없음 → 오늘 presence_raw 기록 자체가 없음 → absent_today
+      // - online → working (자리에 있음)
+      // - offline + grace 미경과 → away (잠깐 자리비움, 근무중)
+      // - offline + grace 경과 → completed (퇴근 확정, aggregator가 다음 사이클에 처리)
+      let progressStatus: "working" | "away" | "completed" | "absent_today";
+      if (r.latest_status === null) {
+        progressStatus = "absent_today";
+      } else if (r.latest_status === "online") {
+        progressStatus = "working";
+      } else if (r.latest_status === "offline" && r.latest_checked_at) {
+        const elapsed = now - r.latest_checked_at.getTime();
+        progressStatus = elapsed < graceMs ? "away" : "completed";
+      } else {
+        // offline인데 checked_at이 없는 비정상 케이스 → 미출근 취급
+        progressStatus = "absent_today";
+      }
+
       return {
         employeeId: r.employee_id,
         employeeNo: emp?.employeeNo ?? "",
@@ -177,6 +205,15 @@ export async function GET(request: NextRequest) {
         todayCheckIn: r.today_check_in
           ? r.today_check_in.toISOString()
           : null,
+        todayCheckOut: r.today_check_out
+          ? r.today_check_out.toISOString()
+          : null,
+        todayWorkMinutes:
+          r.today_work_minutes !== null && r.today_work_minutes !== undefined
+            ? Number(r.today_work_minutes)
+            : null,
+        todayAutoStatus: r.today_auto_status ?? null,
+        progressStatus,
       };
     });
 
