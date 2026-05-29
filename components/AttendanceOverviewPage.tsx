@@ -187,36 +187,28 @@ function progressBadgeClass(s: ProgressStatus): string {
   }
 }
 
-// 평가 라벨 (autoStatus 기준) — working/null은 보류
-function evalLabel(autoStatus: string | null): string {
-  switch (autoStatus) {
-    case "normal":
-      return "정상";
-    case "late":
-      return "지각";
-    case "early_leave":
-      return "조퇴";
-    case "absent":
-      return "결근";
-    default:
-      return "-";
-  }
+// 평가 라벨.
+// - check_out이 없으면 평가 보류 ('–')
+// - autoStatus가 NULL이지만 check_out 있으면 '정상' 추정 (옛날 데이터 보호)
+function evalLabel(autoStatus: string | null, hasCheckOut: boolean): string {
+  if (!hasCheckOut) return "–";
+  if (autoStatus === "normal") return "정상";
+  if (autoStatus === "late") return "지각";
+  if (autoStatus === "early_leave") return "조퇴";
+  if (autoStatus === "absent") return "결근";
+  // NULL이지만 check_out 있음 → autoStatus 도입 전 옛날 데이터로 추정, '정상'으로 표시
+  return "정상";
 }
 
-// 평가 텍스트 색상
-function evalColor(autoStatus: string | null): string {
-  switch (autoStatus) {
-    case "normal":
-      return "text-emerald-600";
-    case "late":
-      return "text-amber-600";
-    case "early_leave":
-      return "text-orange-600";
-    case "absent":
-      return "text-rose-600";
-    default:
-      return "text-gray-400";
-  }
+// 평가 텍스트 색상 (evalLabel과 동일한 분기)
+function evalColor(autoStatus: string | null, hasCheckOut: boolean): string {
+  if (!hasCheckOut) return "text-gray-400"; // 평가 보류 '–'
+  if (autoStatus === "normal") return "text-emerald-600";
+  if (autoStatus === "late") return "text-amber-600";
+  if (autoStatus === "early_leave") return "text-orange-600";
+  if (autoStatus === "absent") return "text-rose-600";
+  // NULL이지만 check_out 있음 → 정상 색상으로
+  return "text-emerald-600";
 }
 
 // 진행 라벨 (autoStatus 기준) — 기간별/CSV용
@@ -229,6 +221,26 @@ function progressFromAutoStatus(autoStatus: string | null): string {
   )
     return "완료";
   return "미출근"; // absent 또는 null
+}
+
+/**
+ * 진행 상태 판정 — autoStatus가 NULL인 옛날 데이터 보호.
+ * - autoStatus='working' → '근무중' (실시간 사이클에서 채워지는 값)
+ * - check_in + check_out 다 있으면 → '완료' (autoStatus 무관, 옛날 데이터 보호)
+ * - check_in만 있으면 → '근무중' (퇴근 미확정)
+ * - autoStatus='absent'면 → '미출근'
+ * - 그 외 (데이터 없음) → '미출근'
+ */
+function progressFromRow(row: {
+  checkIn: string | null;
+  checkOut: string | null;
+  autoStatus: string | null;
+}): string {
+  if (row.autoStatus === "working") return "근무중";
+  if (row.checkIn && row.checkOut) return "완료";
+  if (row.checkIn) return "근무중";
+  if (row.autoStatus === "absent") return "미출근";
+  return "미출근";
 }
 
 // 직원 카드/표의 "마지막 활동" 한 줄 (아이콘 + 정보)
@@ -262,7 +274,7 @@ function renderActivityInfo(r: RealtimeRow): ReactNode {
             ? ` (${formatWorkMinutes(r.todayWorkMinutes)})`
             : ""}
           {r.todayAutoStatus && r.todayAutoStatus !== "working"
-            ? ` · ${evalLabel(r.todayAutoStatus)}`
+            ? ` · ${evalLabel(r.todayAutoStatus, !!r.todayCheckOut)}`
             : ""}
         </span>
       );
@@ -515,8 +527,8 @@ export default function AttendanceOverviewPage() {
         r.checkIn ? formatTime(r.checkIn) : "",
         r.checkOut ? formatTime(r.checkOut) : "",
         formatWorkMinutes(r.workMinutes),
-        progressFromAutoStatus(r.autoStatus),
-        evalLabel(r.autoStatus),
+        progressFromRow(r),
+        evalLabel(r.autoStatus, !!r.checkOut),
       ]),
       `출퇴근_${startDate}_${endDate}.csv`
     );
@@ -800,10 +812,11 @@ export default function AttendanceOverviewPage() {
                         {r.todayAutoStatus && r.todayAutoStatus !== "working" ? (
                           <span
                             className={`text-sm font-medium ${evalColor(
-                              r.todayAutoStatus
+                              r.todayAutoStatus,
+                              !!r.todayCheckOut
                             )}`}
                           >
-                            {evalLabel(r.todayAutoStatus)}
+                            {evalLabel(r.todayAutoStatus, !!r.todayCheckOut)}
                           </span>
                         ) : (
                           <span className="text-sm text-gray-300">-</span>
@@ -847,8 +860,13 @@ export default function AttendanceOverviewPage() {
                     {r.todayAutoStatus && r.todayAutoStatus !== "working" && (
                       <div>
                         평가:{" "}
-                        <span className={evalColor(r.todayAutoStatus)}>
-                          {evalLabel(r.todayAutoStatus)}
+                        <span
+                          className={evalColor(
+                            r.todayAutoStatus,
+                            !!r.todayCheckOut
+                          )}
+                        >
+                          {evalLabel(r.todayAutoStatus, !!r.todayCheckOut)}
                         </span>
                       </div>
                     )}
@@ -1015,15 +1033,21 @@ export default function AttendanceOverviewPage() {
           <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
             <button
               onClick={() => setSummaryOpen((o) => !o)}
-              className="w-full px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between hover:bg-gray-100 transition-colors"
+              className="w-full px-5 py-3 border-b border-gray-200 bg-gray-50 hover:bg-gray-100 transition-colors flex items-center justify-between text-left"
             >
-              <h3 className="text-sm font-bold text-gray-900">
-                직원별 요약 ({summary.length}명)
-              </h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-gray-900">직원별 요약</h3>
+                <span className="text-sm text-gray-500">
+                  ({summary.length}명)
+                </span>
+                <span className="text-xs text-gray-400 ml-1">
+                  — {summaryOpen ? "클릭하여 접기" : "클릭하여 펼치기"}
+                </span>
+              </div>
               {summaryOpen ? (
-                <ChevronUp size={18} className="text-gray-400" />
+                <ChevronUp size={18} className="text-gray-600" />
               ) : (
-                <ChevronDown size={18} className="text-gray-400" />
+                <ChevronDown size={18} className="text-gray-600" />
               )}
             </button>
 
@@ -1254,16 +1278,17 @@ export default function AttendanceOverviewPage() {
                           {formatWorkMinutes(r.workMinutes)}
                         </td>
                         <td className="px-5 py-3 text-center text-sm text-gray-700">
-                          {progressFromAutoStatus(r.autoStatus)}
+                          {progressFromRow(r)}
                         </td>
                         <td className="px-5 py-3 text-center">
                           <div className="inline-flex items-center gap-1">
                             <span
                               className={`text-sm font-medium ${evalColor(
-                                r.autoStatus
+                                r.autoStatus,
+                                !!r.checkOut
                               )}`}
                             >
-                              {evalLabel(r.autoStatus)}
+                              {evalLabel(r.autoStatus, !!r.checkOut)}
                             </span>
                             {r.isOverridden && (
                               <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-full">
@@ -1297,10 +1322,11 @@ export default function AttendanceOverviewPage() {
                       <div className="flex items-center gap-1 shrink-0">
                         <span
                           className={`text-xs font-medium ${evalColor(
-                            r.autoStatus
+                            r.autoStatus,
+                            !!r.checkOut
                           )}`}
                         >
-                          {evalLabel(r.autoStatus)}
+                          {evalLabel(r.autoStatus, !!r.checkOut)}
                         </span>
                         {r.isOverridden && (
                           <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-full">
@@ -1314,7 +1340,7 @@ export default function AttendanceOverviewPage() {
                         {r.workDate}
                       </span>
                       <span className="text-gray-500">
-                        {progressFromAutoStatus(r.autoStatus)}
+                        {progressFromRow(r)}
                       </span>
                     </div>
                     <div className="flex items-center justify-between text-xs">
