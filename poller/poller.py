@@ -54,8 +54,10 @@ class Poller:
         )
         self.last_policy_load: datetime | None = None
         self.running = True
-        # 메모리 상태 캐시: {device_id: 'online' or 'offline'}
-        self.device_states: dict[int, str] = {}
+        # 메모리 상태 캐시: {device_id: {'status': 'online'|'offline', 'last_location': '본사'|'공덕'|None}}
+        # - status: 마지막 상태
+        # - last_location: 마지막 online 시 본 location (offline 전환 시 그 location 사용)
+        self.device_states: dict[int, dict] = {}
         self._initial_states_loaded = False
         # 소스별 직전 상태 ('ok' or 'fail') + 최초 실패 시각 (다운타임 계산용)
         self.snmp_state: str = "ok"
@@ -64,16 +66,26 @@ class Poller:
         self.icc_fail_started_at: datetime | None = None
 
     def _ensure_initial_states_loaded(self):
-        """폴러 시작 후 첫 사이클에 활성 디바이스의 마지막 상태 로드."""
+        """폴러 시작 후 첫 사이클에 활성 디바이스의 마지막 상태+location 로드."""
         if self._initial_states_loaded:
             return
         devices = self.db.get_active_devices()
         for d in devices:
-            last = self.db.get_last_status(d["id"])
-            self.device_states[d["id"]] = "online" if last == "online" else "offline"
+            last_info = self.db.get_last_status_with_location(d["id"])
+            # last_info: {'status': 'online'/'offline', 'location': '본사'/'공덕'/None} or None
+            if last_info is None:
+                # 기록 없는 신규 디바이스
+                self.device_states[d["id"]] = {"status": "offline", "last_location": None}
+            else:
+                self.device_states[d["id"]] = {
+                    "status": "online" if last_info["status"] == "online" else "offline",
+                    "last_location": last_info["location"],
+                }
+        online_count = sum(
+            1 for v in self.device_states.values() if v["status"] == "online"
+        )
         self.logger.info(
-            f"초기 상태 로드: {len(self.device_states)}건 "
-            f"(online {sum(1 for s in self.device_states.values() if s == 'online')}건)"
+            f"초기 상태 로드: {len(self.device_states)}건 (online {online_count}건)"
         )
         self._initial_states_loaded = True
 
@@ -199,7 +211,8 @@ class Poller:
         # 새 디바이스(등록 직후) 기본값 offline
         for d in devices:
             if d["id"] not in self.device_states:
-                self.device_states[d["id"]] = "offline"
+                # 신규 등록된 디바이스 (아직 record 없음)
+                self.device_states[d["id"]] = {"status": "offline", "last_location": None}
 
         # [3a] 신도림 SNMP 호출
         snmp_macs = self._call_snmp()
@@ -265,25 +278,42 @@ class Poller:
             in_icc = mac in icc_set
             is_online = in_snmp or in_icc  # OR 연산
 
-            # location 결정: 본사(SNMP) 우선
+            # 현재 디바이스의 메모리 캐시 (이번 사이클에서 prev_state와 location 결정 둘 다에 사용)
+            prev = self.device_states.get(device["id"])
+
+            # location 결정:
+            # - online이면: 본사(SNMP) 우선, 그 다음 공덕(ICC)
+            # - offline이면: 메모리 캐시에 저장된 last_location 사용 (없으면 폴백 "본사")
+            #   → 공덕에서 잡혀있다가 끊길 때 "공덕 offline"으로 정확히 기록됨
             if in_snmp:
                 location = LOCATION_SINDORIM
             elif in_icc:
                 location = LOCATION_GONGDEOK
             else:
-                # offline일 때는 마지막 본 location을 알 수 없음 → 기본 '본사' 사용
-                # (offline INSERT는 location이 중요하지 않음, status만 의미)
-                location = LOCATION_SINDORIM
+                # 둘 다 안 잡힘 → offline 전환 가능성. 마지막 본 위치 사용.
+                if prev and prev.get("last_location"):
+                    location = prev["last_location"]
+                else:
+                    # 폴백: 기록 없는 신규 디바이스 등 → 본사로 (드문 케이스)
+                    location = LOCATION_SINDORIM
 
-            prev_state = self.device_states.get(device["id"], "offline")
+            # prev_state: 메모리 캐시에서 status 추출 (디바이스 신규면 'offline')
+            prev_state = prev["status"] if prev else "offline"
 
             if is_online:
                 matched_count += 1
                 if prev_state == "online":
-                    # 이미 online → last_seen_at만 갱신
+                    # 이미 online → last_seen_at만 갱신 (INSERT 안 함)
                     if not self.config.dry_run:
                         self.db.update_last_seen(device["id"])
                         db_updates += 1
+                    # 같은 online이라도 location이 바뀌었으면 메모리 캐시 갱신 (본사 → 공덕 이동 등)
+                    # → 다음 offline 전환 시 정확한 location 사용
+                    if prev and prev.get("last_location") != location:
+                        self.device_states[device["id"]] = {
+                            "status": "online",
+                            "last_location": location,
+                        }
                 else:
                     # offline → online 전환 → INSERT
                     online_transitions += 1
@@ -299,7 +329,10 @@ class Poller:
                         self.db.update_last_seen(device["id"])
                         db_inserts += 1
                         db_updates += 1
-                        self.device_states[device["id"]] = "online"
+                        self.device_states[device["id"]] = {
+                            "status": "online",
+                            "last_location": location,  # 방금 결정한 본사/공덕
+                        }
                         self.logger.info(
                             f"  → online @ {location}: {mask_mac(mac)} "
                             f"(device_id={device['id']}, employee_id={device['employee_id']}, "
@@ -320,7 +353,11 @@ class Poller:
                             location=location,
                         )
                         db_inserts += 1
-                        self.device_states[device["id"]] = "offline"
+                        # offline 전환 — last_location은 INSERT한 offline의 location과 동일
+                        self.device_states[device["id"]] = {
+                            "status": "offline",
+                            "last_location": location,
+                        }
                         self.logger.info(
                             f"  → offline: {mask_mac(mac)} "
                             f"(device_id={device['id']}, employee_id={device['employee_id']}, "

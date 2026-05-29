@@ -152,6 +152,30 @@ class Database:
             row = c.fetchone()
             return row[0] if row else None
 
+    def get_last_status_with_location(self, device_id: int) -> Optional[dict]:
+        """이 디바이스의 가장 최근 presence_raw의 status + location 반환.
+
+        폴러 시작 시 메모리 상태 캐시(device_states) 초기 로드용.
+        online 시 location도 같이 저장해두고, offline 전환 시 그 location을 사용.
+
+        반환: {'status': 'online'|'offline', 'location': '본사'|'공덕'|None} 또는 None
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                SELECT status, location FROM hr.presence_raw
+                WHERE device_id = %s
+                ORDER BY checked_at DESC, id DESC
+                LIMIT 1
+                """,
+                (device_id,),
+            )
+            row = c.fetchone()
+            if row is None:
+                return None
+            return {"status": row[0], "location": row[1]}
+
     def update_last_seen(self, device_id: int):
         """devices.last_seen_at = NOW() 갱신."""
         self._ensure_connected()
