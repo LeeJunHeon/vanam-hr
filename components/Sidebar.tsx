@@ -12,6 +12,7 @@ import {
 export type PageId =
   | "dashboard" | "my-attendance" | "request" | "approval"
   | "attendance-overview"
+  | "schedule-overview"
   | "employees" | "org" | "devices" | "shifts" | "employee-shifts"
   | "approval-lines"
   | "categories" | "policies" | "calendar" | "lookups";
@@ -33,6 +34,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "approval",       label: "결재함",         icon: CheckSquare },
   // 관리자
   { id: "attendance-overview", label: "전체 근태 조회", icon: BarChart3,   group: "관리자", adminOnly: true },
+  { id: "schedule-overview",   label: "전체 일정 조회", icon: CalendarDays, group: "관리자", adminOnly: true },
   { id: "employees",      label: "직원 관리",      icon: Users,       group: "관리자", adminOnly: true },
   { id: "org",            label: "부서/직급",      icon: Building2,   group: "관리자", adminOnly: true },
   { id: "devices",        label: "디바이스 관리",  icon: Smartphone,  group: "관리자", adminOnly: true },
