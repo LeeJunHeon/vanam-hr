@@ -23,6 +23,10 @@ class Config:
     # 로깅
     log_level: str
     log_file: str
+    # 캘린더 쓰기 endpoint (재고관리 등 내부 시스템 연동)
+    write_target_id: str       # 일정을 등록할 캘린더 ID (VanaM Ch-2)
+    internal_api_token: str    # 내부 API 인증 토큰
+    http_port: int             # Flask HTTP 서버 포트 (기본 8765)
 
 
 def load_config() -> Config:
@@ -38,6 +42,11 @@ def load_config() -> Config:
     log_level = os.environ.get("CALENDAR_LOG_LEVEL", "INFO")
     log_file = os.environ.get("CALENDAR_LOG_FILE", "/app/logs/calendar-syncer.log")
 
+    # 캘린더 쓰기 endpoint 관련
+    write_target_id = os.environ.get("CALENDAR_WRITE_TARGET_ID")
+    internal_api_token = os.environ.get("INTERNAL_API_TOKEN")
+    http_port_raw = os.environ.get("CALENDAR_HTTP_PORT", "8765")
+
     # 필수 값 검증
     missing = []
     if not db_name:
@@ -48,6 +57,10 @@ def load_config() -> Config:
         missing.append("CALENDAR_DB_PASSWORD")
     if not subject_email:
         missing.append("CALENDAR_SUBJECT_EMAIL")
+    if not write_target_id:
+        missing.append("CALENDAR_WRITE_TARGET_ID")
+    if not internal_api_token:
+        missing.append("INTERNAL_API_TOKEN")
     if missing:
         raise RuntimeError(
             f"필수 환경변수 누락: {', '.join(missing)}. .env 파일 확인 필요."
@@ -57,6 +70,11 @@ def load_config() -> Config:
         db_port = int(db_port_raw)
     except ValueError:
         raise RuntimeError(f"CALENDAR_DB_PORT가 정수가 아님: {db_port_raw}")
+
+    try:
+        http_port = int(http_port_raw)
+    except ValueError:
+        raise RuntimeError(f"CALENDAR_HTTP_PORT가 정수가 아님: {http_port_raw}")
 
     return Config(
         db_host=db_host,
@@ -68,4 +86,7 @@ def load_config() -> Config:
         key_file=key_file,
         log_level=log_level,
         log_file=log_file,
+        write_target_id=write_target_id,
+        internal_api_token=internal_api_token,
+        http_port=http_port,
     )

@@ -1,10 +1,13 @@
-"""Google Calendar 동기화 데몬 (Phase 6 2-A — 카테고리 판정 로그).
+"""Google Calendar 동기화 데몬 (Phase 6 2-A — 카테고리 판정 로그) + 캘린더 쓰기 endpoint.
 
 흐름:
 1. config 로드 → logger 셋업 → 시작 로그
 2. DB 연결
 3. CalendarClient 인증 (도메인 위임)
-4. 메인 루프:
+4. Flask HTTP 서버를 별도 스레드로 시작 (내부망 전용)
+   - POST /internal/calendar-event: 재고관리 등 내부 시스템이 일정 등록
+   - GET  /internal/health: liveness 체크
+5. 메인 루프:
    - 매일 04:00 KST에 sync_once 1회 실행
    - 부팅 직후 1회 즉시 실행 (검증 편의)
    - DB의 calendar_sources (sync_enabled=true) 동적 조회
@@ -18,8 +21,11 @@
 
 import signal
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
+
+from flask import Flask, jsonify, request
 
 from config import load_config
 from db import Database
@@ -35,6 +41,19 @@ RUN_MINUTE = 0
 
 # 메인 루프 체크 주기 (초)
 CHECK_INTERVAL_SECONDS = 60
+
+
+def _is_valid_date(s) -> bool:
+    """YYYY-MM-DD 형식 검증."""
+    if not isinstance(s, str):
+        return False
+    if len(s) != 10:
+        return False
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
 
 
 class Syncer:
@@ -65,7 +84,79 @@ class Syncer:
             subject_email=self.config.subject_email,
         )
 
+        # HTTP 서버 (재고관리 등 내부 시스템이 일정 등록할 때 사용)
+        self.http_app = self._create_http_app()
+        self.http_thread = None
+
         self.logger.info("초기화 완료")
+
+    def _create_http_app(self) -> Flask:
+        """Flask 앱 생성. /internal/calendar-event + /internal/health 두 엔드포인트.
+
+        - X-Internal-Token 헤더로 인증 (env INTERNAL_API_TOKEN과 비교)
+        - 같은 docker network의 컨테이너만 접근 (expose만, ports 매핑 X)
+        - vanam_source="inventory" 표시로 syncer 무한루프 방지
+        """
+        app = Flask(__name__)
+
+        @app.get("/internal/health")
+        def health():
+            return jsonify({"ok": True}), 200
+
+        @app.post("/internal/calendar-event")
+        def create_calendar_event():
+            # 1) 토큰 검증
+            token = request.headers.get("X-Internal-Token")
+            if not token or token != self.config.internal_api_token:
+                self.logger.warning(
+                    f"인증 실패 (X-Internal-Token 누락 또는 불일치): "
+                    f"remote={request.remote_addr}"
+                )
+                return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
+            # 2) Body 파싱
+            try:
+                data = request.get_json(force=True, silent=False)
+            except Exception:
+                return jsonify({"ok": False, "error": "Invalid JSON"}), 400
+
+            if not isinstance(data, dict):
+                return jsonify({"ok": False, "error": "Body must be JSON object"}), 400
+
+            title = data.get("title")
+            start_date = data.get("startDate")
+            end_date = data.get("endDate")
+
+            # 3) 입력 검증
+            if not title or not isinstance(title, str) or not title.strip():
+                return jsonify({"ok": False, "error": "title is required"}), 400
+            if not _is_valid_date(start_date):
+                return jsonify({"ok": False, "error": "startDate must be YYYY-MM-DD"}), 400
+            if not _is_valid_date(end_date):
+                return jsonify({"ok": False, "error": "endDate must be YYYY-MM-DD"}), 400
+            if end_date < start_date:
+                return jsonify({"ok": False, "error": "endDate must be >= startDate"}), 400
+
+            # 4) 캘린더에 등록
+            try:
+                event_id = self.client.insert_event(
+                    calendar_id=self.config.write_target_id,
+                    title=title,
+                    start_date=start_date,
+                    end_date=end_date,
+                    source="inventory",
+                )
+            except Exception as e:
+                self.logger.exception(f"캘린더 일정 등록 실패: {e}")
+                return jsonify({"ok": False, "error": str(e)}), 500
+
+            self.logger.info(
+                f"캘린더 일정 등록 완료: title='{title}', "
+                f"{start_date}~{end_date}, eventId={event_id}"
+            )
+            return jsonify({"ok": True, "eventId": event_id}), 200
+
+        return app
 
     def _match_category(
         self,
@@ -225,10 +316,29 @@ class Syncer:
     def run(self):
         """메인 루프.
 
-        - 부팅 직후 1회 즉시 실행 (검증 편의)
+        - HTTP 서버를 별도 스레드(daemon)로 먼저 시작 (재고관리 연동용)
+        - 부팅 직후 1회 즉시 sync_once 실행 (검증 편의)
         - 그 후 매 60초마다 깨어나서 04:00 도달 체크
         - 04:00이면 sync_once 실행, last_run_date 갱신
         """
+        # HTTP 서버를 별도 스레드로 시작 (데몬 스레드, 메인 종료 시 함께 종료)
+        # threaded=True: Flask 기본은 single-threaded, 동시 요청 처리 위해 활성화
+        self.http_thread = threading.Thread(
+            target=lambda: self.http_app.run(
+                host="0.0.0.0",
+                port=self.config.http_port,
+                debug=False,
+                use_reloader=False,
+                threaded=True,
+            ),
+            daemon=True,
+            name="HttpServer",
+        )
+        self.http_thread.start()
+        self.logger.info(
+            f"HTTP 서버 시작 (포트 {self.config.http_port}, 내부망 전용)"
+        )
+
         # 부팅 즉시 1회 실행 (검증/디버깅 편의)
         try:
             self.logger.info("부팅 직후 즉시 1회 실행 (검증용)")

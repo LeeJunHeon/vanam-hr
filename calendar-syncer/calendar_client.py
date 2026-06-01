@@ -4,7 +4,7 @@
 events().list 만 호출 — 생성/수정/삭제는 절대 하지 않는다.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -91,3 +91,47 @@ class CalendarClient:
             "creator_email": creator_email,
             "ext_props": ext_props,
         }
+
+    def insert_event(
+        self,
+        calendar_id: str,
+        title: str,
+        start_date: str,
+        end_date: str,
+        source: str = "inventory",
+    ) -> str:
+        """종일 일정을 캘린더에 등록. 등록된 event id 반환.
+
+        Args:
+            calendar_id: Google Calendar ID
+            title: 일정 제목 (호출자가 완성된 문자열로 전달, 가공하지 않음)
+            start_date: 시작 날짜 "YYYY-MM-DD"
+            end_date: 종료 날짜 "YYYY-MM-DD" (start와 같으면 하루짜리)
+            source: extendedProperties.private.vanam_source 값 (기본 "inventory").
+                    syncer가 이 표시를 보고 자기가 만든 일정은 스킵 (무한루프 방지).
+
+        Note:
+            Google Calendar API의 종일 일정은 end.date가 exclusive(종료일 다음날).
+            화면상 종료일이 맞게 보이도록 받은 end_date에 +1일 적용.
+        """
+        # YYYY-MM-DD 파싱 + 1일 더하기 (Google API exclusive end 처리)
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+        end_exclusive = (end_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        body = {
+            "summary": title,
+            "start": {"date": start_date},
+            "end": {"date": end_exclusive},
+            "extendedProperties": {
+                "private": {
+                    "vanam_source": source,
+                }
+            },
+        }
+
+        created = (
+            self.service.events()
+            .insert(calendarId=calendar_id, body=body)
+            .execute()
+        )
+        return created.get("id", "")

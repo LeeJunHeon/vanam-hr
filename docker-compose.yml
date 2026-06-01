@@ -83,10 +83,13 @@ services:
       CALENDAR_DB_PASSWORD: ${CALENDAR_DB_PASSWORD}
       CALENDAR_SUBJECT_EMAIL: ${CALENDAR_SUBJECT_EMAIL}
       CALENDAR_KEY_FILE: ${CALENDAR_KEY_FILE:-/app/secrets/service-account-key.json}
-      CALENDAR_SYNC_INTERVAL: ${CALENDAR_SYNC_INTERVAL:-1800}
-      CALENDAR_READ_DAYS_AHEAD: ${CALENDAR_READ_DAYS_AHEAD:-7}
       CALENDAR_LOG_LEVEL: ${CALENDAR_LOG_LEVEL:-INFO}
       CALENDAR_LOG_FILE: ${CALENDAR_LOG_FILE:-/app/logs/calendar-syncer.log}
+      CALENDAR_WRITE_TARGET_ID: ${CALENDAR_WRITE_TARGET_ID}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      CALENDAR_HTTP_PORT: ${CALENDAR_HTTP_PORT:-8765}
+    expose:
+      - "8765"
     volumes:
       - ./calendar-syncer/logs:/app/logs
       - ./calendar-syncer/secrets:/app/secrets:ro

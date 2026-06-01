@@ -275,18 +275,17 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // 참조 무결성 — attendance_daily / attendance_requests / calendar_color_mappings에 사용 중인지 확인
-    const [dailyCount, requestCount, mappingCount] = await Promise.all([
+    // 참조 무결성 — attendance_daily / attendance_requests에 사용 중인지 확인
+    // (calendar_color_mappings는 Phase 6-2A에서 테이블 자체가 삭제됨)
+    const [dailyCount, requestCount] = await Promise.all([
       prisma.attendanceDaily.count({ where: { categoryId: Number(id) } }),
       prisma.attendanceRequest.count({ where: { categoryId: Number(id) } }),
-      prisma.calendarColorMapping.count({ where: { categoryId: Number(id) } }),
     ]);
 
-    if (dailyCount > 0 || requestCount > 0 || mappingCount > 0) {
+    if (dailyCount > 0 || requestCount > 0) {
       const refs: string[] = [];
       if (dailyCount > 0) refs.push(`일별 근태 ${dailyCount}건`);
       if (requestCount > 0) refs.push(`결재 요청 ${requestCount}건`);
-      if (mappingCount > 0) refs.push(`Calendar 매핑 ${mappingCount}건`);
       return NextResponse.json(
         {
           error: `이 항목을 사용 중입니다 (${refs.join(", ")}). 비활성 처리를 사용하세요.`,

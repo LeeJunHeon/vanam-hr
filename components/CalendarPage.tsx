@@ -18,7 +18,7 @@ export default function CalendarPage() {
           Calendar 연동 (예정)
         </h2>
         <p className="text-sm text-gray-400">
-          Phase 3-D에서 calendar_color_mappings + external_calendars OAuth 토큰 구현 예정
+          Phase 6 연동: Google Calendar (Vacation/Field Trip/External Meeting) → HR 자동 보정. 매일 04:00 KST 동기화.
         </p>
       </div>
     </div>
