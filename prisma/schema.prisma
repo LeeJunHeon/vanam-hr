@@ -102,7 +102,8 @@ model AttendanceCategory {
 
   attendanceDailies     AttendanceDaily[]
   attendanceRequests    AttendanceRequest[]
-  calendarColorMappings CalendarColorMapping[]
+  calendarSources       CalendarSource[]      @relation("CalendarSourceDefaultCategory")
+  calendarKeywordRules  CalendarKeywordRule[]
 
   @@index([isActive, sortOrder], map: "idx_attendance_categories_active")
   @@map("attendance_categories")
@@ -174,26 +175,6 @@ model PollingSchedule {
   @@schema("hr")
 }
 
-// GCal colorId → 근태 항목 매핑
-model CalendarColorMapping {
-  id          Int      @id @default(autoincrement())
-  provider    String   @default("google") @db.VarChar(20)
-  colorId     String   @map("color_id") @db.VarChar(20)
-  colorName   String?  @map("color_name") @db.VarChar(50)
-  categoryId  Int      @map("category_id")
-  isActive    Boolean  @default(true) @map("is_active")
-  description String?
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
-
-  category AttendanceCategory @relation(fields: [categoryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-
-  @@unique([provider, colorId], map: "uk_calendar_color")
-  @@index([isActive], map: "idx_calendar_color_active")
-  @@map("calendar_color_mappings")
-  @@schema("hr")
-}
-
 // ============================================
 // 핵심 엔티티
 // ============================================
@@ -222,7 +203,6 @@ model Employee {
   employeeShifts       EmployeeShift[]
   presenceRaws         PresenceRaw[]
   attendanceDailies    AttendanceDaily[]
-  externalCalendar     ExternalCalendar?
   monthlyConfirmations MonthlyConfirmation[]
   pushSubscriptions    PushSubscription[]
 
@@ -399,24 +379,50 @@ model AttendanceRequest {
 // 외부 연동 / 알림
 // ============================================
 
-// Google Calendar 연동 (직원별 1:1)
-model ExternalCalendar {
-  id           Int       @id @default(autoincrement())
-  employeeId   Int       @unique @map("employee_id")
-  provider     String    @default("google") @db.VarChar(20)
-  calendarId   String    @map("calendar_id") @db.VarChar(255)
-  refreshToken String    @map("refresh_token")
-  accessToken  String?   @map("access_token")
-  expiresAt    DateTime? @map("expires_at") @db.Timestamptz(6)
-  syncStatus   String    @default("active") @map("sync_status") @db.VarChar(20)
-  lastSyncedAt DateTime? @map("last_synced_at") @db.Timestamptz(6)
-  lastError    String?   @map("last_error")
-  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+// ============================================
+// Google Calendar 연동 (Phase 6 2단계)
+// ============================================
 
-  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+// 동기화 대상 캘린더 목록 + 기본 카테고리
+model CalendarSource {
+  id                Int       @id @default(autoincrement())
+  calendarId        String    @unique @map("calendar_id") @db.VarChar(255)
+  calendarName      String    @map("calendar_name") @db.VarChar(100)
+  defaultCategoryId Int       @map("default_category_id")
+  syncEnabled       Boolean   @default(true) @map("sync_enabled")
+  description       String?
 
-  @@map("external_calendars")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  defaultCategory   AttendanceCategory   @relation("CalendarSourceDefaultCategory", fields: [defaultCategoryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  keywordRules      CalendarKeywordRule[]
+
+  @@index([syncEnabled], map: "idx_calendar_sources_active")
+  @@map("calendar_sources")
+  @@schema("hr")
+}
+
+// 일정 제목 키워드 → 카테고리 매핑 룰
+model CalendarKeywordRule {
+  id                Int       @id @default(autoincrement())
+  calendarSourceId  Int?      @map("calendar_source_id")
+  keyword           String    @db.VarChar(100)
+  categoryId        Int       @map("category_id")
+  priority          Int       @default(100)
+  isActive          Boolean   @default(true) @map("is_active")
+  description       String?
+
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  calendarSource    CalendarSource?      @relation(fields: [calendarSourceId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  category          AttendanceCategory   @relation(fields: [categoryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([calendarSourceId], map: "idx_keyword_rules_source")
+  @@index([priority], map: "idx_keyword_rules_priority")
+  @@index([isActive], map: "idx_keyword_rules_active")
+  @@map("calendar_keyword_rules")
   @@schema("hr")
 }
 

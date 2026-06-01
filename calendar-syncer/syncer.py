@@ -1,13 +1,19 @@
-"""Google Calendar 동기화 데몬 (Phase 6 1단계 — 읽기 전용 뼈대).
+"""Google Calendar 동기화 데몬 (Phase 6 2-A — 카테고리 판정 로그).
 
 흐름:
 1. config 로드 → logger 셋업 → 시작 로그
-2. DB 연결 → 직원 email 매칭 맵 1회 로드
+2. DB 연결
 3. CalendarClient 인증 (도메인 위임)
-4. 메인 루프: 근태 캘린더 4개를 읽어 일정 + 직원 매칭을 로그로만 출력
-   (DB 쓰기/캘린더 쓰기 절대 안 함)
+4. 메인 루프:
+   - 매일 04:00 KST에 sync_once 1회 실행
+   - 부팅 직후 1회 즉시 실행 (검증 편의)
+   - DB의 calendar_sources (sync_enabled=true) 동적 조회
+   - 당일 일정만 읽기
+   - 키워드 매칭으로 카테고리 판정 (priority 오름차순, 첫 매칭 사용)
+   - 매칭 안 되면 default_category 사용
+   - 결과를 로그로만 출력 (DB INSERT 안 함, Phase 6-2B에서 추가)
 
-설정한 주기(CALENDAR_SYNC_INTERVAL, 기본 30분)마다 반복.
+체크 주기: 60초 (분 단위로 04:00 도달 감지). CPU 부담 거의 없음.
 """
 
 import signal
@@ -15,7 +21,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-from config import load_config, CALENDARS
+from config import load_config
 from db import Database
 from logger import setup_logger
 from calendar_client import CalendarClient
@@ -23,21 +29,28 @@ from calendar_client import CalendarClient
 # 한국 시간대 (UTC+9). ZoneInfo 대신 고정 오프셋 사용 (한국은 DST 없음).
 KST = timezone(timedelta(hours=9))
 
+# 실행 시각 (KST 기준)
+RUN_HOUR = 4
+RUN_MINUTE = 0
+
+# 메인 루프 체크 주기 (초)
+CHECK_INTERVAL_SECONDS = 60
+
 
 class Syncer:
     def __init__(self):
         self.config = load_config()
         self.logger = setup_logger(self.config.log_level, self.config.log_file)
         self.running = True
+        self.last_run_date = None  # 같은 날 중복 실행 방지
 
-        self.logger.info("Calendar Syncer 시작 (Phase 6 1단계 — 읽기 전용)")
+        self.logger.info("Calendar Syncer 시작 (Phase 6 2-A — 카테고리 판정 로그)")
         self.logger.info(
-            f"SYNC_INTERVAL={self.config.sync_interval}초, "
-            f"READ_DAYS_AHEAD={self.config.read_days_ahead}일, "
+            f"실행 시각: 매일 {RUN_HOUR:02d}:{RUN_MINUTE:02d} KST, "
             f"SUBJECT={self.config.subject_email}"
         )
 
-        # DB 연결 + 직원 email 매칭 맵 로드
+        # DB 연결
         self.db = Database(
             host=self.config.db_host,
             port=self.config.db_port,
@@ -45,52 +58,97 @@ class Syncer:
             user=self.config.db_user,
             password=self.config.db_password,
         )
-        self.email_map = self.db.get_employee_email_map()
-        self.logger.info(f"직원 {len(self.email_map)}명 매칭 맵 로드")
 
         # Google Calendar 인증
         self.client = CalendarClient(
             key_file=self.config.key_file,
             subject_email=self.config.subject_email,
         )
-        self.logger.info(f"인증 성공 (subject: {self.config.subject_email})")
 
-    def _reload_email_map(self):
-        """직원 맵을 매 사이클 갱신 (신규 직원/이메일 변경 반영)."""
-        try:
-            self.email_map = self.db.get_employee_email_map()
-        except Exception as e:
-            self.logger.warning(f"직원 맵 갱신 실패 (이전 맵 유지): {e}")
+        self.logger.info("초기화 완료")
+
+    def _match_category(
+        self,
+        summary: str,
+        keyword_rules: list[dict],
+        default_category_id: int,
+        default_category_code: str,
+    ) -> tuple[int, str, str | None]:
+        """제목 키워드로 카테고리 판정.
+
+        priority 오름차순으로 순회하면서 첫 매칭 룰 사용.
+        매칭 안 되면 default (캘린더의 default_category) 반환.
+
+        반환: (category_id, category_code, matched_keyword_or_None)
+        """
+        if not summary:
+            return default_category_id, default_category_code, None
+
+        for rule in keyword_rules:  # 이미 priority 오름차순 정렬됨
+            if rule["keyword"] in summary:
+                return rule["category_id"], rule["category_code"], rule["keyword"]
+
+        return default_category_id, default_category_code, None
 
     def sync_once(self):
-        """1회 실행: 근태 캘린더 4개 읽기 → 직원 매칭 로그."""
+        """1회 실행: DB에서 캘린더 목록 읽고 → 일정 조회 → 카테고리 판정 로그."""
         cycle_start = time.time()
 
-        # 읽기 범위: 오늘 00:00 (KST) ~ 오늘+READ_DAYS_AHEAD일 23:59:59 (KST)
+        # 읽기 범위: 오늘 00:00 ~ 23:59:59 KST (당일만)
         now_kst = datetime.now(KST)
         time_min = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
-        time_max = (now_kst + timedelta(days=self.config.read_days_ahead)).replace(
-            hour=23, minute=59, second=59, microsecond=0
-        )
+        time_max = now_kst.replace(hour=23, minute=59, second=59, microsecond=0)
 
         self.logger.info(
-            f"=== 동기화 사이클 시작 (읽기 범위: {time_min.date()} ~ {time_max.date()}) ==="
+            f"=== 동기화 사이클 시작 (당일: {time_min.date()}) ==="
         )
 
-        # 직원 맵 갱신
-        self._reload_email_map()
+        # 직원 매칭 맵 갱신
+        email_map = self.db.get_employee_email_map()
+        self.logger.info(f"직원 {len(email_map)}명 매칭 맵 로드")
 
-        total_all_day = 0
-        total_timed = 0
-        total_matched = 0
+        # 동기화 대상 캘린더 목록 (DB 동적 조회)
+        try:
+            calendar_sources = self.db.get_calendar_sources()
+        except Exception as e:
+            self.logger.exception(f"calendar_sources 조회 실패: {e}")
+            return
 
-        for key, cal in CALENDARS.items():
-            cal_name = cal["name"]
-            cal_id = cal["id"]
+        if not calendar_sources:
+            self.logger.warning("calendar_sources에 등록된 캘린더 없음 (sync_enabled=true 0건)")
+            return
+
+        self.logger.info(f"동기화 대상 캘린더: {len(calendar_sources)}개")
+
+        # 캘린더별 처리
+        grand_all_day = 0
+        grand_timed = 0
+        grand_matched = 0
+
+        for cs in calendar_sources:
+            cs_id = cs["id"]
+            cal_name = cs["calendar_name"]
+            cal_id = cs["calendar_id"]
+            default_cat_id = cs["default_category_id"]
+            default_cat_code = cs["default_category_code"]
+
+            # 이 캘린더에 적용되는 키워드 룰 로드 (priority 오름차순)
+            try:
+                keyword_rules = self.db.get_keyword_rules(cs_id)
+            except Exception as e:
+                self.logger.warning(f"  [{cal_name}] keyword_rules 조회 실패 (default만 사용): {e}")
+                keyword_rules = []
+
+            self.logger.info(
+                f"  [{cal_name}] default={default_cat_code}, "
+                f"키워드 룰 {len(keyword_rules)}개"
+            )
+
+            # 일정 조회
             try:
                 events = self.client.list_events(cal_id, time_min, time_max)
             except Exception as e:
-                self.logger.warning(f"  [{cal_name}] 읽기 실패: {e}")
+                self.logger.warning(f"  [{cal_name}] 일정 조회 실패: {e}")
                 continue
 
             all_day_cnt = 0
@@ -99,6 +157,14 @@ class Syncer:
 
             for event in events:
                 p = self.client.parse_event(event)
+
+                # 시스템 생성분은 스킵 (무한루프 방지)
+                if p["ext_props"].get("vanam_source"):
+                    self.logger.info(
+                        f"  [{cal_name}] [SKIP-시스템생성] {p['summary']}"
+                    )
+                    continue
+
                 if p["is_all_day"]:
                     all_day_cnt += 1
                     when_label = f"종일 {p['start_date_or_datetime']}"
@@ -108,24 +174,27 @@ class Syncer:
 
                 # 직원 매칭
                 creator = p["creator_email"]
-                match_label = "매칭 안 됨"
+                emp_id = None
                 if creator:
-                    normalized = creator.lower().strip()
-                    emp_id = self.email_map.get(normalized)
-                    if emp_id is not None:
-                        matched_cnt += 1
-                        match_label = f"→ employee_id={emp_id} (매칭됨)"
-                    else:
-                        match_label = "→ 매칭 안 됨"
+                    emp_id = email_map.get(creator.lower().strip())
+                if emp_id is not None:
+                    matched_cnt += 1
+                    emp_label = f"employee_id={emp_id}"
+                else:
+                    emp_label = "매칭 안 됨"
 
-                # 시스템 생성분 표시 (추후 스킵 대상)
-                system_label = ""
-                if p["ext_props"].get("vanam_source"):
-                    system_label = " [시스템 생성분 — 추후 스킵 대상]"
+                # 카테고리 판정
+                cat_id, cat_code, matched_kw = self._match_category(
+                    p["summary"], keyword_rules, default_cat_id, default_cat_code
+                )
+                if matched_kw:
+                    cat_label = f"category={cat_code} (키워드:{matched_kw})"
+                else:
+                    cat_label = f"category={cat_code} (default)"
 
                 self.logger.info(
                     f"  [{cal_name}] {when_label} | {p['summary']} "
-                    f"| creator={creator or '-'} {match_label}{system_label}"
+                    f"| creator={creator or '-'} ({emp_label}) | {cat_label}"
                 )
 
             self.logger.info(
@@ -133,30 +202,60 @@ class Syncer:
                 f"시간지정 {timed_cnt}건 / 직원매칭 {matched_cnt}건"
             )
 
-            total_all_day += all_day_cnt
-            total_timed += timed_cnt
-            total_matched += matched_cnt
+            grand_all_day += all_day_cnt
+            grand_timed += timed_cnt
+            grand_matched += matched_cnt
 
         elapsed = time.time() - cycle_start
         self.logger.info(
             f"=== 사이클 종료: {elapsed:.2f}s "
-            f"(전체 종일 {total_all_day} / 시간지정 {total_timed} / 매칭 {total_matched}) ==="
+            f"(전체 종일 {grand_all_day} / 시간지정 {grand_timed} / 매칭 {grand_matched}) ==="
         )
 
+    def _should_run_now(self, now_kst: datetime) -> bool:
+        """지금이 실행 시각(RUN_HOUR:RUN_MINUTE)이고, 오늘 아직 안 돌았으면 True."""
+        if now_kst.hour != RUN_HOUR:
+            return False
+        # 같은 날 중복 방지
+        today = now_kst.date()
+        if self.last_run_date == today:
+            return False
+        return True
+
     def run(self):
-        """메인 루프. 예외는 잡아서 로그 남기고 계속."""
+        """메인 루프.
+
+        - 부팅 직후 1회 즉시 실행 (검증 편의)
+        - 그 후 매 60초마다 깨어나서 04:00 도달 체크
+        - 04:00이면 sync_once 실행, last_run_date 갱신
+        """
+        # 부팅 즉시 1회 실행 (검증/디버깅 편의)
+        try:
+            self.logger.info("부팅 직후 즉시 1회 실행 (검증용)")
+            self.sync_once()
+            self.last_run_date = datetime.now(KST).date()
+        except Exception as e:
+            self.logger.exception(f"초기 sync_once 예외 (계속 진행): {e}")
+
+        # 메인 루프: 1분마다 깨어나서 04:00 체크
         while self.running:
-            try:
-                self.sync_once()
-            except Exception as e:
-                self.logger.exception(f"sync_once 예외 (계속 진행): {e}")
+            now_kst = datetime.now(KST)
+            if self._should_run_now(now_kst):
+                self.logger.info(
+                    f"실행 시각 도달 ({now_kst.strftime('%Y-%m-%d %H:%M:%S')} KST)"
+                )
+                try:
+                    self.sync_once()
+                except Exception as e:
+                    self.logger.exception(f"sync_once 예외 (계속 진행): {e}")
+                self.last_run_date = now_kst.date()
 
             if not self.running:
                 break
 
-            # interval 만큼 sleep (1초 단위로 끊어 종료 신호에 빠르게 반응)
+            # 1초 단위로 끊어 자며 종료 신호에 빠르게 반응
             slept = 0
-            while self.running and slept < self.config.sync_interval:
+            while self.running and slept < CHECK_INTERVAL_SECONDS:
                 time.sleep(1)
                 slept += 1
 

@@ -64,3 +64,84 @@ class Database:
                 if normalized:
                     result[normalized] = row["id"]
         return result
+
+    def get_calendar_sources(self) -> list[dict]:
+        """동기화 대상 캘린더 목록 (sync_enabled=true만).
+
+        반환: [
+          {
+            'id': int,
+            'calendar_id': str,        # Google Calendar ID
+            'calendar_name': str,
+            'default_category_id': int,
+            'default_category_code': str,  # 카테고리 코드 (편의)
+          },
+          ...
+        ]
+        """
+        self._ensure_connected()
+        result = []
+        with self.conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute(
+                """
+                SELECT
+                    cs.id, cs.calendar_id, cs.calendar_name,
+                    cs.default_category_id, ac.code AS default_category_code
+                FROM hr.calendar_sources cs
+                JOIN hr.attendance_categories ac ON ac.id = cs.default_category_id
+                WHERE cs.sync_enabled = true
+                ORDER BY cs.id
+                """
+            )
+            for row in c.fetchall():
+                result.append({
+                    "id": row["id"],
+                    "calendar_id": row["calendar_id"],
+                    "calendar_name": row["calendar_name"],
+                    "default_category_id": row["default_category_id"],
+                    "default_category_code": row["default_category_code"],
+                })
+        return result
+
+    def get_keyword_rules(self, calendar_source_id: int) -> list[dict]:
+        """해당 캘린더에 적용되는 키워드 룰 목록 (priority 오름차순).
+
+        calendar_source_id가 일치하거나 NULL(글로벌)인 룰을 모두 반환.
+        is_active=true만. priority 작은 값이 먼저 매칭 (긴 단어 우선 원칙).
+
+        반환: [
+          {
+            'id': int,
+            'keyword': str,
+            'category_id': int,
+            'category_code': str,
+            'priority': int,
+          },
+          ...
+        ]
+        """
+        self._ensure_connected()
+        result = []
+        with self.conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute(
+                """
+                SELECT
+                    ckr.id, ckr.keyword, ckr.category_id,
+                    ac.code AS category_code, ckr.priority
+                FROM hr.calendar_keyword_rules ckr
+                JOIN hr.attendance_categories ac ON ac.id = ckr.category_id
+                WHERE ckr.is_active = true
+                  AND (ckr.calendar_source_id = %s OR ckr.calendar_source_id IS NULL)
+                ORDER BY ckr.priority ASC, ckr.id ASC
+                """,
+                (calendar_source_id,),
+            )
+            for row in c.fetchall():
+                result.append({
+                    "id": row["id"],
+                    "keyword": row["keyword"],
+                    "category_id": row["category_id"],
+                    "category_code": row["category_code"],
+                    "priority": row["priority"],
+                })
+        return result
