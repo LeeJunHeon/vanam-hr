@@ -24,7 +24,14 @@ import {
 //     todayCheckOut: ISO string | null,
 //     todayWorkMinutes: number | null,
 //     todayAutoStatus: string | null,
-//     progressStatus: 'working' | 'away' | 'completed' | 'absent_today',
+//     todayCategoryId: number | null,
+//     todayCategoryCode: string | null,
+//     todayCategoryName: string | null,
+//     todayCategoryColor: string | null,
+//     todayIsOverridden: boolean,
+//     todayReason: string | null,
+//     progressStatus: 'working' | 'away' | 'completed' | 'absent_today'
+//                   | 'category_working' | 'category_completed',
 //   }>
 // }
 export async function GET(request: NextRequest) {
@@ -107,6 +114,12 @@ export async function GET(request: NextRequest) {
       today_check_out: Date | null;
       today_work_minutes: number | null;
       today_auto_status: string | null;
+      today_category_id: number | null;
+      today_category_code: string | null;
+      today_category_name: string | null;
+      today_category_color: string | null;
+      today_is_overridden: boolean | null;
+      today_reason: string | null;
     };
 
     const latestRows = await prisma.$queryRaw<LatestRow[]>`
@@ -133,10 +146,33 @@ export async function GET(request: NextRequest) {
         ORDER BY employee_id, checked_at DESC
       ),
       today_daily AS (
-        SELECT employee_id, check_in, check_out, work_minutes, auto_status
-        FROM hr.attendance_daily
+        SELECT
+          ad.employee_id,
+          ad.check_in,
+          ad.check_out,
+          ad.work_minutes,
+          ad.auto_status,
+          ad.category_id,
+          ad.is_overridden,
+          ac.code AS category_code,
+          ac.name AS category_name,
+          ac.display_color AS category_color
+        FROM hr.attendance_daily ad
+        LEFT JOIN hr.attendance_categories ac ON ac.id = ad.category_id
+        WHERE ad.employee_id = ANY(${employeeIds}::int[])
+          AND ad.work_date = (SELECT d FROM today_kst)
+      ),
+      today_request AS (
+        SELECT DISTINCT ON (employee_id)
+          employee_id,
+          reason
+        FROM hr.attendance_requests
         WHERE employee_id = ANY(${employeeIds}::int[])
-          AND work_date = (SELECT d FROM today_kst)
+          AND request_type = 'calendar_auto'
+          AND status = 'auto_approved'
+          AND start_date <= (SELECT d FROM today_kst)
+          AND end_date >= (SELECT d FROM today_kst)
+        ORDER BY employee_id, requested_at DESC
       )
       SELECT
         e.id AS employee_id,
@@ -146,10 +182,17 @@ export async function GET(request: NextRequest) {
         d.check_in AS today_check_in,
         d.check_out AS today_check_out,
         d.work_minutes AS today_work_minutes,
-        d.auto_status AS today_auto_status
+        d.auto_status AS today_auto_status,
+        d.category_id AS today_category_id,
+        d.category_code AS today_category_code,
+        d.category_name AS today_category_name,
+        d.category_color AS today_category_color,
+        d.is_overridden AS today_is_overridden,
+        r.reason AS today_reason
       FROM (SELECT UNNEST(${employeeIds}::int[]) AS id) e
       LEFT JOIN latest_per_emp l ON l.employee_id = e.id
       LEFT JOIN today_daily d ON d.employee_id = e.id
+      LEFT JOIN today_request r ON r.employee_id = e.id
     `;
 
     // 직원 정보 맵
@@ -172,13 +215,29 @@ export async function GET(request: NextRequest) {
         }
       }
 
-      // progressStatus: 클라이언트 편의 4단계 분류
+      // progressStatus: 클라이언트 편의 분류
+      // Phase 6-2B: 캘린더 보정(is_overridden + category_id) 있으면 최우선 (Q-A)
+      // - category_working: 캘린더 보정 + 아직 종료(check_out) 안 함
+      // - category_completed: 캘린더 보정 + 종료됨
+      // 기존 분기:
       // - latestStatus 없음 → 오늘 presence_raw 기록 자체가 없음 → absent_today
       // - online → working (자리에 있음)
       // - offline + grace 미경과 → away (잠깐 자리비움, 근무중)
       // - offline + grace 경과 → completed (퇴근 확정, aggregator가 다음 사이클에 처리)
-      let progressStatus: "working" | "away" | "completed" | "absent_today";
-      if (r.latest_status === null) {
+      let progressStatus:
+        | "working"
+        | "away"
+        | "completed"
+        | "absent_today"
+        | "category_working"
+        | "category_completed";
+
+      if (r.today_is_overridden && r.today_category_id !== null) {
+        // 캘린더 보정 우선 (presence_raw와 충돌 시 캘린더 승)
+        progressStatus = r.today_check_out
+          ? "category_completed"
+          : "category_working";
+      } else if (r.latest_status === null) {
         progressStatus = "absent_today";
       } else if (r.latest_status === "online") {
         progressStatus = "working";
@@ -213,6 +272,12 @@ export async function GET(request: NextRequest) {
             ? Number(r.today_work_minutes)
             : null,
         todayAutoStatus: r.today_auto_status ?? null,
+        todayCategoryId: r.today_category_id ?? null,
+        todayCategoryCode: r.today_category_code ?? null,
+        todayCategoryName: r.today_category_name ?? null,
+        todayCategoryColor: r.today_category_color ?? null,
+        todayIsOverridden: r.today_is_overridden ?? false,
+        todayReason: r.today_reason ?? null,
         progressStatus,
       };
     });

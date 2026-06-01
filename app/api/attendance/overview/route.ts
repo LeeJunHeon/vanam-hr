@@ -16,7 +16,9 @@ import {
 //   departmentId: number | null,
 //   rows: Array<{
 //     employeeId, employeeNo, name, departmentName, positionName,
-//     workDate, checkIn, checkOut, workMinutes, isOverridden
+//     workDate, checkIn, checkOut, workMinutes, autoStatus, isOverridden,
+//     categoryId, categoryCode, categoryName, categoryColor,
+//     reason  // calendar_auto 요청의 reason (캘린더 일정 제목)
 //   }>
 // }
 export async function GET(request: NextRequest) {
@@ -150,27 +152,83 @@ export async function GET(request: NextRequest) {
               workMinutes: true,
               autoStatus: true,
               isOverridden: true,
+              categoryId: true,
+              category: {
+                select: {
+                  code: true,
+                  name: true,
+                  displayColor: true,
+                },
+              },
             },
             orderBy: [{ workDate: "desc" }, { employeeId: "asc" }],
           })
         : [];
 
+    // 캘린더 자동 등록 사유 조회 (calendar_auto + auto_approved + google_calendar)
+    // start_date~end_date 범위가 조회 기간과 겹치는 모든 요청 가져옴
+    const requests =
+      employeeIds.length > 0
+        ? await prisma.attendanceRequest.findMany({
+            where: {
+              employeeId: { in: employeeIds },
+              requestType: "calendar_auto",
+              status: "auto_approved",
+              externalSource: "google_calendar",
+              startDate: { lte: new Date(endDate) },
+              endDate: { gte: new Date(startDate) },
+            },
+            select: {
+              employeeId: true,
+              startDate: true,
+              endDate: true,
+              reason: true,
+            },
+          })
+        : [];
+
+    // employeeId_YYYY-MM-DD → reason 매핑 (start~end 범위 모든 날짜에 동일 reason)
+    const reasonMap = new Map<string, string>();
+    for (const req of requests) {
+      const start = new Date(req.startDate);
+      const end = new Date(req.endDate);
+      const d = new Date(start);
+      while (d <= end) {
+        const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
+          2,
+          "0"
+        )}-${String(d.getDate()).padStart(2, "0")}`;
+        const key = `${req.employeeId}_${ymd}`;
+        if (!reasonMap.has(key)) {
+          reasonMap.set(key, req.reason ?? "");
+        }
+        d.setDate(d.getDate() + 1);
+      }
+    }
+
     // employees + attendance 조인
     const empMap = new Map(employees.map((e) => [e.id, e]));
     const rows = attendance.map((a) => {
       const emp = empMap.get(a.employeeId);
+      const ymd = a.workDate.toISOString().split("T")[0];
+      const reasonKey = `${a.employeeId}_${ymd}`;
       return {
         employeeId: a.employeeId,
         employeeNo: emp?.employeeNo ?? "",
         name: emp?.name ?? "",
         departmentName: emp?.department?.name ?? null,
         positionName: emp?.position?.name ?? null,
-        workDate: a.workDate.toISOString().split("T")[0],
+        workDate: ymd,
         checkIn: a.checkIn ? a.checkIn.toISOString() : null,
         checkOut: a.checkOut ? a.checkOut.toISOString() : null,
         workMinutes: a.workMinutes ?? null,
         autoStatus: a.autoStatus ?? null,
         isOverridden: a.isOverridden,
+        categoryId: a.categoryId ?? null,
+        categoryCode: a.category?.code ?? null,
+        categoryName: a.category?.name ?? null,
+        categoryColor: a.category?.displayColor ?? null,
+        reason: reasonMap.get(reasonKey) ?? null,
       };
     });
 

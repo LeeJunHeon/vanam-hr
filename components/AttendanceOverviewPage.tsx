@@ -17,6 +17,7 @@ import {
   Minus,
   ChevronDown,
   ChevronUp,
+  Briefcase,
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
@@ -38,6 +39,11 @@ interface AttendanceRow {
   workMinutes: number | null;
   autoStatus: string | null;
   isOverridden: boolean;
+  categoryId: number | null;
+  categoryCode: string | null;
+  categoryName: string | null;
+  categoryColor: string | null;
+  reason: string | null;
 }
 
 interface OverviewResponse {
@@ -61,7 +67,13 @@ interface EmployeeOption {
   departmentName: string | null;
 }
 
-type ProgressStatus = "working" | "away" | "completed" | "absent_today";
+type ProgressStatus =
+  | "working"
+  | "away"
+  | "completed"
+  | "absent_today"
+  | "category_working"
+  | "category_completed";
 
 interface RealtimeRow {
   employeeId: number;
@@ -77,6 +89,12 @@ interface RealtimeRow {
   todayCheckOut: string | null;
   todayWorkMinutes: number | null;
   todayAutoStatus: string | null;
+  todayCategoryId: number | null;
+  todayCategoryCode: string | null;
+  todayCategoryName: string | null;
+  todayCategoryColor: string | null;
+  todayIsOverridden: boolean;
+  todayReason: string | null;
   progressStatus: ProgressStatus;
 }
 
@@ -143,8 +161,39 @@ function formatRelativeTime(iso: string | null): string {
   return `${Math.floor(diffHour / 24)}일 전`;
 }
 
-// 진행 상태 라벨
-function progressLabel(s: ProgressStatus): string {
+// 카테고리 아이콘 (Phase 6-2B 캘린더 보정 시). FAMILY_EVENT는 아이콘 없음(사용자 결정).
+function categoryIcon(code: string | null): string {
+  if (!code) return "";
+  switch (code) {
+    case "ANNUAL":
+    case "HALF_AM":
+    case "HALF_PM":
+      return "🏖️";
+    case "SICK":
+      return "🏥";
+    case "EXTERNAL_WORK":
+      return "🌐";
+    case "BUSINESS_TRIP":
+      return "✈️";
+    case "REMOTE_WORK":
+      return "🏠";
+    case "ETC":
+      return "📋";
+    case "FAMILY_EVENT":
+      return ""; // 경조사는 아이콘 없음
+    default:
+      return "";
+  }
+}
+
+// 휴가성(vacation) 카테고리 여부 — 종일이라 "진행/완료" 구분 없이 카테고리명만 표시
+function isVacationCategory(code: string | null): boolean {
+  if (!code) return false;
+  return ["ANNUAL", "HALF_AM", "HALF_PM", "SICK", "FAMILY_EVENT"].includes(code);
+}
+
+// 진행 상태 라벨. 카테고리 분기에서는 row를 통해 categoryName/CategoryCode 사용.
+function progressLabel(s: ProgressStatus, row?: RealtimeRow): string {
   switch (s) {
     case "working":
       return "근무중";
@@ -154,10 +203,24 @@ function progressLabel(s: ProgressStatus): string {
       return "완료";
     case "absent_today":
       return "미출근";
+    case "category_working":
+      if (row?.todayCategoryName) {
+        return isVacationCategory(row.todayCategoryCode)
+          ? row.todayCategoryName // "연차"/"병가" 등
+          : `${row.todayCategoryName}중`; // "외근중"
+      }
+      return "부재중";
+    case "category_completed":
+      if (row?.todayCategoryName) {
+        return isVacationCategory(row.todayCategoryCode)
+          ? row.todayCategoryName // "연차"
+          : `${row.todayCategoryName}완료`; // "외근완료"
+      }
+      return "부재중";
   }
 }
 
-// 진행 상태 점 색상
+// 진행 상태 점 색상 (category 분기는 categoryColor 없을 때 fallback purple)
 function progressDotColor(s: ProgressStatus): string {
   switch (s) {
     case "working":
@@ -168,10 +231,13 @@ function progressDotColor(s: ProgressStatus): string {
       return "bg-blue-500";
     case "absent_today":
       return "bg-gray-400";
+    case "category_working":
+    case "category_completed":
+      return "bg-purple-500"; // categoryColor 있으면 inline style로 덮어씀
   }
 }
 
-// 진행 상태 배지 클래스
+// 진행 상태 배지 클래스 (category 분기는 categoryColor 있으면 inline style 덮어씀)
 function progressBadgeClass(s: ProgressStatus): string {
   const base =
     "inline-flex items-center text-xs px-2 py-0.5 rounded-md font-medium shrink-0";
@@ -184,6 +250,9 @@ function progressBadgeClass(s: ProgressStatus): string {
       return `${base} bg-blue-50 text-blue-700`;
     case "absent_today":
       return `${base} bg-gray-50 text-gray-600`;
+    case "category_working":
+    case "category_completed":
+      return `${base} bg-purple-50 text-purple-700`;
   }
 }
 
@@ -224,18 +293,28 @@ function progressFromAutoStatus(autoStatus: string | null): string {
 }
 
 /**
- * 진행 상태 판정 — autoStatus가 NULL인 옛날 데이터 보호.
- * - autoStatus='working' → '근무중' (실시간 사이클에서 채워지는 값)
- * - check_in + check_out 다 있으면 → '완료' (autoStatus 무관, 옛날 데이터 보호)
- * - check_in만 있으면 → '근무중' (퇴근 미확정)
- * - autoStatus='absent'면 → '미출근'
- * - 그 외 (데이터 없음) → '미출근'
+ * 진행 상태 판정 — Phase 6-2B 캘린더 보정 우선, 그 외엔 autoStatus + checkIn/Out.
+ * - 캘린더 보정(isOverridden + categoryName) → 카테고리 라벨 ("연차" / "외근중" / "외근완료")
+ * - autoStatus='working' → '근무중'
+ * - check_in + check_out 다 있음 → '완료' (autoStatus 무관, 옛날 데이터 보호)
+ * - check_in만 있음 → '근무중'
+ * - autoStatus='absent' 또는 데이터 없음 → '미출근'
  */
 function progressFromRow(row: {
   checkIn: string | null;
   checkOut: string | null;
   autoStatus: string | null;
+  categoryId?: number | null;
+  categoryCode?: string | null;
+  categoryName?: string | null;
+  isOverridden?: boolean;
 }): string {
+  // 캘린더 보정 우선 (Q-A)
+  if (row.isOverridden && row.categoryId && row.categoryName) {
+    if (isVacationCategory(row.categoryCode ?? null)) return row.categoryName;
+    return row.checkOut ? `${row.categoryName}완료` : `${row.categoryName}중`;
+  }
+  // 기존 로직
   if (row.autoStatus === "working") return "근무중";
   if (row.checkIn && row.checkOut) return "완료";
   if (row.checkIn) return "근무중";
@@ -244,7 +323,40 @@ function progressFromRow(row: {
 }
 
 // 직원 카드/표의 "마지막 활동" 한 줄 (아이콘 + 정보)
+// Phase 6-2B: 캘린더 보정 우선 표시 → 아이콘 + 카테고리명 + 사유 + 시간/종일
 function renderActivityInfo(r: RealtimeRow): ReactNode {
+  // 캘린더 보정 우선 (Q-A)
+  if (r.todayIsOverridden && r.todayCategoryCode && r.todayCategoryName) {
+    const icon = categoryIcon(r.todayCategoryCode);
+    let timeInfo: string;
+    if (!r.todayCheckIn && !r.todayCheckOut) {
+      timeInfo = "종일";
+    } else {
+      const start = r.todayCheckIn ? formatTime(r.todayCheckIn) : "";
+      const end = r.todayCheckOut ? formatTime(r.todayCheckOut) : "(진행 중)";
+      timeInfo = `${start} ~ ${end}`;
+    }
+    return (
+      <span className="inline-flex items-center gap-1 flex-wrap">
+        {icon && <span className="shrink-0">{icon}</span>}
+        <span
+          className="font-medium"
+          style={{ color: r.todayCategoryColor ?? "#a855f7" }}
+        >
+          {r.todayCategoryName}
+        </span>
+        {r.todayReason && (
+          <>
+            <span className="text-gray-300">·</span>
+            <span className="text-gray-600 truncate">{r.todayReason}</span>
+          </>
+        )}
+        <span className="text-gray-300">·</span>
+        <span className="text-gray-700 font-mono">{timeInfo}</span>
+      </span>
+    );
+  }
+
   switch (r.progressStatus) {
     case "working":
       return (
@@ -285,11 +397,27 @@ function renderActivityInfo(r: RealtimeRow): ReactNode {
           오늘 출근 기록 없음
         </span>
       );
+    case "category_working":
+    case "category_completed":
+      // 위 early-return에서 이미 처리됨. 카테고리 정보 없는 비정상 케이스 안전망.
+      return (
+        <span className="inline-flex items-center gap-1 text-gray-400">
+          <Minus size={12} className="shrink-0" />
+          캘린더 보정 (카테고리 정보 없음)
+        </span>
+      );
   }
 }
 
 // 섹션 3 "마지막 활동" 짧은 텍스트 (모바일)
 function renderActivityShort(r: RealtimeRow): string {
+  // 캘린더 보정 우선
+  if (r.todayIsOverridden && r.todayCategoryName) {
+    if (!r.todayCheckIn && !r.todayCheckOut) return "종일";
+    const start = r.todayCheckIn ? formatTime(r.todayCheckIn) : "";
+    const end = r.todayCheckOut ? formatTime(r.todayCheckOut) : "(진행 중)";
+    return `${start} ~ ${end}`;
+  }
   switch (r.progressStatus) {
     case "working":
       return `${formatTime(r.latestCheckedAt)} 연결`;
@@ -299,6 +427,9 @@ function renderActivityShort(r: RealtimeRow): string {
       return `${formatTime(r.todayCheckOut ?? r.latestCheckedAt)} 퇴근`;
     case "absent_today":
       return "-";
+    case "category_working":
+    case "category_completed":
+      return "-"; // 위 if에서 이미 처리됨, 안전망
   }
 }
 
@@ -462,6 +593,17 @@ export default function AttendanceOverviewPage() {
       late: rows.filter((r) => r.todayAutoStatus === "late").length,
       earlyLeave: rows.filter((r) => r.todayAutoStatus === "early_leave")
         .length,
+      categoryWorking: rows.filter(
+        (r) => r.progressStatus === "category_working"
+      ).length,
+      categoryCompleted: rows.filter(
+        (r) => r.progressStatus === "category_completed"
+      ).length,
+      categoryCount: rows.filter(
+        (r) =>
+          r.progressStatus === "category_working" ||
+          r.progressStatus === "category_completed"
+      ).length,
     };
   }, [realtimeData]);
 
@@ -582,8 +724,8 @@ export default function AttendanceOverviewPage() {
         </div>
       </div>
 
-      {/* ───── 섹션 1: 지금 (요약 카드 4개) ───── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+      {/* ───── 섹션 1: 지금 (요약 카드 5개) ───── */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
         {/* 근무 중 */}
         <div className="bg-emerald-50 rounded-2xl border border-emerald-100 p-4 sm:p-5">
           <div className="flex items-center gap-2 mb-2">
@@ -615,6 +757,23 @@ export default function AttendanceOverviewPage() {
           </p>
           <p className="text-xs text-blue-600/80 mt-1">
             정상 {counts.normal} · 지각 {counts.late} · 조퇴 {counts.earlyLeave}
+          </p>
+        </div>
+
+        {/* 외근/휴가 (Phase 6-2B 신규) */}
+        <div className="bg-purple-50 rounded-2xl border border-purple-100 p-4 sm:p-5">
+          <div className="flex items-center gap-2 mb-2">
+            <Briefcase size={16} className="text-purple-600" />
+            <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide">
+              외근/휴가
+            </p>
+          </div>
+          <p className="text-2xl sm:text-3xl font-bold text-purple-700 font-mono">
+            {counts.categoryCount}
+            <span className="text-base font-medium text-purple-600">명</span>
+          </p>
+          <p className="text-xs text-purple-600/80 mt-1">
+            진행중 {counts.categoryWorking} · 완료 {counts.categoryCompleted}
           </p>
         </div>
 
@@ -687,11 +846,22 @@ export default function AttendanceOverviewPage() {
                 }
                 className="w-full text-left bg-white border border-gray-100 rounded-lg px-3 sm:px-4 py-3 flex items-center gap-3 hover:bg-blue-50/40 hover:border-blue-100 transition-colors"
               >
-                {/* 상태 점 */}
+                {/* 상태 점 (카테고리 보정 시 categoryColor 우선 적용) */}
                 <span
-                  className={`w-2.5 h-2.5 rounded-full shrink-0 ${progressDotColor(
-                    r.progressStatus
-                  )} ${r.progressStatus === "working" ? "animate-pulse" : ""}`}
+                  className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                    (r.progressStatus === "category_working" ||
+                      r.progressStatus === "category_completed") &&
+                    r.todayCategoryColor
+                      ? ""
+                      : progressDotColor(r.progressStatus)
+                  } ${r.progressStatus === "working" ? "animate-pulse" : ""}`}
+                  style={
+                    (r.progressStatus === "category_working" ||
+                      r.progressStatus === "category_completed") &&
+                    r.todayCategoryColor
+                      ? { backgroundColor: r.todayCategoryColor }
+                      : undefined
+                  }
                 />
 
                 {/* 본문 */}
@@ -709,9 +879,21 @@ export default function AttendanceOverviewPage() {
                   </div>
                 </div>
 
-                {/* 상태 배지 */}
-                <span className={progressBadgeClass(r.progressStatus)}>
-                  {progressLabel(r.progressStatus)}
+                {/* 상태 배지 (카테고리 보정 시 categoryColor 우선) */}
+                <span
+                  className={progressBadgeClass(r.progressStatus)}
+                  style={
+                    (r.progressStatus === "category_working" ||
+                      r.progressStatus === "category_completed") &&
+                    r.todayCategoryColor
+                      ? {
+                          backgroundColor: `${r.todayCategoryColor}20`,
+                          color: r.todayCategoryColor,
+                        }
+                      : undefined
+                  }
+                >
+                  {progressLabel(r.progressStatus, r)}
                 </span>
               </button>
             ))}
@@ -804,8 +986,20 @@ export default function AttendanceOverviewPage() {
                         {formatWorkMinutes(r.todayWorkMinutes)}
                       </td>
                       <td className="px-5 py-3 text-center">
-                        <span className={progressBadgeClass(r.progressStatus)}>
-                          {progressLabel(r.progressStatus)}
+                        <span
+                          className={progressBadgeClass(r.progressStatus)}
+                          style={
+                            (r.progressStatus === "category_working" ||
+                              r.progressStatus === "category_completed") &&
+                            r.todayCategoryColor
+                              ? {
+                                  backgroundColor: `${r.todayCategoryColor}20`,
+                                  color: r.todayCategoryColor,
+                                }
+                              : undefined
+                          }
+                        >
+                          {progressLabel(r.progressStatus, r)}
                         </span>
                       </td>
                       <td className="px-5 py-3 text-center">
@@ -847,8 +1041,20 @@ export default function AttendanceOverviewPage() {
                     <span className="text-sm font-semibold text-gray-900 truncate">
                       {r.name}
                     </span>
-                    <span className={progressBadgeClass(r.progressStatus)}>
-                      {progressLabel(r.progressStatus)}
+                    <span
+                      className={progressBadgeClass(r.progressStatus)}
+                      style={
+                        (r.progressStatus === "category_working" ||
+                          r.progressStatus === "category_completed") &&
+                        r.todayCategoryColor
+                          ? {
+                              backgroundColor: `${r.todayCategoryColor}20`,
+                              color: r.todayCategoryColor,
+                            }
+                          : undefined
+                      }
+                    >
+                      {progressLabel(r.progressStatus, r)}
                     </span>
                   </div>
                   <div className="text-xs text-gray-500 space-y-0.5">

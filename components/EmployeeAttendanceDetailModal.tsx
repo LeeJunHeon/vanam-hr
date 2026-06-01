@@ -1,7 +1,14 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { X, CheckCircle, AlertCircle, XCircle, Loader2 } from "lucide-react";
+import {
+  X,
+  CheckCircle,
+  AlertCircle,
+  XCircle,
+  Loader2,
+  Briefcase,
+} from "lucide-react";
 import { todayYmd, ymdFromDate } from "@/lib/dateUtils";
 
 // 직원 카드 클릭 시 열리는 최근 30일 출퇴근 상세 모달.
@@ -16,7 +23,7 @@ interface EmployeeAttendanceDetailModalProps {
   onClose: () => void;
 }
 
-// overview API 응답의 row 형태 (autoStatus 기반)
+// overview API 응답의 row 형태 (Phase 6-2B 카테고리 보정 필드 포함)
 interface DetailRow {
   employeeId: number;
   employeeNo: string;
@@ -29,6 +36,17 @@ interface DetailRow {
   workMinutes: number | null;
   autoStatus: string | null;
   isOverridden: boolean;
+  categoryId: number | null;
+  categoryCode: string | null;
+  categoryName: string | null;
+  categoryColor: string | null;
+  reason: string | null;
+}
+
+// 휴가성(vacation) 카테고리 여부
+function isVacationCategory(code: string | null): boolean {
+  if (!code) return false;
+  return ["ANNUAL", "HALF_AM", "HALF_PM", "SICK", "FAMILY_EVENT"].includes(code);
 }
 
 // HH:MM (없으면 '-')
@@ -60,9 +78,26 @@ function formatDateLabel(ymd: string): string {
   return `${mm}-${dd} (${w})`;
 }
 
-// 진행 컬럼 (autoStatus 기준): 근무중 / 완료 / 미출근
-function renderProgress(autoStatus: string | null) {
-  if (autoStatus === "working") {
+// 진행 컬럼. Phase 6-2B 캘린더 보정 우선 (Q-A): 카테고리 라벨 표시.
+function renderProgress(row: DetailRow) {
+  // 캘린더 보정 우선
+  if (row.isOverridden && row.categoryId && row.categoryName) {
+    const label = isVacationCategory(row.categoryCode)
+      ? row.categoryName // "연차"
+      : row.checkOut
+        ? `${row.categoryName}완료` // "외근완료"
+        : `${row.categoryName}중`; // "외근중"
+    return (
+      <span className="inline-flex items-center gap-1 text-xs font-medium text-purple-700">
+        <span
+          className="w-2 h-2 rounded-full"
+          style={{ backgroundColor: row.categoryColor ?? "#a855f7" }}
+        />
+        {label}
+      </span>
+    );
+  }
+  if (row.autoStatus === "working") {
     return (
       <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700">
         <span className="w-2 h-2 rounded-full bg-emerald-500" />
@@ -71,10 +106,19 @@ function renderProgress(autoStatus: string | null) {
     );
   }
   if (
-    autoStatus === "normal" ||
-    autoStatus === "late" ||
-    autoStatus === "early_leave"
+    row.autoStatus === "normal" ||
+    row.autoStatus === "late" ||
+    row.autoStatus === "early_leave"
   ) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-700">
+        <span className="w-2 h-2 rounded-full bg-blue-500" />
+        완료
+      </span>
+    );
+  }
+  // autoStatus가 NULL이지만 check_in+check_out 있으면 옛날 데이터 → '완료'
+  if (row.checkIn && row.checkOut) {
     return (
       <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-700">
         <span className="w-2 h-2 rounded-full bg-blue-500" />
@@ -91,20 +135,34 @@ function renderProgress(autoStatus: string | null) {
   );
 }
 
-// 평가 컬럼 (autoStatus 기준): 정상/지각/조퇴/결근/보류
-function renderEval(autoStatus: string | null) {
+// 평가 컬럼. Phase 6-2B: 캘린더 보정 시 카테고리명 표시 (Q5c).
+function renderEval(row: DetailRow) {
+  // 캘린더 보정이면 카테고리명 표시 (예: "외근"/"연차")
+  if (row.isOverridden && row.categoryId && row.categoryName) {
+    return (
+      <span
+        className="text-xs font-medium"
+        style={{ color: row.categoryColor ?? "#a855f7" }}
+      >
+        {row.categoryName}
+      </span>
+    );
+  }
   const config: Record<string, { label: string; cls: string }> = {
     normal: { label: "정상", cls: "text-emerald-600" },
     late: { label: "지각", cls: "text-amber-600" },
     early_leave: { label: "조퇴", cls: "text-orange-600" },
     absent: { label: "결근", cls: "text-rose-600" },
   };
-  // working 또는 null → 평가 보류
-  const c = autoStatus ? config[autoStatus] : undefined;
-  if (!c) {
-    return <span className="text-xs text-gray-400">–</span>;
+  const c = row.autoStatus ? config[row.autoStatus] : undefined;
+  if (c) {
+    return <span className={`text-xs font-medium ${c.cls}`}>{c.label}</span>;
   }
-  return <span className={`text-xs font-medium ${c.cls}`}>{c.label}</span>;
+  // autoStatus NULL이지만 check_in+check_out 있으면 '정상' 추정 (옛날 데이터 보호)
+  if (row.checkIn && row.checkOut) {
+    return <span className="text-xs font-medium text-emerald-600">정상</span>;
+  }
+  return <span className="text-xs text-gray-400">–</span>;
 }
 
 export default function EmployeeAttendanceDetailModal({
@@ -166,7 +224,7 @@ export default function EmployeeAttendanceDetailModal({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  // 통계 (autoStatus 기준 집계)
+  // 통계 (autoStatus + 카테고리 보정 기준 집계)
   const stats = useMemo(() => {
     return rows.reduce(
       (acc, r) => {
@@ -174,9 +232,11 @@ export default function EmployeeAttendanceDetailModal({
         if (r.autoStatus === "normal") acc.normal += 1;
         else if (r.autoStatus === "late") acc.late += 1;
         else if (r.autoStatus === "absent") acc.absent += 1;
+        // Phase 6-2B: 캘린더 보정 카운트
+        if (r.isOverridden && r.categoryId) acc.category += 1;
         return acc;
       },
-      { attended: 0, normal: 0, late: 0, absent: 0 }
+      { attended: 0, normal: 0, late: 0, absent: 0, category: 0 }
     );
   }, [rows]);
 
@@ -229,8 +289,8 @@ export default function EmployeeAttendanceDetailModal({
             </div>
           ) : (
             <>
-              {/* 통계 카드 4개 */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+              {/* 통계 카드 5개 (Phase 6-2B: 외근/휴가 신규) */}
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 sm:gap-3">
                 <div className="bg-gray-50 rounded-xl p-3">
                   <p className="text-xs font-semibold text-gray-500">출근일수</p>
                   <p className="mt-1 text-xl font-bold text-gray-900 font-mono">
@@ -264,6 +324,17 @@ export default function EmployeeAttendanceDetailModal({
                     {stats.absent}
                   </p>
                 </div>
+                <div className="bg-purple-50 rounded-xl p-3">
+                  <div className="flex items-center gap-1">
+                    <Briefcase size={13} className="text-purple-600" />
+                    <p className="text-xs font-semibold text-purple-700">
+                      외근/휴가
+                    </p>
+                  </div>
+                  <p className="mt-1 text-xl font-bold text-purple-700 font-mono">
+                    {stats.category}
+                  </p>
+                </div>
               </div>
 
               {sortedRows.length === 0 ? (
@@ -295,6 +366,9 @@ export default function EmployeeAttendanceDetailModal({
                           <th className="text-center text-xs font-semibold text-gray-500 px-4 py-2.5">
                             평가
                           </th>
+                          <th className="text-left text-xs font-semibold text-gray-500 px-4 py-2.5">
+                            사유
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
@@ -316,10 +390,18 @@ export default function EmployeeAttendanceDetailModal({
                               {formatWorkMinutes(r.workMinutes)}
                             </td>
                             <td className="px-4 py-2.5 text-center">
-                              {renderProgress(r.autoStatus)}
+                              {renderProgress(r)}
                             </td>
                             <td className="px-4 py-2.5 text-center">
-                              {renderEval(r.autoStatus)}
+                              {renderEval(r)}
+                            </td>
+                            <td
+                              className="px-4 py-2.5 text-sm text-gray-600 max-w-xs truncate"
+                              title={r.reason ?? ""}
+                            >
+                              {r.reason || (
+                                <span className="text-gray-300">-</span>
+                              )}
                             </td>
                           </tr>
                         ))}
@@ -336,8 +418,8 @@ export default function EmployeeAttendanceDetailModal({
                             {formatDateLabel(r.workDate)}
                           </span>
                           <div className="flex items-center gap-2">
-                            {renderProgress(r.autoStatus)}
-                            {renderEval(r.autoStatus)}
+                            {renderProgress(r)}
+                            {renderEval(r)}
                           </div>
                         </div>
                         <div className="flex items-center justify-between text-xs">
@@ -348,6 +430,11 @@ export default function EmployeeAttendanceDetailModal({
                             {formatWorkMinutes(r.workMinutes)}
                           </span>
                         </div>
+                        {r.reason && (
+                          <div className="text-xs text-gray-600 truncate">
+                            사유: {r.reason}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
