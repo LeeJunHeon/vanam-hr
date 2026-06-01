@@ -120,6 +120,7 @@ class CalendarClient:
 
         body = {
             "summary": title,
+            "description": "재고관리 시스템에서 자동 생성된 일정입니다.",
             "start": {"date": start_date},
             "end": {"date": end_exclusive},
             "extendedProperties": {
