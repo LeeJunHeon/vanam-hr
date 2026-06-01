@@ -44,6 +44,20 @@ interface AttendanceRequest {
   approvedAt: string | null;
   rejectReason: string | null;
   requestedAt: string;
+  // Phase 6-2E 캘린더 등록 정보
+  calendarSourceId: number | null;
+  calendarEventTitle: string | null;
+  calendarEventDescription: string | null;
+  externalSource: string | null;
+  externalEventId: string | null;
+}
+
+interface CalendarSourceOption {
+  id: number;
+  calendarId: string;
+  calendarName: string;
+  defaultCategoryId: number;
+  description: string | null;
 }
 
 interface CategoryOption {
@@ -88,6 +102,10 @@ const EMPTY_FORM = {
   correctedCheckIn: "",
   correctedCheckOut: "",
   correctionType: "both" as "in_only" | "out_only" | "both",
+  // Phase 6-2E 캘린더 등록 정보
+  calendarSourceId: "" as "" | string,
+  calendarEventTitle: "",
+  calendarEventDescription: "",
 };
 
 export default function RequestPage() {
@@ -99,6 +117,8 @@ export default function RequestPage() {
 
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [statusLookups, setStatusLookups] = useState<StatusLookup[]>([]);
+  // Phase 6-2E 캘린더 옵션
+  const [calendarSources, setCalendarSources] = useState<CalendarSourceOption[]>([]);
 
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<AttendanceRequest | null>(null);
@@ -148,6 +168,20 @@ export default function RequestPage() {
         if (sRes.ok) setStatusLookups(await sRes.json());
       } catch (e) {
         console.error("masters fetch error:", e);
+      }
+    })();
+  }, []);
+
+  // Phase 6-2E 캘린더 소스 로드 (1회)
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/calendar-sources");
+        if (res.ok) {
+          setCalendarSources(await res.json());
+        }
+      } catch (e) {
+        console.error("calendar-sources fetch error:", e);
       }
     })();
   }, []);
@@ -215,6 +249,73 @@ export default function RequestPage() {
     };
   }, [showForm, currentId, form.categoryId, form.startDate, categories]);
 
+  // Phase 6-2E: 카테고리/기간/사유 변경 시 캘린더 자동 매핑 + 제목/설명 자동 생성
+  // 사용자가 한 번이라도 calendarSourceId를 명시적으로 변경했으면 자동 매핑 안 함 (Edit 케이스).
+  useEffect(() => {
+    if (!showForm) return;
+    if (calendarSources.length === 0) return;
+    const cat = categories.find((c) => c.id === Number(form.categoryId));
+    if (!cat) return;
+    // 정정(correction) 카테고리는 캘린더 등록 대상 아님 → skip
+    if (cat.type === "correction") return;
+
+    // 카테고리 → 캘린더 자동 매핑 (defaultCategoryId 일치)
+    // editTarget이 있고 이미 calendarSourceId가 세팅된 경우는 그대로 유지.
+    let nextSourceId: string = form.calendarSourceId;
+    if (!editTarget && !form.calendarSourceId) {
+      const matched = calendarSources.find(
+        (cs) => cs.defaultCategoryId === Number(form.categoryId)
+      );
+      if (matched) {
+        nextSourceId = String(matched.id);
+      }
+    }
+
+    // 제목 자동: "[카테고리한글이름] 이름" (사용자가 수정했으면 그대로 유지)
+    const empName = current?.name ?? "";
+    const autoTitle = empName ? `[${cat.name}] ${empName}` : `[${cat.name}]`;
+
+    // description 자동: 메타 + 사유
+    const lines = [
+      "[VanaM HR 자동 등록]",
+      `신청자: ${empName || "-"}` +
+        (current?.departmentName ? ` (${current.departmentName})` : ""),
+      `카테고리: ${cat.name}`,
+      `기간: ${form.startDate}${
+        form.endDate !== form.startDate ? ` ~ ${form.endDate}` : ""
+      }`,
+      form.reason?.trim() ? `사유: ${form.reason.trim()}` : "",
+    ].filter(Boolean);
+    const autoDesc = lines.join("\n");
+
+    setForm((f) => {
+      // 사용자가 직접 수정한 경우 보존: editTarget이 있으면 기존 값 유지
+      const next = { ...f };
+      if (nextSourceId !== f.calendarSourceId) {
+        next.calendarSourceId = nextSourceId;
+      }
+      // editTarget(수정 모드)이 아닐 때만 자동 채움
+      if (!editTarget) {
+        if (!f.calendarEventTitle) next.calendarEventTitle = autoTitle;
+        if (!f.calendarEventDescription) {
+          next.calendarEventDescription = autoDesc;
+        }
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    showForm,
+    form.categoryId,
+    form.startDate,
+    form.endDate,
+    form.reason,
+    categories,
+    calendarSources,
+    current,
+    editTarget,
+  ]);
+
   // status / category helper
   const getStatusLabel = (code: string): string => {
     const lookup = statusLookups.find((l) => l.code === code);
@@ -257,6 +358,10 @@ export default function RequestPage() {
       correctedCheckIn: isoToTimeInput(r.correctedCheckIn),
       correctedCheckOut: isoToTimeInput(r.correctedCheckOut),
       correctionType: inferredType,
+      // Phase 6-2E 캘린더 필드 (있으면 그대로 로드)
+      calendarSourceId: r.calendarSourceId != null ? String(r.calendarSourceId) : "",
+      calendarEventTitle: r.calendarEventTitle ?? "",
+      calendarEventDescription: r.calendarEventDescription ?? "",
     });
     setFormError("");
     setShowForm(true);
@@ -329,6 +434,23 @@ export default function RequestPage() {
       } else {
         payload.correctedCheckIn = null;
         payload.correctedCheckOut = null;
+      }
+
+      // Phase 6-2E 캘린더 정보 (선택)
+      // 정정 카테고리는 캘린더 등록 대상이 아니므로 모두 NULL로 전송
+      if (selectedCategory?.type === "correction") {
+        payload.calendarSourceId = null;
+        payload.calendarEventTitle = null;
+        payload.calendarEventDescription = null;
+      } else if (form.calendarSourceId) {
+        payload.calendarSourceId = Number(form.calendarSourceId);
+        payload.calendarEventTitle = form.calendarEventTitle.trim() || null;
+        payload.calendarEventDescription =
+          form.calendarEventDescription.trim() || null;
+      } else {
+        payload.calendarSourceId = null;
+        payload.calendarEventTitle = null;
+        payload.calendarEventDescription = null;
       }
 
       const res = await fetch(url, {
@@ -724,6 +846,82 @@ export default function RequestPage() {
                 />
               </div>
 
+              {/* Phase 6-2E: Google Calendar 등록 정보 (정정이 아닌 경우만) */}
+              {selectedCategory?.type !== "correction" &&
+                calendarSources.length > 0 && (
+                  <div className="border-t border-blue-200 pt-4 mt-2">
+                    <h3 className="text-sm font-bold text-blue-700 mb-3">
+                      📅 Google Calendar 등록 정보 (선택)
+                    </h3>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-blue-700 mb-1">
+                          캘린더
+                        </label>
+                        <select
+                          value={form.calendarSourceId}
+                          onChange={(e) =>
+                            setForm((f) => ({
+                              ...f,
+                              calendarSourceId: e.target.value,
+                            }))
+                          }
+                          className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                        >
+                          <option value="">— 캘린더 등록 안 함 —</option>
+                          {calendarSources.map((cs) => (
+                            <option key={cs.id} value={cs.id}>
+                              {cs.calendarName}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {form.calendarSourceId && (
+                        <>
+                          <div>
+                            <label className="block text-xs font-semibold text-blue-700 mb-1">
+                              일정 제목
+                            </label>
+                            <input
+                              type="text"
+                              value={form.calendarEventTitle}
+                              onChange={(e) =>
+                                setForm((f) => ({
+                                  ...f,
+                                  calendarEventTitle: e.target.value,
+                                }))
+                              }
+                              placeholder="[연차] HONG Gildong"
+                              className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-semibold text-blue-700 mb-1">
+                              일정 설명
+                            </label>
+                            <textarea
+                              value={form.calendarEventDescription}
+                              onChange={(e) =>
+                                setForm((f) => ({
+                                  ...f,
+                                  calendarEventDescription: e.target.value,
+                                }))
+                              }
+                              rows={5}
+                              className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400 resize-none font-mono"
+                            />
+                          </div>
+                          <p className="text-[10px] text-blue-600/70">
+                            승인 후 Google Calendar에 자동 등록됩니다. 신청 취소
+                            시 캘린더에서도 함께 삭제됩니다.
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+
               {formError && (
                 <p className="text-sm text-red-500 bg-red-50 px-3 py-2 rounded-xl">
                   {formError}
@@ -911,19 +1109,28 @@ export default function RequestPage() {
                         <p className="text-[10px] text-gray-400">
                           신청: {new Date(r.requestedAt).toLocaleString("ko-KR")}
                         </p>
-                        {isPending && (
+                        {/* Phase 6-2E: 수정은 pending만, 취소는 pending/auto_approved/approved 허용 */}
+                        {(isPending ||
+                          r.status === "auto_approved" ||
+                          r.status === "approved") && (
                           <div className="flex gap-1">
-                            <button
-                              onClick={() => openEdit(r)}
-                              className="p-1.5 rounded-lg hover:bg-blue-100 text-gray-400 hover:text-blue-600"
-                              title="수정"
-                            >
-                              <Edit size={14} />
-                            </button>
+                            {isPending && (
+                              <button
+                                onClick={() => openEdit(r)}
+                                className="p-1.5 rounded-lg hover:bg-blue-100 text-gray-400 hover:text-blue-600"
+                                title="수정"
+                              >
+                                <Edit size={14} />
+                              </button>
+                            )}
                             <button
                               onClick={() => handleCancel(r)}
                               className="p-1.5 rounded-lg hover:bg-rose-100 text-gray-400 hover:text-rose-600"
-                              title="취소"
+                              title={
+                                isPending
+                                  ? "취소"
+                                  : "취소 (캘린더 일정 함께 삭제)"
+                              }
                             >
                               <X size={14} />
                             </button>

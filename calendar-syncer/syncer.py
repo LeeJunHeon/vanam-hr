@@ -91,11 +91,18 @@ class Syncer:
         self.logger.info("초기화 완료")
 
     def _create_http_app(self) -> Flask:
-        """Flask 앱 생성. /internal/calendar-event + /internal/health 두 엔드포인트.
+        """Flask 앱 생성. /internal/calendar-event(POST/DELETE) + /internal/health.
 
         - X-Internal-Token 헤더로 인증 (env INTERNAL_API_TOKEN과 비교)
         - 같은 docker network의 컨테이너만 접근 (expose만, ports 매핑 X)
-        - vanam_source="inventory" 표시로 syncer 무한루프 방지
+        - vanam_source 표시(어떤 값이든)로 syncer 무한루프 방지
+
+        POST body 두 가지 포맷 지원:
+          [A] 신규(HR): {calendar_id, vanam_source, summary, description,
+                        start: {date|dateTime}, end: {date|dateTime}}
+              → Google Calendar 네이티브 body 그대로 사용
+          [B] 기존(inventory): {title, startDate, endDate}
+              → title/날짜로 종일 일정 (CALENDAR_WRITE_TARGET_ID에 등록)
         """
         app = Flask(__name__)
 
@@ -123,38 +130,175 @@ class Syncer:
             if not isinstance(data, dict):
                 return jsonify({"ok": False, "error": "Body must be JSON object"}), 400
 
-            title = data.get("title")
-            start_date = data.get("startDate")
-            end_date = data.get("endDate")
+            # 포맷 판별: summary 있으면 신규(HR) 포맷, 아니면 기존(inventory) 포맷
+            is_new_format = "summary" in data and "start" in data
 
-            # 3) 입력 검증
-            if not title or not isinstance(title, str) or not title.strip():
-                return jsonify({"ok": False, "error": "title is required"}), 400
-            if not _is_valid_date(start_date):
-                return jsonify({"ok": False, "error": "startDate must be YYYY-MM-DD"}), 400
-            if not _is_valid_date(end_date):
-                return jsonify({"ok": False, "error": "endDate must be YYYY-MM-DD"}), 400
-            if end_date < start_date:
-                return jsonify({"ok": False, "error": "endDate must be >= startDate"}), 400
-
-            # 4) 캘린더에 등록
             try:
+                if is_new_format:
+                    # ===== 신규 포맷 (HR 결재 → 캘린더 등록) =====
+                    summary = data.get("summary")
+                    description = data.get("description") or ""
+                    start_obj = data.get("start") or {}
+                    end_obj = data.get("end") or {}
+                    calendar_id = (
+                        data.get("calendar_id") or self.config.write_target_id
+                    )
+                    vanam_source = data.get("vanam_source") or "hr"
+
+                    if not summary or not isinstance(summary, str) or not summary.strip():
+                        return jsonify({"ok": False, "error": "summary is required"}), 400
+                    if not isinstance(start_obj, dict) or not isinstance(end_obj, dict):
+                        return jsonify(
+                            {"ok": False, "error": "start/end must be objects"}
+                        ), 400
+                    # 종일 vs 시간 지정 검증
+                    has_start_date = "date" in start_obj
+                    has_start_dt = "dateTime" in start_obj
+                    has_end_date = "date" in end_obj
+                    has_end_dt = "dateTime" in end_obj
+                    if not (has_start_date or has_start_dt):
+                        return jsonify(
+                            {"ok": False, "error": "start.date or start.dateTime required"}
+                        ), 400
+                    if not (has_end_date or has_end_dt):
+                        return jsonify(
+                            {"ok": False, "error": "end.date or end.dateTime required"}
+                        ), 400
+
+                    body = {
+                        "summary": summary,
+                        "description": description,
+                        "start": start_obj,
+                        "end": end_obj,
+                        "extendedProperties": {
+                            "private": {
+                                "vanam_source": vanam_source,
+                            }
+                        },
+                    }
+
+                    created = (
+                        self.client.service.events()
+                        .insert(calendarId=calendar_id, body=body)
+                        .execute()
+                    )
+                    event_id = created.get("id", "")
+                    self.logger.info(
+                        f"캘린더 일정 등록 완료 [신규/{vanam_source}]: "
+                        f"summary='{summary}', calendar_id={calendar_id}, "
+                        f"eventId={event_id}"
+                    )
+                    return (
+                        jsonify(
+                            {
+                                "ok": True,
+                                "eventId": event_id,
+                                "event_id": event_id,  # snake_case alias
+                            }
+                        ),
+                        200,
+                    )
+
+                # ===== 기존 포맷 (inventory 등) =====
+                title = data.get("title")
+                start_date = data.get("startDate")
+                end_date = data.get("endDate")
+
+                if not title or not isinstance(title, str) or not title.strip():
+                    return jsonify({"ok": False, "error": "title is required"}), 400
+                if not _is_valid_date(start_date):
+                    return jsonify(
+                        {"ok": False, "error": "startDate must be YYYY-MM-DD"}
+                    ), 400
+                if not _is_valid_date(end_date):
+                    return jsonify(
+                        {"ok": False, "error": "endDate must be YYYY-MM-DD"}
+                    ), 400
+                if end_date < start_date:
+                    return jsonify(
+                        {"ok": False, "error": "endDate must be >= startDate"}
+                    ), 400
+
+                # 호환성 fallback (calendar_id / vanam_source body로 받기)
+                calendar_id_override = data.get("calendar_id")
+                vanam_source = data.get("vanam_source") or "inventory"
+                target_calendar_id = (
+                    calendar_id_override or self.config.write_target_id
+                )
+
                 event_id = self.client.insert_event(
-                    calendar_id=self.config.write_target_id,
+                    calendar_id=target_calendar_id,
                     title=title,
                     start_date=start_date,
                     end_date=end_date,
-                    source="inventory",
+                    source=vanam_source,
+                )
+                self.logger.info(
+                    f"캘린더 일정 등록 완료 [기존/{vanam_source}]: "
+                    f"title='{title}', {start_date}~{end_date}, eventId={event_id}"
+                )
+                return (
+                    jsonify(
+                        {
+                            "ok": True,
+                            "eventId": event_id,
+                            "event_id": event_id,
+                        }
+                    ),
+                    200,
                 )
             except Exception as e:
                 self.logger.exception(f"캘린더 일정 등록 실패: {e}")
                 return jsonify({"ok": False, "error": str(e)}), 500
 
-            self.logger.info(
-                f"캘린더 일정 등록 완료: title='{title}', "
-                f"{start_date}~{end_date}, eventId={event_id}"
-            )
-            return jsonify({"ok": True, "eventId": event_id}), 200
+        @app.delete("/internal/calendar-event/<event_id>")
+        def delete_calendar_event(event_id):
+            """캘린더 일정 삭제 (멱등적: 404는 already_deleted로 OK 처리).
+
+            Body: {"calendar_id": "..."} — 어느 캘린더의 이벤트인지 명시.
+            """
+            # 1) 토큰 검증
+            token = request.headers.get("X-Internal-Token")
+            if not token or token != self.config.internal_api_token:
+                self.logger.warning(
+                    f"인증 실패 (DELETE, X-Internal-Token 불일치): "
+                    f"remote={request.remote_addr}"
+                )
+                return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
+            # 2) Body 파싱 (calendar_id)
+            try:
+                data = request.get_json(force=True, silent=True) or {}
+            except Exception:
+                data = {}
+            calendar_id = (
+                data.get("calendar_id") if isinstance(data, dict) else None
+            ) or self.config.write_target_id
+
+            if not event_id:
+                return jsonify({"ok": False, "error": "event_id required"}), 400
+
+            # 3) Google Calendar API 삭제 (404는 멱등적 처리)
+            try:
+                self.client.service.events().delete(
+                    calendarId=calendar_id, eventId=event_id
+                ).execute()
+                self.logger.info(
+                    f"캘린더 일정 삭제 완료: calendar_id={calendar_id}, "
+                    f"eventId={event_id}"
+                )
+                return jsonify({"ok": True}), 200
+            except Exception as e:
+                err = str(e)
+                # 이미 삭제됐거나 없는 경우는 OK로 처리 (멱등성)
+                if "404" in err or "Resource has been deleted" in err or "Not Found" in err:
+                    self.logger.info(
+                        f"캘린더 일정 이미 삭제됨 (멱등 처리): "
+                        f"eventId={event_id}"
+                    )
+                    return jsonify({"ok": True, "note": "already_deleted"}), 200
+                self.logger.exception(f"캘린더 일정 삭제 실패: {e}")
+                return jsonify({"ok": False, "error": err}), 500
 
         return app
 

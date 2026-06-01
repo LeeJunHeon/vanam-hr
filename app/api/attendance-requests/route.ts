@@ -17,6 +17,30 @@ function ymdFromDate(d: Date): string {
   return d.toISOString().split("T")[0];
 }
 
+// 캘린더 일정 삭제 — calendar-syncer DELETE endpoint 호출.
+// 실패해도 throw (호출자가 try/catch로 멱등 처리).
+async function deleteCalendarEvent(
+  calendarId: string,
+  eventId: string
+): Promise<void> {
+  const base = process.env.CALENDAR_SYNCER_URL;
+  if (!base) {
+    throw new Error("CALENDAR_SYNCER_URL env not set");
+  }
+  const url = `${base}/internal/calendar-event/${encodeURIComponent(eventId)}`;
+  const res = await fetch(url, {
+    method: "DELETE",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Internal-Token": process.env.INTERNAL_API_TOKEN ?? "",
+    },
+    body: JSON.stringify({ calendar_id: calendarId }),
+  });
+  if (!res.ok) {
+    throw new Error(`calendar-syncer DELETE failed: ${res.status}`);
+  }
+}
+
 // category.type → requestType 매핑
 function categoryTypeToRequestType(categoryType: string): string {
   if (categoryType === "correction") return "correction";
@@ -109,6 +133,12 @@ export async function GET(request: NextRequest) {
         approvedAt: r.approvedAt ? r.approvedAt.toISOString() : null,
         rejectReason: r.rejectReason,
         requestedAt: r.requestedAt.toISOString(),
+        // Phase 6-2E 캘린더 등록 정보
+        calendarSourceId: r.calendarSourceId ?? null,
+        calendarEventTitle: r.calendarEventTitle ?? null,
+        calendarEventDescription: r.calendarEventDescription ?? null,
+        externalSource: r.externalSource ?? null,
+        externalEventId: r.externalEventId ?? null,
       }))
     );
   } catch (error) {
@@ -139,6 +169,10 @@ export async function POST(request: NextRequest) {
       reason,
       correctedCheckIn,
       correctedCheckOut,
+      // Phase 6-2E 캘린더 등록 정보 (선택)
+      calendarSourceId,
+      calendarEventTitle,
+      calendarEventDescription,
     } = body;
 
     if (!employeeId || !categoryId || !startDate || !endDate) {
@@ -302,6 +336,13 @@ export async function POST(request: NextRequest) {
         primaryApproverId,
         deputyApproverId,
         approvedAt: isAutoApproved ? now : null,
+        // Phase 6-2E 캘린더 등록 정보 (NULL 허용)
+        calendarSourceId:
+          calendarSourceId != null && calendarSourceId !== ""
+            ? Number(calendarSourceId)
+            : null,
+        calendarEventTitle: calendarEventTitle?.trim() || null,
+        calendarEventDescription: calendarEventDescription?.trim() || null,
       },
     });
 
@@ -345,6 +386,10 @@ export async function PUT(request: NextRequest) {
       reason,
       correctedCheckIn,
       correctedCheckOut,
+      // Phase 6-2E 캘린더 등록 정보 (수정 시)
+      calendarSourceId,
+      calendarEventTitle,
+      calendarEventDescription,
     } = body;
 
     const before = await prisma.attendanceRequest.findUnique({
@@ -367,15 +412,55 @@ export async function PUT(request: NextRequest) {
       }
     }
 
-    if (before.status !== "pending") {
-      return NextResponse.json(
-        { error: "결재 대기 상태가 아니므로 수정/취소할 수 없습니다." },
-        { status: 409 }
-      );
+    // Phase 6-2E: cancel은 approved/auto_approved 상태도 허용 (캘린더 삭제 동기화)
+    const isCancelAction = action === "cancel";
+    const cancelAllowedStatuses = ["pending", "auto_approved", "approved"];
+    if (isCancelAction) {
+      if (!cancelAllowedStatuses.includes(before.status)) {
+        return NextResponse.json(
+          { error: `'${before.status}' 상태는 취소할 수 없습니다.` },
+          { status: 409 }
+        );
+      }
+    } else {
+      // 일반 수정은 pending만 허용 (기존 동작)
+      if (before.status !== "pending") {
+        return NextResponse.json(
+          { error: "결재 대기 상태가 아니므로 수정할 수 없습니다." },
+          { status: 409 }
+        );
+      }
     }
 
     // 취소 흐름
-    if (action === "cancel") {
+    if (isCancelAction) {
+      // 캘린더 등록되어 있으면 삭제 시도 (멱등적, 실패해도 DB 취소는 진행)
+      if (
+        before.externalSource === "hr" &&
+        before.externalEventId &&
+        before.calendarSourceId
+      ) {
+        try {
+          const calSource = await prisma.calendarSource.findUnique({
+            where: { id: before.calendarSourceId },
+            select: { calendarId: true },
+          });
+          if (calSource) {
+            await deleteCalendarEvent(
+              calSource.calendarId,
+              before.externalEventId
+            );
+            console.log(
+              `[cancel] 캘린더 일정 삭제 OK: eventId=${before.externalEventId}`
+            );
+          }
+        } catch (e) {
+          console.error(
+            `[cancel] 캘린더 삭제 실패 (DB 취소는 진행):`,
+            e
+          );
+        }
+      }
       const updated = await prisma.attendanceRequest.update({
         where: { id: idNum },
         data: { status: "cancelled" },
@@ -442,6 +527,20 @@ export async function PUT(request: NextRequest) {
       data.correctedCheckOut = correctedCheckOut
         ? new Date(correctedCheckOut)
         : null;
+    }
+    // Phase 6-2E 캘린더 필드 수정
+    if (calendarSourceId !== undefined) {
+      data.calendarSourceId =
+        calendarSourceId === null || calendarSourceId === ""
+          ? null
+          : Number(calendarSourceId);
+    }
+    if (calendarEventTitle !== undefined) {
+      data.calendarEventTitle = calendarEventTitle?.trim() || null;
+    }
+    if (calendarEventDescription !== undefined) {
+      data.calendarEventDescription =
+        calendarEventDescription?.trim() || null;
     }
 
     const updated = await prisma.attendanceRequest.update({

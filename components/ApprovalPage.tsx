@@ -48,6 +48,27 @@ interface ApprovalItem {
   hoursLeft: number;
   canApprove: boolean;
   isSelfRequest: boolean;
+  // Phase 6-2E 캘린더 등록 정보
+  calendarSourceId: number | null;
+  calendarEventTitle: string | null;
+  calendarEventDescription: string | null;
+  externalSource: string | null;
+  externalEventId: string | null;
+}
+
+interface CalendarSourceOption {
+  id: number;
+  calendarId: string;
+  calendarName: string;
+  defaultCategoryId: number;
+  description: string | null;
+}
+
+// 결재자가 카드에서 수정한 캘린더 정보를 일시 저장 (request id → 수정값)
+interface EditedCalendar {
+  sourceId?: number | null;
+  title?: string;
+  description?: string;
 }
 
 interface StatusLookup {
@@ -91,6 +112,20 @@ export default function ApprovalPage() {
   const [statusLookups, setStatusLookups] = useState<StatusLookup[]>([]);
   const [rejectModal, setRejectModal] = useState<RejectModalState>(EMPTY_REJECT);
   const [toast, setToast] = useState("");
+  // Phase 6-2E 캘린더 옵션 + 결재자 인라인 수정값
+  const [calendarSources, setCalendarSources] = useState<CalendarSourceOption[]>([]);
+  const [editedCalendar, setEditedCalendar] = useState<Record<number, EditedCalendar>>({});
+
+  const updateEditedCalendar = (
+    reqId: number,
+    field: keyof EditedCalendar,
+    value: number | null | string
+  ) => {
+    setEditedCalendar((prev) => ({
+      ...prev,
+      [reqId]: { ...(prev[reqId] ?? {}), [field]: value },
+    }));
+  };
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -107,6 +142,18 @@ export default function ApprovalPage() {
         if (res.ok) setStatusLookups(await res.json());
       } catch (e) {
         console.error("status lookups fetch error:", e);
+      }
+    })();
+  }, []);
+
+  // Phase 6-2E 캘린더 소스 로드 (1회)
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/calendar-sources");
+        if (res.ok) setCalendarSources(await res.json());
+      } catch (e) {
+        console.error("calendar-sources fetch error:", e);
       }
     })();
   }, []);
@@ -160,17 +207,45 @@ export default function ApprovalPage() {
     )
       return;
     try {
+      // Phase 6-2E: 결재자가 카드 내에서 수정한 캘린더 정보 같이 전송
+      // (없으면 undefined → API에서 미변경, 기존 값 그대로 유지)
+      const edited = editedCalendar[item.id];
+      const payload: Record<string, unknown> = {
+        approverId: currentId,
+        action: "approve",
+      };
+      if (edited) {
+        if (edited.sourceId !== undefined) {
+          payload.calendarSourceId = edited.sourceId;
+        }
+        if (edited.title !== undefined) {
+          payload.calendarEventTitle = edited.title;
+        }
+        if (edited.description !== undefined) {
+          payload.calendarEventDescription = edited.description;
+        }
+      }
       const res = await fetch(`/api/approvals?id=${item.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ approverId: currentId, action: "approve" }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok) {
         alert(data.error || "승인 실패");
         return;
       }
-      showToast("✅ 승인되었습니다");
+      // 캘린더 등록 결과 알림 (있을 때만)
+      const calNote = data.calendarEventId
+        ? ` (캘린더 등록 완료)`
+        : "";
+      showToast("✅ 승인되었습니다" + calNote);
+      // 편집 상태 초기화
+      setEditedCalendar((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
       fetchApprovals();
     } catch {
       alert("네트워크 오류");
@@ -293,6 +368,11 @@ export default function ApprovalPage() {
                 statusBadge={statusBadge}
                 onApprove={() => handleApprove(item)}
                 onReject={() => openReject(item)}
+                calendarSources={calendarSources}
+                edited={editedCalendar[item.id]}
+                onEditCalendar={(field, value) =>
+                  updateEditedCalendar(item.id, field, value)
+                }
               />
             ))}
           </div>
@@ -384,6 +464,13 @@ interface ApprovalCardProps {
   statusBadge: (code: string) => React.CSSProperties;
   onApprove: () => void;
   onReject: () => void;
+  // Phase 6-2E 캘린더
+  calendarSources: CalendarSourceOption[];
+  edited: EditedCalendar | undefined;
+  onEditCalendar: (
+    field: keyof EditedCalendar,
+    value: number | null | string
+  ) => void;
 }
 
 function ApprovalCard({
@@ -393,6 +480,9 @@ function ApprovalCard({
   statusBadge,
   onApprove,
   onReject,
+  calendarSources,
+  edited,
+  onEditCalendar,
 }: ApprovalCardProps) {
   const isPending = item.status === "pending";
   const isRejected = item.status === "rejected";
@@ -463,6 +553,96 @@ function ApprovalCard({
             </span>
           </div>
         )}
+
+      {/* Phase 6-2E: 캘린더 등록 정보 — 신청자 입력값 + 결재자 인라인 편집 */}
+      {item.calendarSourceId !== null && (
+        <div className="-mx-4 sm:-mx-5 mt-2 mb-3 bg-blue-50/40 px-4 sm:px-5 py-3 border-y border-blue-100">
+          <h4 className="text-xs font-bold text-blue-700 mb-2 flex items-center gap-1">
+            📅 캘린더 등록 정보
+            {item.status === "pending" && tab === "pending" && (
+              <span className="text-[10px] font-normal text-blue-500">
+                (결재 시 수정 가능)
+              </span>
+            )}
+            {item.externalEventId && (
+              <span className="text-[10px] font-normal text-emerald-600 ml-1">
+                ✓ 등록됨
+              </span>
+            )}
+          </h4>
+          <div className="space-y-2 text-sm">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-gray-500 text-xs shrink-0">캘린더:</span>
+              {item.status === "pending" && tab === "pending" ? (
+                <select
+                  value={
+                    edited?.sourceId !== undefined
+                      ? edited.sourceId ?? ""
+                      : item.calendarSourceId ?? ""
+                  }
+                  onChange={(e) =>
+                    onEditCalendar(
+                      "sourceId",
+                      e.target.value ? Number(e.target.value) : null
+                    )
+                  }
+                  className="border border-blue-200 rounded px-2 py-0.5 text-xs bg-white"
+                >
+                  <option value="">— 등록 안 함 —</option>
+                  {calendarSources.map((cs) => (
+                    <option key={cs.id} value={cs.id}>
+                      {cs.calendarName}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="text-xs text-gray-700">
+                  {calendarSources.find((cs) => cs.id === item.calendarSourceId)
+                    ?.calendarName ?? "—"}
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-gray-500 text-xs shrink-0">제목:</span>
+              {item.status === "pending" && tab === "pending" ? (
+                <input
+                  type="text"
+                  value={edited?.title ?? item.calendarEventTitle ?? ""}
+                  onChange={(e) => onEditCalendar("title", e.target.value)}
+                  className="flex-1 border border-blue-200 rounded px-2 py-0.5 text-xs bg-white min-w-0"
+                />
+              ) : (
+                <span className="text-xs text-gray-700 truncate">
+                  {item.calendarEventTitle || "—"}
+                </span>
+              )}
+            </div>
+
+            <div>
+              <span className="text-gray-500 text-xs block mb-1">설명:</span>
+              {item.status === "pending" && tab === "pending" ? (
+                <textarea
+                  value={
+                    edited?.description ??
+                    item.calendarEventDescription ??
+                    ""
+                  }
+                  onChange={(e) =>
+                    onEditCalendar("description", e.target.value)
+                  }
+                  rows={4}
+                  className="w-full border border-blue-200 rounded px-2 py-1 text-xs bg-white font-mono resize-none"
+                />
+              ) : (
+                <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono bg-white border border-blue-100 rounded p-2">
+                  {item.calendarEventDescription || "—"}
+                </pre>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 본인 역할 (pending 탭에서만 의미 있음) */}
       {!isHistory && item.myRole && (

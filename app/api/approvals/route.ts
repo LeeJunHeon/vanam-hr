@@ -2,6 +2,73 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getApproverId } from "@/lib/auth-helpers";
 
+// Phase 6-2E: 캘린더 일정 등록 (calendar-syncer POST 호출).
+// 성공 시 event_id 반환. 실패 시 throw (호출자가 try/catch로 결재 자체는 유지).
+interface CreateEventParams {
+  calendarId: string;
+  summary: string;
+  description: string;
+  startDate: Date;
+  endDate: Date;
+  correctedCheckIn: Date | null;
+  correctedCheckOut: Date | null;
+}
+
+async function createCalendarEvent(
+  p: CreateEventParams
+): Promise<string | null> {
+  const base = process.env.CALENDAR_SYNCER_URL;
+  if (!base) throw new Error("CALENDAR_SYNCER_URL env not set");
+
+  // 종일 vs 시간 지정 판단
+  const isAllDay =
+    p.correctedCheckIn === null && p.correctedCheckOut === null;
+
+  let startObj: Record<string, string>;
+  let endObj: Record<string, string>;
+  if (isAllDay) {
+    // 종일: start.date, end.date (Google API exclusive end → +1일)
+    const sYmd = p.startDate.toISOString().split("T")[0];
+    const eDate = new Date(p.endDate);
+    eDate.setUTCDate(eDate.getUTCDate() + 1);
+    const eYmd = eDate.toISOString().split("T")[0];
+    startObj = { date: sYmd };
+    endObj = { date: eYmd };
+  } else {
+    // 시간 지정: dateTime + timeZone (KST)
+    startObj = {
+      dateTime: p.correctedCheckIn!.toISOString(),
+      timeZone: "Asia/Seoul",
+    };
+    endObj = {
+      dateTime: p.correctedCheckOut!.toISOString(),
+      timeZone: "Asia/Seoul",
+    };
+  }
+
+  const url = `${base}/internal/calendar-event`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Internal-Token": process.env.INTERNAL_API_TOKEN ?? "",
+    },
+    body: JSON.stringify({
+      calendar_id: p.calendarId,
+      vanam_source: "hr",
+      summary: p.summary,
+      description: p.description,
+      start: startObj,
+      end: endObj,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`calendar-syncer POST failed: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.eventId ?? data.event_id ?? data.id ?? null;
+}
+
 // 자동 위임 시간 계산
 function isDelegationElapsed(requestedAt: Date, hours: number): boolean {
   const elapsed = Date.now() - requestedAt.getTime();
@@ -140,6 +207,12 @@ export async function GET(request: NextRequest) {
           hoursLeft,
           canApprove,
           isSelfRequest: r.employeeId === approverId,
+          // Phase 6-2E 캘린더 등록 정보
+          calendarSourceId: r.calendarSourceId ?? null,
+          calendarEventTitle: r.calendarEventTitle ?? null,
+          calendarEventDescription: r.calendarEventDescription ?? null,
+          externalSource: r.externalSource ?? null,
+          externalEventId: r.externalEventId ?? null,
         };
       })
     );
@@ -165,7 +238,15 @@ export async function PUT(request: NextRequest) {
     const idNum = Number(id);
 
     const body = await request.json();
-    const { approverId: bodyApproverId, action, rejectReason } = body;
+    const {
+      approverId: bodyApproverId,
+      action,
+      rejectReason,
+      // Phase 6-2E 결재자가 수정 가능한 캘린더 필드
+      calendarSourceId,
+      calendarEventTitle,
+      calendarEventDescription,
+    } = body;
 
     if (!action) {
       return NextResponse.json(
@@ -358,6 +439,23 @@ export async function PUT(request: NextRequest) {
 
     const result = await prisma.$transaction(async (tx) => {
       // 1) attendance_request 상태 업데이트
+      //    Phase 6-2E: 결재자가 캘린더 정보 수정한 경우 함께 반영 (undefined는 유지)
+      const calendarUpdateFields: Record<string, unknown> = {};
+      if (calendarSourceId !== undefined) {
+        calendarUpdateFields.calendarSourceId =
+          calendarSourceId === null || calendarSourceId === ""
+            ? null
+            : Number(calendarSourceId);
+      }
+      if (calendarEventTitle !== undefined) {
+        calendarUpdateFields.calendarEventTitle =
+          calendarEventTitle?.trim() || null;
+      }
+      if (calendarEventDescription !== undefined) {
+        calendarUpdateFields.calendarEventDescription =
+          calendarEventDescription?.trim() || null;
+      }
+
       const updated = await tx.attendanceRequest.update({
         where: { id: idNum },
         data: {
@@ -365,6 +463,7 @@ export async function PUT(request: NextRequest) {
           approvedById: approverIdNum,
           approvedAt: now,
           rejectReason: action === "reject" ? rejectReason.trim() : null,
+          ...calendarUpdateFields,
         },
       });
 
@@ -484,10 +583,56 @@ export async function PUT(request: NextRequest) {
       return { updated, applied };
     });
 
+    // Phase 6-2E: 승인 시 + 캘린더 정보 있으면 → Google Calendar 등록
+    // (transaction 밖에서 실행 — 외부 API 호출은 트랜잭션 안에 두지 않음)
+    let calendarEventId: string | null = null;
+    if (action === "approve") {
+      const finalRequest = await prisma.attendanceRequest.findUnique({
+        where: { id: idNum },
+        include: {
+          calendarSource: { select: { calendarId: true, calendarName: true } },
+        },
+      });
+
+      if (
+        finalRequest?.calendarSource &&
+        finalRequest.calendarEventTitle &&
+        !finalRequest.externalEventId // 이미 등록된 경우 중복 방지
+      ) {
+        try {
+          calendarEventId = await createCalendarEvent({
+            calendarId: finalRequest.calendarSource.calendarId,
+            summary: finalRequest.calendarEventTitle,
+            description: finalRequest.calendarEventDescription ?? "",
+            startDate: finalRequest.startDate,
+            endDate: finalRequest.endDate,
+            correctedCheckIn: finalRequest.correctedCheckIn,
+            correctedCheckOut: finalRequest.correctedCheckOut,
+          });
+          if (calendarEventId) {
+            await prisma.attendanceRequest.update({
+              where: { id: idNum },
+              data: {
+                externalSource: "hr",
+                externalEventId: calendarEventId,
+              },
+            });
+            console.log(
+              `[approval] 캘린더 등록 완료: eventId=${calendarEventId}`
+            );
+          }
+        } catch (e) {
+          console.error(`[approval] 캘린더 등록 실패 (결재는 유지):`, e);
+          // 캘린더 실패해도 결재는 유지 (멱등적 — 관리자가 수동 등록하면 됨)
+        }
+      }
+    }
+
     return NextResponse.json({
       id: result.updated.id,
       status: result.updated.status,
       appliedDays: result.applied,
+      calendarEventId,
     });
   } catch (error) {
     console.error("PUT /api/approvals error:", error);

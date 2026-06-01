@@ -349,6 +349,9 @@ model AttendanceRequest {
   reason            String?
   externalSource    String?   @map("external_source") @db.VarChar(50)
   externalEventId   String?   @map("external_event_id") @db.VarChar(255)
+  calendarSourceId         Int?      @map("calendar_source_id")
+  calendarEventTitle       String?   @map("calendar_event_title")
+  calendarEventDescription String?   @map("calendar_event_description")
   correctedCheckIn  DateTime? @map("corrected_check_in") @db.Timestamptz(6)
   correctedCheckOut DateTime? @map("corrected_check_out") @db.Timestamptz(6)
   status            String    @default("pending") @db.VarChar(50)
@@ -362,6 +365,7 @@ model AttendanceRequest {
 
   employee        Employee           @relation("RequestEmployee", fields: [employeeId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   category        AttendanceCategory @relation(fields: [categoryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  calendarSource  CalendarSource?    @relation("RequestCalendarSource", fields: [calendarSourceId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   primaryApprover Employee?          @relation("RequestPrimaryApprover", fields: [primaryApproverId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   deputyApprover  Employee?          @relation("RequestDeputyApprover", fields: [deputyApproverId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   approvedBy      Employee?          @relation("RequestApprovedBy", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -395,8 +399,9 @@ model CalendarSource {
   createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  defaultCategory   AttendanceCategory   @relation("CalendarSourceDefaultCategory", fields: [defaultCategoryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  keywordRules      CalendarKeywordRule[]
+  defaultCategory     AttendanceCategory   @relation("CalendarSourceDefaultCategory", fields: [defaultCategoryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  keywordRules        CalendarKeywordRule[]
+  attendanceRequests  AttendanceRequest[]  @relation("RequestCalendarSource")
 
   @@index([syncEnabled], map: "idx_calendar_sources_active")
   @@map("calendar_sources")
