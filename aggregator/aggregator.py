@@ -226,38 +226,69 @@ class Aggregator:
         grace_out_minutes: int,
         now: datetime,
     ) -> str:
-        """단일 직원 + 단일 work_date 처리. 반환: 'upsert' | 'overridden' | 'no_data'."""
+        """단일 직원 + 단일 work_date 처리. 반환: 'upsert' | 'overridden' | 'no_data'.
+
+        Phase 6-2B: presence_raw가 없어도 캘린더에 휴가/외근 등록되어 있으면 처리.
+        흐름:
+          1) presence_raw → check_in/out 계산 (없으면 None, None)
+          2) 캘린더 보정 확인 (get_auto_approved_request)
+          3) 캘린더 있음 → category_id 적용, auto_status='normal', is_overridden=true
+             (시간 지정 일정이면 corrected_check_in/out으로 덮어쓰기)
+          4) 캘린더 없음 + presence_raw도 없음 → no_data
+          5) 캘린더 없음 + presence_raw 있음 → 기존 _determine_auto_status 로직
+        """
         emp_id = emp["id"]
         emp_no = emp.get("employee_no", "?")
         emp_name = emp.get("name", "?")
 
+        # 1) presence_raw 기반 check_in/out (없으면 둘 다 None)
         raw = self.db.get_presence_raw_by_work_date(emp_id, work_date, cutoff_hour)
-        if not raw:
-            return "no_data"
+        if raw:
+            check_in, check_out = self.compute_check_in_out(raw, grace_minutes, now)
+        else:
+            check_in, check_out = None, None
 
-        check_in, check_out = self.compute_check_in_out(raw, grace_minutes, now)
+        # 2) 캘린더 자동 등록 보정 확인 (Phase 6-2B)
+        calendar_request = self.db.get_auto_approved_request(emp_id, work_date)
 
-        # 둘 다 없으면 INSERT 의미 없음
-        if check_in is None and check_out is None:
-            return "no_data"
+        # 시프트 로깅에 쓰일 정보 (분기 둘 다에서 필요)
+        shift_info = self.db.get_employee_shift(emp_id, work_date)
 
-        # work_minutes 계산
+        if calendar_request:
+            # 3) 캘린더에 휴가/외근 등록 → 자동 적용
+            category_id = calendar_request["category_id"]
+
+            # 시간 지정 일정이면 corrected_check_in/out으로 덮어쓰기
+            if calendar_request["corrected_check_in"] is not None:
+                check_in = calendar_request["corrected_check_in"]
+            if calendar_request["corrected_check_out"] is not None:
+                check_out = calendar_request["corrected_check_out"]
+            # 종일 일정(corrected 둘 다 None)이면 presence_raw 기반 그대로 유지
+            # → 휴가인데 사무실 잠깐 들렀어도 출근 기록 보존
+
+            auto_status = "normal"  # 캘린더 자동 등록은 항상 정상 (휴가/외근은 결근 아님)
+            is_overridden = True    # 다음 사이클 보호
+        else:
+            # 4) 캘린더 없음 + presence_raw 없음 → INSERT 의미 없음
+            if not raw or (check_in is None and check_out is None):
+                return "no_data"
+
+            # 5) 캘린더 없음 + presence_raw 있음 → 기존 로직
+            category_id = None
+            is_overridden = False
+            auto_status = self._determine_auto_status(
+                check_in=check_in,
+                check_out=check_out,
+                shift_info=shift_info,
+                grace_in_minutes=grace_in_minutes,
+                grace_out_minutes=grace_out_minutes,
+            )
+
+        # work_minutes 계산 (분기 무관)
         work_minutes = None
         if check_in is not None and check_out is not None:
             delta = check_out - check_in
             work_minutes = int(delta.total_seconds() // 60)
-
-        # 시프트 매칭 (없으면 None)
-        shift_info = self.db.get_employee_shift(emp_id, work_date)
-
-        # auto_status 판정
-        auto_status = self._determine_auto_status(
-            check_in=check_in,
-            check_out=check_out,
-            shift_info=shift_info,
-            grace_in_minutes=grace_in_minutes,
-            grace_out_minutes=grace_out_minutes,
-        )
 
         new_id = self.db.upsert_attendance_daily(
             employee_id=emp_id,
@@ -266,6 +297,8 @@ class Aggregator:
             check_out=check_out,
             work_minutes=work_minutes,
             auto_status=auto_status,
+            category_id=category_id,
+            is_overridden=is_overridden,
         )
 
         if new_id is None:
@@ -280,11 +313,15 @@ class Aggregator:
                 if shift_info and shift_info.get("start") and shift_info.get("end")
                 else "shift=none"
             )
+            calendar_label = (
+                f", 캘린더보정(category_id={category_id}, reason='{calendar_request['reason']}')"
+                if calendar_request else ""
+            )
             self.logger.info(
                 f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} — "
                 f"check_in={check_in}, check_out={check_out}, "
                 f"work_minutes={work_minutes}, auto_status={auto_status}, "
-                f"{shift_label}, id={new_id}"
+                f"{shift_label}, id={new_id}{calendar_label}"
             )
             return "upsert"
 

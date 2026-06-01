@@ -1,8 +1,11 @@
 """psycopg2 DB 연결/쿼리. autocommit=True 패턴으로 트랜잭션 누수 차단.
 
-1단계는 읽기 전용 — INSERT/UPDATE/DELETE 메서드 없음.
-DB 연결 확인 + employees 매칭 맵 로드까지만 한다.
+Phase 6-2A: 캘린더 소스/키워드 룰 조회 추가 (읽기 전용).
+Phase 6-2B: attendance_requests UPSERT 추가 (캘린더 일정 → 자동 결재 요청).
 """
+
+from datetime import datetime
+from typing import Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -145,3 +148,71 @@ class Database:
                     "priority": row["priority"],
                 })
         return result
+
+    def upsert_attendance_request(
+        self,
+        employee_id: int,
+        category_id: int,
+        start_date: str,        # "YYYY-MM-DD"
+        end_date: str,          # "YYYY-MM-DD"
+        external_event_id: str,
+        reason: str,
+        corrected_check_in: Optional[datetime] = None,    # 시간 지정 일정만
+        corrected_check_out: Optional[datetime] = None,
+    ) -> int:
+        """Google Calendar 일정 → attendance_request UPSERT.
+
+        UNIQUE (external_source, external_event_id)로 중복 방지.
+        캘린더 일정 수정 시 자동 UPDATE (employee/category/날짜/이유 모두 갱신).
+
+        Args:
+            employee_id: 매칭된 직원 ID
+            category_id: 판정된 카테고리 ID (ANNUAL, BUSINESS_TRIP, ETC 등)
+            start_date: 일정 시작 날짜 "YYYY-MM-DD"
+            end_date: 일정 종료 날짜 "YYYY-MM-DD" (inclusive)
+            external_event_id: Google Calendar event id
+            reason: 일정 제목 (캘린더 summary 그대로)
+            corrected_check_in: 시간 지정 일정의 시작 시각 (TIMESTAMPTZ), 종일은 None
+            corrected_check_out: 시간 지정 일정의 종료 시각 (TIMESTAMPTZ), 종일은 None
+
+        Returns:
+            INSERT/UPDATE된 attendance_request id
+        """
+        sql = """
+            INSERT INTO hr.attendance_requests (
+                employee_id, category_id, request_type,
+                start_date, end_date, reason,
+                corrected_check_in, corrected_check_out,
+                external_source, external_event_id,
+                status, requested_at, updated_at
+            )
+            VALUES (
+                %s, %s, 'calendar_auto',
+                %s, %s, %s,
+                %s, %s,
+                'google_calendar', %s,
+                'auto_approved', NOW(), NOW()
+            )
+            ON CONFLICT (external_source, external_event_id)
+            DO UPDATE SET
+                employee_id = EXCLUDED.employee_id,
+                category_id = EXCLUDED.category_id,
+                start_date = EXCLUDED.start_date,
+                end_date = EXCLUDED.end_date,
+                reason = EXCLUDED.reason,
+                corrected_check_in = EXCLUDED.corrected_check_in,
+                corrected_check_out = EXCLUDED.corrected_check_out,
+                status = 'auto_approved',
+                updated_at = NOW()
+            RETURNING id
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(sql, (
+                employee_id, category_id,
+                start_date, end_date, reason,
+                corrected_check_in, corrected_check_out,
+                external_event_id,
+            ))
+            row = c.fetchone()
+            return row[0]

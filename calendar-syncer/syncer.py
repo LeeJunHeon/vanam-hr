@@ -283,9 +283,70 @@ class Syncer:
                 else:
                     cat_label = f"category={cat_code} (default)"
 
+                # ⭐ attendance_request UPSERT (직원 매칭 + 카테고리 있을 때만)
+                # ETC 포함 모든 카테고리를 auto_approved로 INSERT (사용자 결정 Q1c)
+                # 무한루프 방지(vanam_source 스킵)는 위에서 이미 처리됨
+                if emp_id and cat_id:
+                    try:
+                        # 종일 vs 시간 지정 구분
+                        # parse_event는 end_date_or_datetime을 안 주므로 raw event["end"]에서 직접 추출
+                        end_raw = (event.get("end") or {})
+                        if p["is_all_day"]:
+                            # 종일: start.date / end.date (end.date는 Google API exclusive=다음날)
+                            start_date_str = p["start_date_or_datetime"]  # "YYYY-MM-DD"
+                            end_exclusive = end_raw.get("date")
+                            if end_exclusive:
+                                end_dt_obj = datetime.strptime(
+                                    end_exclusive, "%Y-%m-%d"
+                                ).date()
+                                end_date_str = (
+                                    end_dt_obj - timedelta(days=1)
+                                ).strftime("%Y-%m-%d")
+                            else:
+                                end_date_str = start_date_str
+                            corrected_check_in = None
+                            corrected_check_out = None
+                        else:
+                            # 시간 지정: start.dateTime / end.dateTime (ISO 문자열, TZ 포함)
+                            start_iso = p["start_date_or_datetime"]
+                            end_iso = end_raw.get("dateTime")
+                            if not end_iso:
+                                raise ValueError("end.dateTime 없음")
+                            # Python 3.11+은 Z 직접 지원하나 안전하게 +00:00로 치환
+                            start_dt_obj = datetime.fromisoformat(
+                                start_iso.replace("Z", "+00:00")
+                            )
+                            end_dt_obj = datetime.fromisoformat(
+                                end_iso.replace("Z", "+00:00")
+                            )
+                            start_date_str = start_dt_obj.strftime("%Y-%m-%d")
+                            end_date_str = end_dt_obj.strftime("%Y-%m-%d")
+                            corrected_check_in = start_dt_obj
+                            corrected_check_out = end_dt_obj
+
+                        request_id = self.db.upsert_attendance_request(
+                            employee_id=emp_id,
+                            category_id=cat_id,
+                            start_date=start_date_str,
+                            end_date=end_date_str,
+                            external_event_id=event["id"],
+                            reason=p["summary"],
+                            corrected_check_in=corrected_check_in,
+                            corrected_check_out=corrected_check_out,
+                        )
+                        upsert_label = f"→ request_id={request_id} ✅"
+                    except Exception as e:
+                        self.logger.exception(
+                            f"  [{cal_name}] UPSERT 실패: {e}"
+                        )
+                        upsert_label = "→ UPSERT 실패 ❌"
+                else:
+                    # 직원 매칭 안 됨 → INSERT 스킵 (로그만)
+                    upsert_label = "→ 스킵 (매칭 안 됨)"
+
                 self.logger.info(
                     f"  [{cal_name}] {when_label} | {p['summary']} "
-                    f"| creator={creator or '-'} ({emp_label}) | {cat_label}"
+                    f"| creator={creator or '-'} ({emp_label}) | {cat_label} {upsert_label}"
                 )
 
             self.logger.info(

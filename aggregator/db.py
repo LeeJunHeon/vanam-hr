@@ -191,6 +191,56 @@ class Database:
                 "type": point.get("type", "day"),
             }
 
+    def get_auto_approved_request(
+        self,
+        employee_id: int,
+        work_date: date,
+    ) -> Optional[dict]:
+        """캘린더에서 자동 등록된 attendance_request 조회 (Phase 6-2B 보정용).
+
+        work_date가 start_date~end_date 범위에 들어가는 가장 최근 요청 반환.
+        external_source='google_calendar' AND status='auto_approved' 만 대상.
+
+        반환: {
+            'id': int,
+            'category_id': int,
+            'start_date': date,
+            'end_date': date,
+            'corrected_check_in': datetime or None,     # 종일 일정은 None
+            'corrected_check_out': datetime or None,
+            'reason': str,
+          } 또는 None (없을 때)
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                SELECT id, category_id, start_date, end_date,
+                       corrected_check_in, corrected_check_out, reason
+                FROM hr.attendance_requests
+                WHERE employee_id = %s
+                  AND status = 'auto_approved'
+                  AND external_source = 'google_calendar'
+                  AND start_date <= %s
+                  AND end_date >= %s
+                ORDER BY requested_at DESC
+                LIMIT 1
+                """,
+                (employee_id, work_date, work_date),
+            )
+            row = c.fetchone()
+            if row is None:
+                return None
+            return {
+                "id": row[0],
+                "category_id": row[1],
+                "start_date": row[2],
+                "end_date": row[3],
+                "corrected_check_in": row[4],
+                "corrected_check_out": row[5],
+                "reason": row[6],
+            }
+
     def upsert_attendance_daily(
         self,
         employee_id: int,
@@ -199,11 +249,18 @@ class Database:
         check_out: Optional[datetime],
         work_minutes: Optional[int],
         auto_status: Optional[str] = None,
+        category_id: Optional[int] = None,        # Phase 6-2B: 캘린더 보정 카테고리
+        is_overridden: bool = False,              # Phase 6-2B: 캘린더 보정이면 True
     ) -> Optional[int]:
         """attendance_daily UPSERT. is_overridden=true면 건드리지 않음.
 
         auto_status: 자동 판정 결과 ('normal', 'absent' 등 또는 None).
-                     is_overridden=true인 row는 갱신 안 됨 (관리자 수동 보호).
+        category_id: Phase 6-2B 캘린더 보정 시 카테고리 (ANNUAL, BUSINESS_TRIP 등).
+        is_overridden: True면 이번 INSERT 자체가 is_overridden=true로 박힘.
+                       → 다음 사이클에서 WHERE 절(is_overridden=false)에 막혀 변경 안 됨.
+
+        WHERE 절: 기존 row가 이미 is_overridden=true면 절대 덮어쓰지 않음
+                  (관리자 수동 수정 + 캘린더 보정 둘 다 보호).
 
         반환: 새/갱신된 row id. is_overridden=true로 막혀 변경 없으면 None.
         """
@@ -213,19 +270,23 @@ class Database:
                 """
                 INSERT INTO hr.attendance_daily
                     (employee_id, work_date, check_in, check_out, work_minutes,
-                     auto_status, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+                     auto_status, category_id, is_overridden,
+                     created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                 ON CONFLICT (employee_id, work_date)
                 DO UPDATE SET
                     check_in = EXCLUDED.check_in,
                     check_out = EXCLUDED.check_out,
                     work_minutes = EXCLUDED.work_minutes,
                     auto_status = EXCLUDED.auto_status,
+                    category_id = EXCLUDED.category_id,
+                    is_overridden = EXCLUDED.is_overridden,
                     updated_at = NOW()
                 WHERE hr.attendance_daily.is_overridden = false
                 RETURNING id
                 """,
-                (employee_id, work_date, check_in, check_out, work_minutes, auto_status),
+                (employee_id, work_date, check_in, check_out, work_minutes,
+                 auto_status, category_id, is_overridden),
             )
             row = c.fetchone()
             return row[0] if row else None
