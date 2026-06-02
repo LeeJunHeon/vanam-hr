@@ -385,9 +385,13 @@ export default function RequestPage() {
 
     setForm((f) => {
       const next = { ...f };
-      next.calendarSourceId = nextSourceId;
+      // Phase 6-2L-fix-2: calendarSourceId가 의존성에 들어가므로 실제 변경 시에만 갱신
+      // (같은 값으로 setForm 호출 시 useEffect 추가 트리거 방지)
+      if (f.calendarSourceId !== nextSourceId) {
+        next.calendarSourceId = nextSourceId;
+      }
       if (!editTarget) {
-        // 신규 신청 모드 — 무조건 재생성 (Q4)
+        // 신규 신청 모드 — 카테고리/캘린더 변경 시 무조건 재생성
         next.calendarEventTitle = autoTitle;
         next.calendarEventDescription = autoDesc;
 
@@ -405,13 +409,14 @@ export default function RequestPage() {
       }
       return next;
     });
+    // Phase 6-2L-fix-2: 트리거를 카테고리/캘린더 변경으로만 한정.
+    // form.reason, form.startDate, form.endDate는 의도적으로 제외 — 사용자가 입력 중에
+    // 자동 채움이 다시 일어나 제목/설명을 덮어쓰는 것을 방지.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     showForm,
     form.categoryId,
-    form.startDate,
-    form.endDate,
-    form.reason,
+    form.calendarSourceId,
     categories,
     calendarSources,
     current,
