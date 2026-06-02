@@ -478,7 +478,8 @@ export async function PUT(request: NextRequest) {
 
     // 취소 흐름
     if (isCancelAction) {
-      // 캘린더 등록되어 있으면 삭제 시도 (멱등적, 실패해도 DB 취소는 진행)
+      // 1) 캘린더 등록되어 있으면 삭제 시도 (멱등적, 실패해도 DB 취소는 진행)
+      //    외부 API 호출은 트랜잭션 밖에서 — 트랜잭션 안에 두면 롤백/재시도 시 일정 중복 위험.
       if (
         before.externalSource === "hr" &&
         before.externalEventId &&
@@ -505,10 +506,90 @@ export async function PUT(request: NextRequest) {
           );
         }
       }
-      const updated = await prisma.attendanceRequest.update({
-        where: { id: idNum },
-        data: { status: "cancelled" },
+
+      // 2) attendance_daily 원복 — 카테고리 type별 분기
+      //    승인 시 만들었던 attendance_daily 보정 행을 is_overridden=false로 풀어,
+      //    다음 aggregator 사이클(60초 이내)이 WiFi/시프트 기준으로 재계산하게 한다.
+      //    행을 DELETE하지 않음(이력/연속성 보존). 행이 없으면 skip.
+      const cat = await prisma.attendanceCategory.findUnique({
+        where: { id: before.categoryId },
+        select: { type: true, code: true },
       });
+      const catType = cat?.type ?? null;
+
+      const dayMs = 24 * 60 * 60 * 1000;
+      const revertDays: Date[] = [];
+      if (catType === "leave" || catType === "work") {
+        // startDate~endDate 각 일자 (UTC 자정 기준 — DB workDate가 date 컬럼이라 시각 비교 안 함)
+        const start = new Date(before.startDate);
+        const end = new Date(before.endDate);
+        for (let t = start.getTime(); t <= end.getTime(); t += dayMs) {
+          revertDays.push(new Date(t));
+        }
+      } else if (catType === "correction") {
+        // 정정은 단일 날짜
+        revertDays.push(new Date(before.startDate));
+      }
+
+      // 3) 원자적 트랜잭션 — 원복 + status='cancelled'
+      const updated = await prisma.$transaction(async (tx) => {
+        if (catType === "leave" || catType === "work") {
+          // 휴가/외근/출장/재택: categoryId/isOverridden만 풀고 WiFi 기록은 유지
+          //                     (aggregator가 다음 사이클에 재계산)
+          for (const wd of revertDays) {
+            await tx.attendanceDaily.updateMany({
+              where: {
+                employeeId: before.employeeId,
+                workDate: wd,
+              },
+              data: {
+                categoryId: null,
+                isOverridden: false,
+                // checkIn/checkOut/workMinutes/autoStatus는 그대로 — aggregator가 갱신
+              },
+            });
+          }
+        } else if (catType === "correction") {
+          // 정정: originalCheckIn/Out이 있으면 복원, 없으면(원래 빈 자리에 정정 채운 경우)
+          //       checkIn/Out 모두 null로. workMinutes는 null로 두고 aggregator에 위임.
+          for (const wd of revertDays) {
+            const existing = await tx.attendanceDaily.findUnique({
+              where: {
+                employeeId_workDate: {
+                  employeeId: before.employeeId,
+                  workDate: wd,
+                },
+              },
+            });
+            if (!existing) continue;
+            const hasOriginal =
+              existing.originalCheckIn !== null ||
+              existing.originalCheckOut !== null;
+            await tx.attendanceDaily.update({
+              where: { id: existing.id },
+              data: {
+                checkIn: hasOriginal ? existing.originalCheckIn : null,
+                checkOut: hasOriginal ? existing.originalCheckOut : null,
+                originalCheckIn: null,
+                originalCheckOut: null,
+                workMinutes: null, // aggregator 재계산 트리거
+                isOverridden: false,
+              },
+            });
+          }
+        }
+
+        // 4) attendance_requests 상태만 cancelled로 (이력 보존, 삭제 X)
+        return tx.attendanceRequest.update({
+          where: { id: idNum },
+          data: { status: "cancelled" },
+        });
+      });
+
+      console.log(
+        `[cancel] 결재 #${idNum} 취소 완료 — type=${catType}, ` +
+          `원복 일수=${revertDays.length}`
+      );
       return NextResponse.json({ id: updated.id, status: updated.status });
     }
 
