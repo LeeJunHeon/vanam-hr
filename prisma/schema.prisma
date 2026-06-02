@@ -395,6 +395,7 @@ model CalendarSource {
   calendarId        String    @unique @map("calendar_id") @db.VarChar(255)
   calendarName      String    @map("calendar_name") @db.VarChar(100)
   defaultCategoryId Int       @map("default_category_id")
+  categoryIds       Int[]     @default([]) @map("category_ids")
   syncEnabled       Boolean   @default(true) @map("sync_enabled")
   description       String?
 

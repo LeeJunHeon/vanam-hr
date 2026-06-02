@@ -444,12 +444,26 @@ export default function AttendanceOverviewPage() {
     try {
       const res = await fetch("/api/attendance/realtime");
       if (res.ok) {
-        setRealtimeData(await res.json());
+        const data = await res.json();
+        // Phase 6-2L: silent 모드(30초 폴링/탭 복귀)에서는 스크롤 위치 보존.
+        // setState 직전 scrollY 저장 → 리렌더 완료 후 다시 복원.
+        // requestAnimationFrame 2번 중첩: 첫 RAF에서 React 리렌더 commit, 두 번째에서 paint 직전 scroll 복원.
+        if (silent) {
+          const scrollY = window.scrollY;
+          setRealtimeData(data);
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              window.scrollTo({ top: scrollY, behavior: "instant" });
+            });
+          });
+        } else {
+          setRealtimeData(data);
+        }
       }
     } catch (e) {
       console.error("realtime fetch error:", e);
     } finally {
-      setRealtimeLoading(false);
+      if (!silent) setRealtimeLoading(false);
     }
   }, []);
 

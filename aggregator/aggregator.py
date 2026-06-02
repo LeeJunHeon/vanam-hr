@@ -258,13 +258,28 @@ class Aggregator:
             # 3) 캘린더에 휴가/외근 등록 → 자동 적용
             category_id = calendar_request["category_id"]
 
-            # 시간 지정 일정이면 corrected_check_in/out으로 덮어쓰기
-            if calendar_request["corrected_check_in"] is not None:
-                check_in = calendar_request["corrected_check_in"]
-            if calendar_request["corrected_check_out"] is not None:
-                check_out = calendar_request["corrected_check_out"]
-            # 종일 일정(corrected 둘 다 None)이면 presence_raw 기반 그대로 유지
-            # → 휴가인데 사무실 잠깐 들렀어도 출근 기록 보존
+            # Phase 6-2L: 캘린더 시간 + WiFi 시간 합치기 (min/max)
+            # - WiFi만 있으면 그대로 (cal_* 모두 None)
+            # - 캘린더 시간만 있으면 그대로 사용
+            # - 둘 다 있으면 가장 빠른 출근 + 가장 늦은 퇴근
+            # - 종일 일정(cal_* 모두 None)이면 presence_raw 기반 그대로 유지
+            #   → 휴가인데 사무실 잠깐 들렀어도 출근 기록 보존
+            cal_in = calendar_request["corrected_check_in"]
+            cal_out = calendar_request["corrected_check_out"]
+
+            if cal_in is not None:
+                if check_in is None:
+                    check_in = cal_in
+                else:
+                    # 가장 빠른 출근 (WiFi 새벽 출근 + 캘린더 13:00 외근 → WiFi)
+                    check_in = min(check_in, cal_in)
+
+            if cal_out is not None:
+                if check_out is None:
+                    check_out = cal_out
+                else:
+                    # 가장 늦은 퇴근 (WiFi 18:00 + 캘린더 15:00 외근 종료 → WiFi)
+                    check_out = max(check_out, cal_out)
 
             auto_status = "normal"  # 캘린더 자동 등록은 항상 정상 (휴가/외근은 결근 아님)
             is_overridden = True    # 다음 사이클 보호

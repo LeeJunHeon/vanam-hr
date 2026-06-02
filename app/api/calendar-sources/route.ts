@@ -17,6 +17,7 @@ export async function GET() {
         calendarId: true,
         calendarName: true,
         defaultCategoryId: true,
+        categoryIds: true,
         description: true,
       },
       orderBy: { id: "asc" },

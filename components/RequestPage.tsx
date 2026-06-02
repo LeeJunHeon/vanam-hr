@@ -58,6 +58,8 @@ interface CalendarSourceOption {
   calendarId: string;
   calendarName: string;
   defaultCategoryId: number;
+  // Phase 6-2L: N:M 매핑용 (휴가류 5개 → VanaM_Vacation 같은 경우)
+  categoryIds: number[];
   description: string | null;
 }
 
@@ -343,11 +345,21 @@ export default function RequestPage() {
     if (cat.type === "correction") return;
 
     // 신규 신청 모드에서는 카테고리 변경 시 무조건 재매핑 (Q4)
+    // Phase 6-2L: N:M 매핑 — category_ids 배열에 포함된 캘린더 우선, fallback default_category_id
     let nextSourceId: string = form.calendarSourceId;
     if (!editTarget) {
-      const matched = calendarSources.find(
-        (cs) => cs.defaultCategoryId === Number(form.categoryId)
+      const categoryIdNum = Number(form.categoryId);
+      let matched = calendarSources.find(
+        (cs) =>
+          Array.isArray(cs.categoryIds) &&
+          cs.categoryIds.includes(categoryIdNum)
       );
+      // fallback: category_ids 비어있는 경우(legacy) defaultCategoryId 매칭
+      if (!matched) {
+        matched = calendarSources.find(
+          (cs) => cs.defaultCategoryId === categoryIdNum
+        );
+      }
       nextSourceId = matched ? String(matched.id) : "";
     }
 
