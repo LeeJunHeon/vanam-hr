@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { Loader2, RefreshCw, CalendarDays } from "lucide-react";
+import ScheduleCategoryModal from "@/components/ScheduleCategoryModal";
 
 // API 응답 row 타입
 interface ScheduleRow {
@@ -80,27 +81,6 @@ function getGroupKey(code: string | null): string {
   return "etc";
 }
 
-// HH:MM 포맷
-function formatTime(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(
-    2,
-    "0"
-  )}`;
-}
-
-// 일정 시간 표시 (종일 / 시간 지정)
-function formatScheduleTime(row: ScheduleRow): string {
-  if (row.isAllDay) {
-    if (row.isMultiDay) return `종일 (${row.startDate} ~ ${row.endDate})`;
-    return "종일";
-  }
-  const start = formatTime(row.correctedCheckIn);
-  const end = formatTime(row.correctedCheckOut);
-  return `${start} ~ ${end}`;
-}
-
 // 날짜 라벨 (예: "2026년 6월 1일 (월)")
 function formatDateLabel(ymd: string): string {
   const d = new Date(`${ymd}T00:00:00`);
@@ -163,6 +143,8 @@ export default function ScheduleOverviewPage() {
   const [data, setData] = useState<ScheduleResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Phase 6-2K-1: 카테고리 카드 클릭 → 모달 열기
+  const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
 
   // fetch (silent 옵션 — AttendanceOverviewPage 패턴 참고)
   const fetchSchedule = useCallback(async (silent = false) => {
@@ -284,80 +266,75 @@ export default function ScheduleOverviewPage() {
         </div>
       </div>
 
-      {/* ─── 카테고리별 그룹 (빈 그룹도 표시) ─── */}
-      <div className="space-y-3 sm:space-y-4">
+      {/* ─── Phase 6-2K-1: 카테고리별 작은 카드 그리드 (7개, 항상 표시) ─── */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3">
         {CATEGORY_GROUPS.map((group) => {
           const items = groupedSchedules[group.key] ?? [];
           const c = COLOR_MAP[group.color] ?? COLOR_MAP.gray;
+          const hasItems = items.length > 0;
 
           return (
-            <div
+            <button
               key={group.key}
-              className={`${c.bg} rounded-2xl border ${c.border} p-4 sm:p-5`}
+              onClick={() => hasItems && setSelectedGroup(group.key)}
+              disabled={!hasItems}
+              className={`${c.bg} border ${c.border} rounded-2xl p-3 sm:p-4 text-left transition-all ${
+                hasItems
+                  ? "hover:shadow-md hover:scale-[1.02] cursor-pointer"
+                  : "opacity-70 cursor-default"
+              }`}
             >
-              {/* 그룹 헤더 */}
-              <div className="flex items-center gap-2 mb-3">
-                {group.icon && <span className="text-lg">{group.icon}</span>}
-                <h3 className={`text-sm font-bold ${c.text}`}>{group.label}</h3>
+              {/* 헤더: 아이콘 + 인원수 pill */}
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-2xl">{group.icon || "•"}</span>
                 <span
-                  className={`${c.pill} text-xs font-semibold px-2 py-0.5 rounded-full`}
+                  className={`${c.pill} text-xs font-bold px-2 py-0.5 rounded-full`}
                 >
                   {items.length}명
                 </span>
               </div>
 
-              {/* 그룹 내용 */}
-              {items.length === 0 ? (
-                <p className="text-sm text-gray-400">
-                  오늘 {group.label} 일정이 없습니다.
-                </p>
-              ) : (
-                // Phase 6-2J: 리스트 → 카드 그리드 (1/2/3/4열 반응형)
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
-                  {items.map((row) => (
-                    <div
+              {/* 카테고리 라벨 */}
+              <h3 className={`text-sm font-bold ${c.text}`}>{group.label}</h3>
+
+              {/* 미리보기 — 최대 3명 이름 */}
+              {hasItems ? (
+                <div className="mt-2 space-y-0.5">
+                  {items.slice(0, 3).map((row) => (
+                    <p
                       key={row.id}
-                      className="bg-white rounded-lg p-3 border border-gray-100"
+                      className="text-xs text-gray-600 truncate"
                     >
-                      {/* 이름 */}
-                      <div className="font-semibold text-gray-900 text-sm truncate">
-                        {row.employeeName}
-                      </div>
-                      {/* 부서/직급 */}
-                      {(row.departmentName || row.positionName) && (
-                        <div className="text-xs text-gray-500 mt-0.5 truncate">
-                          {row.departmentName ?? "-"} · {row.positionName ?? "-"}
-                        </div>
-                      )}
-                      {/* 휴가 그룹: ANNUAL/HALF_AM/HALF_PM 구분 표시 */}
-                      {group.key === "leave" && row.categoryName && (
-                        <span
-                          className={`inline-block text-xs ${c.pill} px-1.5 py-0.5 rounded mt-1`}
-                        >
-                          {row.categoryName}
-                        </span>
-                      )}
-                      {/* 시간 */}
-                      <div className={`text-sm font-mono ${c.text} mt-2`}>
-                        {formatScheduleTime(row)}
-                      </div>
-                      {/* 사유 */}
-                      {row.reason && (
-                        <div
-                          className="text-xs text-gray-600 mt-1 line-clamp-2"
-                          title={row.reason}
-                        >
-                          {row.reason}
-                        </div>
-                      )}
-                    </div>
+                      {row.employeeName}
+                    </p>
                   ))}
+                  {items.length > 3 && (
+                    <p className="text-xs text-gray-400">
+                      +{items.length - 3}명 더
+                    </p>
+                  )}
                 </div>
+              ) : (
+                <p className="text-xs text-gray-400 mt-2">없음</p>
               )}
-            </div>
+            </button>
           );
         })}
       </div>
+
+      {/* 카테고리 카드 클릭 → 직원 상세 모달 */}
+      {selectedGroup &&
+        (() => {
+          const group = CATEGORY_GROUPS.find((g) => g.key === selectedGroup);
+          if (!group) return null;
+          return (
+            <ScheduleCategoryModal
+              group={group}
+              items={groupedSchedules[selectedGroup] ?? []}
+              onClose={() => setSelectedGroup(null)}
+            />
+          );
+        })()}
     </div>
   );
 }
