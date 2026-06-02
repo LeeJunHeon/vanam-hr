@@ -494,6 +494,19 @@ export default function RequestPage() {
           return;
         }
       }
+    } else if (
+      // Phase 6-2G: 정정 외 + 시간 입력 허용 카테고리에서 시간 한쪽만 입력 차단
+      selectedCategory &&
+      categoryAllowsTimeInput(selectedCategory.code)
+    ) {
+      const inFilled = !!form.correctedCheckIn?.trim();
+      const outFilled = !!form.correctedCheckOut?.trim();
+      if (inFilled !== outFilled) {
+        setFormError(
+          "시작 시간과 종료 시간을 모두 입력하거나, 모두 비워주세요. (모두 비우면 종일 일정으로 등록됩니다.)"
+        );
+        return;
+      }
     }
 
     setFormError("");

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getApproverId } from "@/lib/auth-helpers";
+import { getApproverId, requireSession } from "@/lib/auth-helpers";
 
 // Phase 6-2E: 캘린더 일정 등록 (calendar-syncer POST 호출).
 // 성공 시 event_id 반환. 실패 시 throw (호출자가 try/catch로 결재 자체는 유지).
@@ -21,8 +21,8 @@ async function createCalendarEvent(
   if (!base) throw new Error("CALENDAR_SYNCER_URL env not set");
 
   // 종일 vs 시간 지정 판단
-  const isAllDay =
-    p.correctedCheckIn === null && p.correctedCheckOut === null;
+  // Phase 6-2G: 한쪽만 있어도 종일로 안전 처리 (런타임 에러 방지 — null!.toISOString() 방지)
+  const isAllDay = !p.correctedCheckIn || !p.correctedCheckOut;
 
   let startObj: Record<string, string>;
   let endObj: Record<string, string>;
@@ -86,12 +86,46 @@ function hoursUntilDelegation(requestedAt: Date, hours: number): number {
 // 관리자: 다른 결재자도 조회 가능.
 export async function GET(request: NextRequest) {
   try {
-    const r = await getApproverId(request);
-    if (!r.ok) return r.response;
-    const approverId = r.approverId;
+    // Phase 6-2H: CEO만 query param으로 다른 사람 결재함 조회 가능.
+    // ADMIN/EMPLOYEE는 본인 결재함만 (query param 무시 또는 본인 id면 OK).
+    const sessionR = await requireSession();
+    if (!sessionR.ok) return sessionR.response;
+    const { session } = sessionR;
+    const isCeo = session.user.role === "ceo";
+    const ownEmployeeId = session.user.employeeId;
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get("status") || "pending";
+    const queryApproverIdRaw = searchParams.get("approverId");
+
+    let approverId: number;
+    if (isCeo && queryApproverIdRaw) {
+      const n = Number(queryApproverIdRaw);
+      if (!Number.isInteger(n)) {
+        return NextResponse.json(
+          { error: "approverId가 유효하지 않습니다." },
+          { status: 400 }
+        );
+      }
+      approverId = n;
+    } else if (
+      queryApproverIdRaw &&
+      Number(queryApproverIdRaw) !== ownEmployeeId
+    ) {
+      // ADMIN/EMPLOYEE가 다른 사람 결재함 조회 시도 → 403
+      return NextResponse.json(
+        { error: "다른 직원의 결재함을 조회할 권한이 없습니다." },
+        { status: 403 }
+      );
+    } else {
+      if (!Number.isInteger(ownEmployeeId)) {
+        return NextResponse.json(
+          { error: "본인 직원 정보가 매핑되어 있지 않습니다." },
+          { status: 403 }
+        );
+      }
+      approverId = ownEmployeeId as number;
+    }
 
     let where: any = {};
     if (status === "pending") {
@@ -506,6 +540,12 @@ export async function PUT(request: NextRequest) {
           graceOutMinutes
         );
 
+        // Phase 6-2I: 첫 정정 시 원본 시간 백업 (이후 정정은 첫 백업값 그대로 유지)
+        const shouldBackupOriginal =
+          existing &&
+          existing.originalCheckIn === null &&
+          existing.originalCheckOut === null;
+
         await tx.attendanceDaily.upsert({
           where: {
             employeeId_workDate: {
@@ -530,6 +570,11 @@ export async function PUT(request: NextRequest) {
             autoStatus: newAutoStatus,
             isOverridden: true,
             note: existing?.note ?? `결재정정 #${updated.id}`,
+            // Phase 6-2I: 첫 정정이면 정정 전 값 백업 (영구 보존)
+            ...(shouldBackupOriginal && {
+              originalCheckIn: existing.checkIn,
+              originalCheckOut: existing.checkOut,
+            }),
           },
         });
         applied = 1;

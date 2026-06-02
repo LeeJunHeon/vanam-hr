@@ -298,6 +298,20 @@ export async function POST(request: NextRequest) {
       // — correctedCheckIn/Out이 둘 다 비어 있으면 종일 (NULL).
       // — 채워져 있으면 클라이언트가 startDate+HH:MM / endDate+HH:MM ISO로 전송.
       // — 다일 일정 시간 지정 가능 (예: "6/3 13:00 ~ 6/5 17:00").
+
+      // Phase 6-2G: 한쪽만 시간 입력 차단
+      const cciFilled = !!correctedCheckIn;
+      const ccoFilled = !!correctedCheckOut;
+      if (cciFilled !== ccoFilled) {
+        return NextResponse.json(
+          {
+            error:
+              "시작 시간과 종료 시간 중 하나만 입력할 수 없습니다. 모두 입력하거나 모두 비워주세요.",
+          },
+          { status: 400 }
+        );
+      }
+
       if (correctedCheckIn) {
         cciDate = new Date(correctedCheckIn);
         if (isNaN(cciDate.getTime())) {
@@ -558,6 +572,35 @@ export async function PUT(request: NextRequest) {
         ? new Date(correctedCheckOut)
         : null;
     }
+
+    // Phase 6-2G: 정정 외 카테고리는 시간 한쪽만 입력 차단 (병합 후 최종 상태 기준)
+    // 카테고리는 정정인지 판단해야 하므로 before.requestType 사용
+    if (before.requestType !== "correction") {
+      const finalCci =
+        data.correctedCheckIn !== undefined
+          ? data.correctedCheckIn
+          : before.correctedCheckIn;
+      const finalCco =
+        data.correctedCheckOut !== undefined
+          ? data.correctedCheckOut
+          : before.correctedCheckOut;
+      if (!!finalCci !== !!finalCco) {
+        return NextResponse.json(
+          {
+            error:
+              "시작 시간과 종료 시간 중 하나만 입력할 수 없습니다. 모두 입력하거나 모두 비워주세요.",
+          },
+          { status: 400 }
+        );
+      }
+      if (finalCci && finalCco && finalCco < finalCci) {
+        return NextResponse.json(
+          { error: "종료 시간은 시작 시간 이후여야 합니다." },
+          { status: 400 }
+        );
+      }
+    }
+
     // Phase 6-2E 캘린더 필드 수정
     if (calendarSourceId !== undefined) {
       data.calendarSourceId =

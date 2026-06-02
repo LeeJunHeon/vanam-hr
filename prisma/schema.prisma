@@ -316,6 +316,8 @@ model AttendanceDaily {
   workDate       DateTime  @map("work_date") @db.Date
   checkIn        DateTime? @map("check_in") @db.Timestamptz(6)
   checkOut       DateTime? @map("check_out") @db.Timestamptz(6)
+  originalCheckIn  DateTime? @map("original_check_in") @db.Timestamptz(6)
+  originalCheckOut DateTime? @map("original_check_out") @db.Timestamptz(6)
   shiftPatternId Int?      @map("shift_pattern_id")
   autoStatus     String?   @map("auto_status") @db.VarChar(50)
   categoryId     Int?      @map("category_id")
