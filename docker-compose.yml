@@ -16,6 +16,9 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
       AUTH_TRUST_HOST: "true"
       DISABLE_AUTH: ${DISABLE_AUTH:-false}
+      # Phase 6-2E: 결재 승인 시 calendar-syncer 호출용
+      CALENDAR_SYNCER_URL: ${CALENDAR_SYNCER_URL:-http://hr-calendar-syncer:8765}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
     networks:
       - internal
       - vanam-db-net
