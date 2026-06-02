@@ -13,6 +13,7 @@ import AttendanceCalendarDayModal, {
   type CalendarDaily,
   type CalendarRequest,
 } from "@/components/AttendanceCalendarDayModal";
+import MonthPicker from "@/components/MonthPicker";
 
 // 카테고리 → 기호/색상/라벨
 const CATEGORY_ICONS: Record<
@@ -34,6 +35,8 @@ const STATUS_ICONS: Record<
   string,
   { icon: string; color: string; label: string }
 > = {
+  // Phase 6-2K: 근무중(working) 추가
+  working: { icon: "🔵", color: "#3b82f6", label: "근무중" },
   normal: { icon: "🟢", color: "#10b981", label: "정상" },
   late: { icon: "🟡", color: "#f59e0b", label: "지각" },
   early_leave: { icon: "🟠", color: "#f97316", label: "조퇴" },
@@ -72,6 +75,7 @@ export default function AttendanceCalendarView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [monthPickerOpen, setMonthPickerOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -188,28 +192,28 @@ export default function AttendanceCalendarView() {
 
     const rows = data.employees.map((emp) => {
       const cells = dateCols.map((ymd) => {
-        // 1) 휴가/외근 등 카테고리 우선
+        const d = data.daily.find(
+          (x) => x.employeeId === emp.id && x.workDate === ymd
+        );
         const req = data.requests.find(
           (r) =>
             r.employeeId === emp.id &&
             r.startDate <= ymd &&
             r.endDate >= ymd
         );
-        if (req) return req.categoryName ?? "";
 
-        // 2) attendance_daily
-        const d = data.daily.find(
-          (x) => x.employeeId === emp.id && x.workDate === ymd
-        );
-        if (!d) return "";
-        if (d.checkIn && d.checkOut) {
+        // Phase 6-2K: 출퇴근 시간이 있으면 시간 + 카테고리 함께 (출장/외근도 시간 표시)
+        if (d?.checkIn && d?.checkOut) {
           const inT = formatTime(d.checkIn);
           const outT = formatTime(d.checkOut);
-          const mark =
-            d.originalCheckIn || d.originalCheckOut ? "*" : "";
+          const mark = d.originalCheckIn || d.originalCheckOut ? "*" : "";
+          if (req) return `${inT}-${outT}${mark} (${req.categoryName ?? ""})`;
           return `${inT}-${outT}${mark}`;
         }
-        if (d.autoStatus === "absent") return "결근";
+        // 시간 없고 카테고리만 있으면 카테고리명
+        if (req) return req.categoryName ?? "";
+        if (d?.autoStatus === "absent") return "결근";
+        if (d?.autoStatus === "working") return "근무중";
         return "";
       });
 
@@ -233,15 +237,21 @@ export default function AttendanceCalendarView() {
     URL.revokeObjectURL(url);
   };
 
+  // 헤더용: "YYYY-MM" → "YYYY년 M월"
+  const [hYearStr, hMonthStr] = yearMonth.split("-");
+  const headerLabel = `${hYearStr}년 ${Number(hMonthStr)}월`;
+
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5 space-y-4">
-      {/* 헤더 */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* Phase 6-2K: 헤더 — 모바일에서 2줄로 */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="flex items-center gap-2">
           <Calendar size={18} className="text-blue-600" />
-          <h3 className="text-sm font-bold text-gray-900">근태 캘린더</h3>
+          <h3 className="text-base sm:text-lg font-bold text-gray-900">
+            근태 캘린더
+          </h3>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={goPrev}
             className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"
@@ -249,12 +259,13 @@ export default function AttendanceCalendarView() {
           >
             <ChevronLeft size={16} />
           </button>
+          {/* Phase 6-2K: 년월 클릭 시 MonthPicker (이번달 더블클릭 단축은 아래 별도 버튼) */}
           <button
-            onClick={goThisMonth}
-            className="font-mono text-sm font-semibold min-w-[110px] text-center px-2 py-1 rounded hover:bg-gray-100 text-gray-900"
-            title="이번 달로 이동"
+            onClick={() => setMonthPickerOpen(true)}
+            className="font-semibold text-sm sm:text-base px-3 py-1.5 hover:bg-gray-100 rounded-lg min-w-[110px] text-center text-gray-900"
+            title="년월 선택"
           >
-            {yearMonth}
+            {headerLabel}
           </button>
           <button
             onClick={goNext}
@@ -264,17 +275,26 @@ export default function AttendanceCalendarView() {
             <ChevronRight size={16} />
           </button>
           <button
+            onClick={goThisMonth}
+            className="text-xs text-blue-600 hover:text-blue-700 px-2 py-1 rounded hover:bg-blue-50"
+            title="이번 달로 이동"
+          >
+            오늘
+          </button>
+          {/* Phase 6-2K: CSV 버튼 — RequestPage 패턴으로 통일 */}
+          <button
             onClick={downloadMonthCSV}
             disabled={!data || loading}
-            className="ml-3 flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-50 text-blue-700 rounded hover:bg-blue-100 disabled:opacity-50"
+            className="ml-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 bg-white text-gray-700 rounded-xl hover:bg-gray-50 disabled:opacity-50"
           >
-            <Download size={12} />월 CSV
+            <Download size={14} />
+            CSV
           </button>
         </div>
       </div>
 
-      {/* 범례 */}
-      <div className="bg-gray-50 rounded-lg p-2 text-xs flex flex-wrap gap-x-3 gap-y-1 text-gray-600">
+      {/* Phase 6-2K: 범례 — 글자 키움 + flex-wrap 강화 */}
+      <div className="bg-gray-50 rounded-lg p-2 sm:p-3 text-xs sm:text-sm flex flex-wrap gap-x-3 gap-y-1.5 text-gray-700">
         {Object.entries(STATUS_ICONS).map(([k, v]) => (
           <span key={k} className="inline-flex items-center gap-0.5">
             <span>{v.icon}</span>
@@ -306,11 +326,12 @@ export default function AttendanceCalendarView() {
           {error}
         </div>
       ) : (
-        <div className="grid grid-cols-7 gap-1 text-xs">
+        // Phase 6-2K: 셀 높이 + 글자 크기 키움
+        <div className="grid grid-cols-7 gap-1 text-xs sm:text-sm">
           {["일", "월", "화", "수", "목", "금", "토"].map((d, i) => (
             <div
               key={d}
-              className={`text-center font-semibold py-1 ${
+              className={`text-center font-semibold py-1 text-xs sm:text-sm ${
                 i === 0
                   ? "text-rose-500"
                   : i === 6
@@ -326,7 +347,7 @@ export default function AttendanceCalendarView() {
               return (
                 <div
                   key={`empty-${i}`}
-                  className="bg-gray-50 rounded h-20 sm:h-24"
+                  className="bg-gray-50 rounded h-24 sm:h-28"
                 />
               );
             }
@@ -338,14 +359,14 @@ export default function AttendanceCalendarView() {
                 key={cell.ymd}
                 onClick={() => hasData && setSelectedDate(cell.ymd)}
                 disabled={!hasData}
-                className={`h-20 sm:h-24 p-1 rounded border text-left transition-colors ${
+                className={`h-24 sm:h-28 p-1.5 rounded border text-left transition-colors ${
                   hasData
                     ? "bg-white border-gray-200 hover:border-blue-400 cursor-pointer"
                     : "bg-gray-50 border-transparent cursor-default"
                 }`}
               >
                 <div
-                  className={`text-xs font-semibold ${
+                  className={`text-sm sm:text-base font-semibold ${
                     cell.dow === 0
                       ? "text-rose-500"
                       : cell.dow === 6
@@ -355,7 +376,7 @@ export default function AttendanceCalendarView() {
                 >
                   {cell.day}
                 </div>
-                <div className="mt-1 space-y-0.5 text-[10px] text-gray-700">
+                <div className="mt-1 space-y-0.5 text-xs sm:text-sm text-gray-700">
                   {entries.map(([key, cnt]) => {
                     let icon = "";
                     let label = "";
@@ -398,6 +419,15 @@ export default function AttendanceCalendarView() {
           daily={data.daily}
           requests={data.requests}
           onClose={() => setSelectedDate(null)}
+        />
+      )}
+
+      {/* Phase 6-2K: 년월 선택 다이얼로그 */}
+      {monthPickerOpen && (
+        <MonthPicker
+          value={yearMonth}
+          onChange={(yM) => setYearMonth(yM)}
+          onClose={() => setMonthPickerOpen(false)}
         />
       )}
     </div>

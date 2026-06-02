@@ -82,10 +82,40 @@ function autoStatusColor(s: string | null): string {
     case "absent":
       return "text-rose-600";
     case "working":
-      return "text-emerald-600";
+      return "text-blue-600";
     default:
       return "text-gray-400";
   }
+}
+
+// Phase 6-2K: 한국어 날짜 라벨 ("2026년 6월 1일 (월)")
+function formatDateKorean(ymd: string): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  const dow = ["일", "월", "화", "수", "목", "금", "토"][dt.getDay()];
+  return `${y}년 ${m}월 ${d}일 (${dow})`;
+}
+
+// Phase 6-2K: 🔵 근무중 포함 상태 배지
+function StatusBadge({ autoStatus }: { autoStatus: string | null | undefined }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    working: { label: "🔵 근무중", cls: "text-blue-600" },
+    normal: { label: "🟢 정상", cls: "text-emerald-600" },
+    late: { label: "🟡 지각", cls: "text-amber-600" },
+    early_leave: { label: "🟠 조퇴", cls: "text-orange-600" },
+    absent: { label: "🔴 결근", cls: "text-rose-600" },
+  };
+  const k = autoStatus ?? "";
+  if (!k || !map[k]) return <span className="text-gray-400">-</span>;
+  return (
+    <span className={`${map[k].cls} font-medium`}>{map[k].label}</span>
+  );
+}
+
+// Phase 6-2K: 캘린더 시간 비고 라벨 (시간 지정 일정만)
+function calendarTimeNote(req: CalendarRequest | undefined): string | null {
+  if (!req || !req.correctedCheckIn || !req.correctedCheckOut) return null;
+  return `캘린더: ${formatTime(req.correctedCheckIn)}-${formatTime(req.correctedCheckOut)}`;
 }
 
 export default function AttendanceCalendarDayModal({
@@ -108,37 +138,48 @@ export default function AttendanceCalendarDayModal({
   });
 
   const downloadDayCSV = () => {
+    // Phase 6-2K: 출장/외근도 출퇴근 시간 함께 표시. 비고에 캘린더 시간 포함.
     const header = [
       "직원번호",
       "이름",
       "부서",
-      "출근(원본)",
-      "출근(정정후)",
-      "퇴근(원본)",
-      "퇴근(정정후)",
+      "출근",
+      "퇴근",
       "상태/카테고리",
       "비고",
     ].join(",");
     const rows = dayData.map(({ emp, d, req }) => {
-      let inOrig = "";
-      let inFinal = "";
-      let outOrig = "";
-      let outFinal = "";
-      let statusCell = "";
-      let note = "";
+      let inCell = "";
+      let outCell = "";
 
+      // 시간 — 카테고리 유무와 무관하게 attendance_daily에 시간이 있으면 표시
+      if (d?.checkIn) {
+        inCell = d.originalCheckIn
+          ? `(${formatTime(d.originalCheckIn)}→)${formatTime(d.checkIn)}`
+          : formatTime(d.checkIn);
+      }
+      if (d?.checkOut) {
+        outCell = d.originalCheckOut
+          ? `(${formatTime(d.originalCheckOut)}→)${formatTime(d.checkOut)}`
+          : formatTime(d.checkOut);
+      }
+
+      // 상태/카테고리 — 카테고리 우선, 없으면 autoStatus
+      let statusCell = "";
       if (req) {
         statusCell = req.categoryName ?? "";
-        note = req.reason ?? "";
-      } else if (d) {
-        inFinal = formatTime(d.checkIn);
-        outFinal = formatTime(d.checkOut);
-        if (d.originalCheckIn) inOrig = formatTime(d.originalCheckIn);
-        if (d.originalCheckOut) outOrig = formatTime(d.originalCheckOut);
+      } else if (d?.autoStatus) {
         statusCell = autoStatusLabel(d.autoStatus);
-        if (d.originalCheckIn || d.originalCheckOut) statusCell += " (정정)";
-        note = d.note ?? "";
       }
+      if (d?.originalCheckIn || d?.originalCheckOut) statusCell += " (정정)";
+
+      // 비고 — 캘린더 시간 + 사유 + note
+      const noteParts: string[] = [];
+      const calNote = calendarTimeNote(req);
+      if (calNote) noteParts.push(calNote);
+      if (req?.reason) noteParts.push(req.reason);
+      if (!req && d?.note) noteParts.push(d.note);
+      const note = noteParts.join(" · ");
 
       const escape = (s: string) =>
         s.includes(",") || s.includes('"') || s.includes("\n")
@@ -149,10 +190,8 @@ export default function AttendanceCalendarDayModal({
         emp.employeeNo,
         emp.name,
         emp.department?.name ?? "",
-        inOrig,
-        inFinal,
-        outOrig,
-        outFinal,
+        inCell,
+        outCell,
         statusCell,
         note,
       ]
@@ -179,8 +218,11 @@ export default function AttendanceCalendarDayModal({
         className="bg-white rounded-2xl max-w-4xl w-full max-h-[85vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="sticky top-0 bg-white border-b border-gray-100 px-5 py-3 flex items-center justify-between z-10">
-          <h3 className="font-bold text-gray-900">{date} · 직원별 상세</h3>
+        <div className="sticky top-0 bg-white border-b border-gray-100 px-4 sm:px-5 py-3 flex items-center justify-between z-10">
+          {/* Phase 6-2K: 한국어 날짜 헤더 ("2026년 6월 1일 (월)") */}
+          <h3 className="font-bold text-gray-900 text-base">
+            {formatDateKorean(date)}
+          </h3>
           <button
             onClick={onClose}
             className="p-1 hover:bg-gray-100 rounded"
@@ -190,7 +232,8 @@ export default function AttendanceCalendarDayModal({
           </button>
         </div>
 
-        <div className="overflow-x-auto">
+        {/* Phase 6-2K: 데스크탑 테이블 (sm 이상) */}
+        <div className="hidden sm:block overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-xs">
               <tr>
@@ -203,84 +246,166 @@ export default function AttendanceCalendarDayModal({
               </tr>
             </thead>
             <tbody>
-              {dayData.map(({ emp, d, req }) => (
-                <tr
-                  key={emp.id}
-                  className="border-t border-gray-50 hover:bg-blue-50/30"
-                >
-                  <td className="px-3 py-2 font-medium text-gray-900">
-                    {emp.name}
-                    <span className="ml-1 text-xs text-gray-400 font-mono">
-                      {emp.employeeNo}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-gray-600">
-                    {emp.department?.name ?? "-"}
-                  </td>
-                  <td className="px-3 py-2 font-mono">
-                    {req ? (
-                      "-"
-                    ) : d?.originalCheckIn ? (
-                      <>
-                        <span className="line-through text-gray-400 mr-1">
-                          {formatTime(d.originalCheckIn)}
-                        </span>
-                        <span className="text-cyan-600 font-semibold">
-                          {formatTime(d.checkIn)}
-                        </span>
-                      </>
-                    ) : (
-                      formatTime(d?.checkIn ?? null) || "-"
-                    )}
-                  </td>
-                  <td className="px-3 py-2 font-mono">
-                    {req ? (
-                      "-"
-                    ) : d?.originalCheckOut ? (
-                      <>
-                        <span className="line-through text-gray-400 mr-1">
-                          {formatTime(d.originalCheckOut)}
-                        </span>
-                        <span className="text-cyan-600 font-semibold">
-                          {formatTime(d.checkOut)}
-                        </span>
-                      </>
-                    ) : (
-                      formatTime(d?.checkOut ?? null) || "-"
-                    )}
-                  </td>
-                  <td className="px-3 py-2">
-                    {req ? (
-                      <span className="text-purple-600 font-medium">
-                        {req.categoryName}
+              {dayData.map(({ emp, d, req }) => {
+                const calNote = calendarTimeNote(req);
+                return (
+                  <tr
+                    key={emp.id}
+                    className="border-t border-gray-50 hover:bg-blue-50/30"
+                  >
+                    <td className="px-3 py-2.5 font-medium text-gray-900">
+                      {emp.name}
+                      <span className="ml-1 text-xs text-gray-400 font-mono">
+                        {emp.employeeNo}
                       </span>
-                    ) : (
-                      <span className={autoStatusColor(d?.autoStatus ?? null)}>
-                        {autoStatusLabel(d?.autoStatus ?? null)}
-                        {(d?.originalCheckIn || d?.originalCheckOut) && (
-                          <span className="ml-1 text-xs bg-cyan-100 text-cyan-700 px-1.5 py-0.5 rounded-full font-medium">
-                            정정
+                    </td>
+                    <td className="px-3 py-2.5 text-gray-600">
+                      {emp.department?.name ?? "-"}
+                    </td>
+                    {/* Phase 6-2K: 출장/외근도 시간 표시 */}
+                    <td className="px-3 py-2.5 font-mono">
+                      {d?.originalCheckIn ? (
+                        <>
+                          <span className="line-through text-gray-400 mr-1">
+                            {formatTime(d.originalCheckIn)}
                           </span>
-                        )}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-xs text-gray-500 max-w-xs truncate">
-                    {req?.reason ?? d?.note ?? ""}
-                  </td>
-                </tr>
-              ))}
+                          <span className="text-cyan-600 font-semibold">
+                            {formatTime(d.checkIn)}
+                          </span>
+                        </>
+                      ) : (
+                        formatTime(d?.checkIn ?? null) || "-"
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 font-mono">
+                      {d?.originalCheckOut ? (
+                        <>
+                          <span className="line-through text-gray-400 mr-1">
+                            {formatTime(d.originalCheckOut)}
+                          </span>
+                          <span className="text-cyan-600 font-semibold">
+                            {formatTime(d.checkOut)}
+                          </span>
+                        </>
+                      ) : (
+                        formatTime(d?.checkOut ?? null) || "-"
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      {req ? (
+                        <span className="text-purple-600 font-medium">
+                          {req.categoryName}
+                        </span>
+                      ) : (
+                        <StatusBadge autoStatus={d?.autoStatus ?? null} />
+                      )}
+                      {(d?.originalCheckIn || d?.originalCheckOut) && (
+                        <span className="ml-1 text-xs bg-cyan-100 text-cyan-700 px-1.5 py-0.5 rounded-full font-medium">
+                          정정
+                        </span>
+                      )}
+                    </td>
+                    {/* Phase 6-2K: 비고에 캘린더 시간 포함 */}
+                    <td className="px-3 py-2.5 text-xs text-gray-500 max-w-xs">
+                      {calNote && (
+                        <span className="text-amber-600">{calNote}</span>
+                      )}
+                      {calNote && (req?.reason || d?.note) && " · "}
+                      <span>{req?.reason ?? d?.note ?? ""}</span>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
 
-        <div className="sticky bottom-0 bg-white border-t border-gray-100 px-5 py-3 flex justify-end">
+        {/* Phase 6-2K: 모바일 카드 리스트 (sm 미만) */}
+        <div className="sm:hidden space-y-2 p-3">
+          {dayData.map(({ emp, d, req }) => {
+            const calNote = calendarTimeNote(req);
+            const hasTimes = d?.checkIn || d?.checkOut;
+            return (
+              <div
+                key={emp.id}
+                className="bg-gray-50 rounded-lg p-3 space-y-1.5"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-gray-900 text-sm truncate">
+                      {emp.name}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      {emp.department?.name ?? "-"}
+                    </p>
+                  </div>
+                  <div className="shrink-0">
+                    {req ? (
+                      <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium">
+                        {req.categoryName}
+                      </span>
+                    ) : (
+                      <StatusBadge autoStatus={d?.autoStatus ?? null} />
+                    )}
+                  </div>
+                </div>
+
+                {hasTimes && (
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-mono">
+                    <span>
+                      출근:{" "}
+                      {d?.originalCheckIn ? (
+                        <>
+                          <span className="line-through text-gray-400">
+                            {formatTime(d.originalCheckIn)}
+                          </span>{" "}
+                          <span className="text-cyan-600">
+                            {formatTime(d.checkIn)}
+                          </span>
+                        </>
+                      ) : (
+                        formatTime(d?.checkIn ?? null) || "-"
+                      )}
+                    </span>
+                    <span>
+                      퇴근:{" "}
+                      {d?.originalCheckOut ? (
+                        <>
+                          <span className="line-through text-gray-400">
+                            {formatTime(d.originalCheckOut)}
+                          </span>{" "}
+                          <span className="text-cyan-600">
+                            {formatTime(d.checkOut)}
+                          </span>
+                        </>
+                      ) : (
+                        formatTime(d?.checkOut ?? null) || "-"
+                      )}
+                    </span>
+                  </div>
+                )}
+
+                {calNote && (
+                  <p className="text-xs text-amber-600">{calNote}</p>
+                )}
+                {(req?.reason || d?.note) && (
+                  <p className="text-xs text-gray-500">
+                    {req?.reason ?? d?.note}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="sticky bottom-0 bg-white border-t border-gray-100 px-4 sm:px-5 py-3 flex justify-end">
+          {/* Phase 6-2K: CSV 버튼 RequestPage 패턴으로 통일 */}
           <button
             onClick={downloadDayCSV}
-            className="flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-50 text-blue-700 rounded hover:bg-blue-100"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 bg-white text-gray-700 rounded-xl hover:bg-gray-50"
           >
-            <Download size={12} />
-            이 날짜 CSV
+            <Download size={14} />
+            CSV
           </button>
         </div>
       </div>
