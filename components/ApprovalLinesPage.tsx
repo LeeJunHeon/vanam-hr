@@ -279,7 +279,7 @@ export default function ApprovalLinesPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900">
-            결재선 설정
+            결재라인 설정
           </h1>
           <p className="text-sm text-gray-500 mt-0.5">
             부서별 메인/대리 결재자와 자동 위임 시간을 관리합니다 (부서당 1개)

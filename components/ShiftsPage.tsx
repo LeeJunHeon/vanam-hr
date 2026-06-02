@@ -61,6 +61,16 @@ const TYPE_BG: Record<string, string> = {
 
 const getTypeBg = (code: string): string => TYPE_BG[code] || "bg-gray-200";
 
+// Phase 6-2J: 라벨 배경 진한 + 흰 글자 (가독성 강화)
+const TYPE_LABEL_CLASS: Record<string, string> = {
+  day: "bg-blue-600 text-white",
+  night: "bg-purple-600 text-white",
+  off: "bg-gray-500 text-white",
+  half_day: "bg-amber-600 text-white",
+};
+const getTypeLabelClass = (code: string): string =>
+  TYPE_LABEL_CLASS[code] || "bg-gray-600 text-white";
+
 export default function ShiftsPage() {
   const [patterns, setPatterns] = useState<ShiftPattern[]>([]);
   const [typeLookups, setTypeLookups] = useState<TypeLookup[]>([]); // shift_day_type 룩업
@@ -222,6 +232,30 @@ export default function ShiftsPage() {
     setForm((f) => {
       const next = [...f.schedule];
       next[idx] = { ...next[idx], [field]: value };
+      return { ...f, schedule: next };
+    });
+  };
+
+  // Phase 6-2J: 같은 주의 평일(월~금: idx % 7 < 5)에 type+시간 일괄 복사
+  // 가정: idx 0 = 월요일(다른 패턴이면 사용자가 검토 후 사용).
+  // 주말(토/일)은 유지. 본인 행도 그대로.
+  const fillWeekdays = (sourceIdx: number) => {
+    setForm((f) => {
+      const source = f.schedule[sourceIdx];
+      if (!source) return f;
+      const weekStart = Math.floor(sourceIdx / 7) * 7;
+      const weekEnd = Math.min(weekStart + 7, f.schedule.length);
+      const next = [...f.schedule];
+      for (let i = weekStart; i < weekEnd; i++) {
+        if (i === sourceIdx) continue;
+        if (i % 7 >= 5) continue; // 토(5)·일(6) 스킵
+        next[i] = {
+          ...next[i],
+          type: source.type,
+          start: source.start,
+          end: source.end,
+        };
+      }
       return { ...f, schedule: next };
     });
   };
@@ -523,19 +557,28 @@ export default function ShiftsPage() {
                         />
                       </div>
                       <div
-                        className={`hidden sm:block sm:col-span-1 px-2 py-1 rounded-lg text-[10px] text-center text-gray-600 ${getTypeBg(
+                        className={`hidden sm:block sm:col-span-1 px-2 py-1 rounded-lg text-[10px] text-center font-semibold ${getTypeLabelClass(
                           p.type
-                        )} bg-opacity-30`}
+                        )}`}
                       >
                         {getTypeLabel(p.type)}
                       </div>
                     </div>
                     {!isOff && p.start && p.end && (
-                      <div className="px-3 pb-2 -mt-1">
+                      <div className="px-3 pb-2 -mt-1 flex items-center justify-between gap-2">
                         <div className="text-[10px] text-gray-500 pl-[8.33%]">
                           근무 시간:{" "}
                           {formatWorkDuration(calcWorkMinutes(p.start, p.end))}
                         </div>
+                        {/* Phase 6-2J: 주 일괄 적용 (같은 주 평일에 복사) */}
+                        <button
+                          type="button"
+                          onClick={() => fillWeekdays(idx)}
+                          className="text-[10px] text-blue-600 hover:text-blue-700 px-2 py-0.5 border border-blue-200 rounded hover:bg-blue-50 shrink-0"
+                          title="이 시간으로 같은 주의 평일(월~금) 일괄 채우기"
+                        >
+                          📋 주 일괄 적용
+                        </button>
                       </div>
                     )}
                   </div>
@@ -654,8 +697,12 @@ export default function ShiftsPage() {
                           {p.name}
                         </div>
                       </td>
-                      <td className="px-5 py-3 text-sm text-gray-500 max-w-xs truncate">
-                        {p.description || (
+                      <td className="px-5 py-3 text-sm text-gray-500 max-w-xs">
+                        {p.description ? (
+                          <p className="line-clamp-2" title={p.description}>
+                            {p.description}
+                          </p>
+                        ) : (
                           <span className="text-gray-300">-</span>
                         )}
                       </td>

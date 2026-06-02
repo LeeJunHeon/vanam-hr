@@ -104,7 +104,7 @@ const EMPTY_REJECT: RejectModalState = {
 };
 
 export default function ApprovalPage() {
-  const { currentId, current, loading: empLoading } = useCurrentEmployee();
+  const { currentId, current, me, loading: empLoading } = useCurrentEmployee();
 
   const [tab, setTab] = useState<Tab>("pending");
   const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
@@ -364,6 +364,7 @@ export default function ApprovalPage() {
                 key={item.id}
                 item={item}
                 tab={tab}
+                viewerRole={me?.role ?? null}
                 getStatusLabel={getStatusLabel}
                 statusBadge={statusBadge}
                 onApprove={() => handleApprove(item)}
@@ -460,6 +461,7 @@ export default function ApprovalPage() {
 interface ApprovalCardProps {
   item: ApprovalItem;
   tab: Tab;
+  viewerRole: string | null;
   getStatusLabel: (code: string) => string;
   statusBadge: (code: string) => React.CSSProperties;
   onApprove: () => void;
@@ -476,6 +478,7 @@ interface ApprovalCardProps {
 function ApprovalCard({
   item,
   tab,
+  viewerRole,
   getStatusLabel,
   statusBadge,
   onApprove,
@@ -484,6 +487,8 @@ function ApprovalCard({
   edited,
   onEditCalendar,
 }: ApprovalCardProps) {
+  // Phase 6-2J: ADMIN/CEO는 본인 신청도 결재 가능
+  const isAdminOrCeo = viewerRole === "admin" || viewerRole === "ceo";
   const isPending = item.status === "pending";
   const isRejected = item.status === "rejected";
   const isHistory = tab === "history";
@@ -554,95 +559,112 @@ function ApprovalCard({
           </div>
         )}
 
-      {/* Phase 6-2E: 캘린더 등록 정보 — 신청자 입력값 + 결재자 인라인 편집 */}
-      {item.calendarSourceId !== null && (
-        <div className="-mx-4 sm:-mx-5 mt-2 mb-3 bg-blue-50/40 px-4 sm:px-5 py-3 border-y border-blue-100">
-          <h4 className="text-xs font-bold text-blue-700 mb-2 flex items-center gap-1">
-            📅 캘린더 등록 정보
-            {item.status === "pending" && tab === "pending" && (
-              <span className="text-[10px] font-normal text-blue-500">
-                (결재 시 수정 가능)
-              </span>
-            )}
-            {item.externalEventId && (
-              <span className="text-[10px] font-normal text-emerald-600 ml-1">
-                ✓ 등록됨
-              </span>
-            )}
-          </h4>
-          <div className="space-y-2 text-sm">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-gray-500 text-xs shrink-0">캘린더:</span>
-              {item.status === "pending" && tab === "pending" ? (
-                <select
-                  value={
-                    edited?.sourceId !== undefined
-                      ? edited.sourceId ?? ""
-                      : item.calendarSourceId ?? ""
-                  }
-                  onChange={(e) =>
-                    onEditCalendar(
-                      "sourceId",
-                      e.target.value ? Number(e.target.value) : null
-                    )
-                  }
-                  className="border border-blue-200 rounded px-2 py-0.5 text-xs bg-white"
-                >
-                  <option value="">— 등록 안 함 —</option>
-                  {calendarSources.map((cs) => (
-                    <option key={cs.id} value={cs.id}>
-                      {cs.calendarName}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <span className="text-xs text-gray-700">
-                  {calendarSources.find((cs) => cs.id === item.calendarSourceId)
-                    ?.calendarName ?? "—"}
-                </span>
-              )}
+      {/* Phase 6-2J: 캘린더 등록 정보 — 다른 카드와 동일한 디자인 (둥근 모서리 + 일관 색감) */}
+      {item.calendarSourceId !== null && (() => {
+        const isEditable = item.status === "pending" && tab === "pending";
+        return (
+          <div className="mt-3 mb-3 bg-blue-50 border border-blue-100 rounded-xl p-3 sm:p-4">
+            <div className="flex items-center gap-1.5 mb-2">
+              <Calendar size={14} className="text-blue-600" />
+              <h4 className="text-xs font-semibold text-blue-700">
+                캘린더 등록 정보
+                {isEditable && (
+                  <span className="ml-1 font-normal text-blue-500/70">
+                    (결재 시 수정 가능)
+                  </span>
+                )}
+                {item.externalEventId && (
+                  <span className="ml-1 font-normal text-emerald-600">
+                    · ✓ 등록됨
+                  </span>
+                )}
+              </h4>
             </div>
 
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-gray-500 text-xs shrink-0">제목:</span>
-              {item.status === "pending" && tab === "pending" ? (
-                <input
-                  type="text"
-                  value={edited?.title ?? item.calendarEventTitle ?? ""}
-                  onChange={(e) => onEditCalendar("title", e.target.value)}
-                  className="flex-1 border border-blue-200 rounded px-2 py-0.5 text-xs bg-white min-w-0"
-                />
-              ) : (
-                <span className="text-xs text-gray-700 truncate">
-                  {item.calendarEventTitle || "—"}
-                </span>
-              )}
-            </div>
+            <div className="space-y-2">
+              {/* 캘린더 */}
+              <div className="flex items-start gap-2">
+                <label className="text-xs text-gray-600 w-12 shrink-0 pt-1">
+                  캘린더
+                </label>
+                {isEditable ? (
+                  <select
+                    value={
+                      edited?.sourceId !== undefined
+                        ? edited.sourceId ?? ""
+                        : item.calendarSourceId ?? ""
+                    }
+                    onChange={(e) =>
+                      onEditCalendar(
+                        "sourceId",
+                        e.target.value ? Number(e.target.value) : null
+                      )
+                    }
+                    className="flex-1 border border-gray-200 bg-white rounded-lg px-2 py-1 text-xs"
+                  >
+                    <option value="">— 등록 안 함 —</option>
+                    {calendarSources.map((cs) => (
+                      <option key={cs.id} value={cs.id}>
+                        {cs.calendarName}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="flex-1 text-xs text-gray-700 pt-1">
+                    {calendarSources.find(
+                      (cs) => cs.id === item.calendarSourceId
+                    )?.calendarName ?? "—"}
+                  </span>
+                )}
+              </div>
 
-            <div>
-              <span className="text-gray-500 text-xs block mb-1">설명:</span>
-              {item.status === "pending" && tab === "pending" ? (
-                <textarea
-                  value={
-                    edited?.description ??
-                    item.calendarEventDescription ??
-                    ""
-                  }
-                  onChange={(e) =>
-                    onEditCalendar("description", e.target.value)
-                  }
-                  rows={4}
-                  className="w-full border border-blue-200 rounded px-2 py-1 text-xs bg-white font-mono resize-none"
-                />
-              ) : (
-                <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono bg-white border border-blue-100 rounded p-2">
-                  {item.calendarEventDescription || "—"}
-                </pre>
-              )}
+              {/* 제목 */}
+              <div className="flex items-start gap-2">
+                <label className="text-xs text-gray-600 w-12 shrink-0 pt-1">
+                  제목
+                </label>
+                {isEditable ? (
+                  <input
+                    type="text"
+                    value={edited?.title ?? item.calendarEventTitle ?? ""}
+                    onChange={(e) => onEditCalendar("title", e.target.value)}
+                    className="flex-1 border border-gray-200 bg-white rounded-lg px-2 py-1 text-xs min-w-0"
+                  />
+                ) : (
+                  <span className="flex-1 text-xs text-gray-700 pt-1 truncate">
+                    {item.calendarEventTitle || "—"}
+                  </span>
+                )}
+              </div>
+
+              {/* 설명 */}
+              <div className="flex items-start gap-2">
+                <label className="text-xs text-gray-600 w-12 shrink-0 pt-1">
+                  설명
+                </label>
+                {isEditable ? (
+                  <textarea
+                    value={
+                      edited?.description ??
+                      item.calendarEventDescription ??
+                      ""
+                    }
+                    onChange={(e) =>
+                      onEditCalendar("description", e.target.value)
+                    }
+                    rows={4}
+                    className="flex-1 border border-gray-200 bg-white rounded-lg px-2 py-1.5 text-xs font-mono resize-none"
+                  />
+                ) : (
+                  <pre className="flex-1 text-xs text-gray-700 whitespace-pre-wrap font-mono bg-white border border-gray-200 rounded-lg p-2">
+                    {item.calendarEventDescription || "—"}
+                  </pre>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* 본인 역할 (pending 탭에서만 의미 있음) */}
       {!isHistory && item.myRole && (
@@ -677,9 +699,15 @@ function ApprovalCard({
               )}
             </div>
           )}
-          {item.isSelfRequest && (
+          {/* Phase 6-2J: ADMIN/CEO는 본인 결재 허용 → 메시지 숨김 */}
+          {item.isSelfRequest && !isAdminOrCeo && (
             <p className="text-[10px] text-gray-400">
               ⚠ 본인의 신청은 결재할 수 없습니다
+            </p>
+          )}
+          {item.isSelfRequest && isAdminOrCeo && (
+            <p className="text-[10px] text-amber-600">
+              ⓘ 본인 신청 — 관리자 권한으로 결재 가능
             </p>
           )}
         </div>

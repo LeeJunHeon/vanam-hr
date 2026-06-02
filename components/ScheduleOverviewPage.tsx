@@ -312,52 +312,47 @@ export default function ScheduleOverviewPage() {
                   오늘 {group.label} 일정이 없습니다.
                 </p>
               ) : (
-                <ul className="space-y-2">
+                // Phase 6-2J: 리스트 → 카드 그리드 (1/2/3/4열 반응형)
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
                   {items.map((row) => (
-                    <li
+                    <div
                       key={row.id}
                       className="bg-white rounded-lg p-3 border border-gray-100"
                     >
-                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-3">
-                        <div className="flex-1 min-w-0">
-                          {/* 1줄: 이름 + 부서/직급 + (휴가 그룹은 세부 카테고리 라벨) */}
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-semibold text-gray-900">
-                              {row.employeeName}
-                            </span>
-                            {(row.departmentName || row.positionName) && (
-                              <span className="text-xs text-gray-500">
-                                {row.departmentName ?? "-"} ·{" "}
-                                {row.positionName ?? "-"}
-                              </span>
-                            )}
-                            {/* 휴가 그룹: ANNUAL/HALF_AM/HALF_PM 구분 표시 (Q4) */}
-                            {group.key === "leave" && row.categoryName && (
-                              <span
-                                className={`text-xs ${c.pill} px-1.5 py-0.5 rounded`}
-                              >
-                                {row.categoryName}
-                              </span>
-                            )}
-                          </div>
-                          {/* 2줄: 사유 (있을 때) */}
-                          {row.reason && (
-                            <p
-                              className="text-xs text-gray-600 mt-0.5 truncate"
-                              title={row.reason}
-                            >
-                              {row.reason}
-                            </p>
-                          )}
-                        </div>
-                        {/* 시간 표시 (우측) — 종일/시간 라벨 (Q4) */}
-                        <div className={`text-sm font-mono ${c.text} shrink-0`}>
-                          {formatScheduleTime(row)}
-                        </div>
+                      {/* 이름 */}
+                      <div className="font-semibold text-gray-900 text-sm truncate">
+                        {row.employeeName}
                       </div>
-                    </li>
+                      {/* 부서/직급 */}
+                      {(row.departmentName || row.positionName) && (
+                        <div className="text-xs text-gray-500 mt-0.5 truncate">
+                          {row.departmentName ?? "-"} · {row.positionName ?? "-"}
+                        </div>
+                      )}
+                      {/* 휴가 그룹: ANNUAL/HALF_AM/HALF_PM 구분 표시 */}
+                      {group.key === "leave" && row.categoryName && (
+                        <span
+                          className={`inline-block text-xs ${c.pill} px-1.5 py-0.5 rounded mt-1`}
+                        >
+                          {row.categoryName}
+                        </span>
+                      )}
+                      {/* 시간 */}
+                      <div className={`text-sm font-mono ${c.text} mt-2`}>
+                        {formatScheduleTime(row)}
+                      </div>
+                      {/* 사유 */}
+                      {row.reason && (
+                        <div
+                          className="text-xs text-gray-600 mt-1 line-clamp-2"
+                          title={row.reason}
+                        >
+                          {row.reason}
+                        </div>
+                      )}
+                    </div>
                   ))}
-                </ul>
+                </div>
               )}
             </div>
           );

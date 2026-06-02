@@ -200,9 +200,12 @@ export async function GET(request: NextRequest) {
           myRole = "deputy";
         }
 
-        // 본인이 신청자면 차단
+        // Phase 6-2J: 본인 신청은 일반 직원만 차단 (ADMIN/CEO는 본인 결재 허용)
         if (r.employeeId === approverId) {
-          canApprove = false;
+          const viewerRole = session.user.role;
+          if (viewerRole !== "admin" && viewerRole !== "ceo") {
+            canApprove = false;
+          }
         }
 
         return {
@@ -334,12 +337,15 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    // 본인이 자기 신청을 결재하는 케이스 차단
+    // Phase 6-2J: 본인 신청 결재는 ADMIN/CEO만 허용 (일반 직원은 차단)
     if (target.employeeId === approverIdNum) {
-      return NextResponse.json(
-        { error: "본인의 신청은 결재할 수 없습니다." },
-        { status: 403 }
-      );
+      const viewerRole = r.session.user.role;
+      if (viewerRole !== "admin" && viewerRole !== "ceo") {
+        return NextResponse.json(
+          { error: "본인의 신청은 결재할 수 없습니다." },
+          { status: 403 }
+        );
+      }
     }
 
     const isPrimary = target.primaryApproverId === approverIdNum;

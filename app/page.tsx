@@ -13,10 +13,7 @@ import OrgPage from "@/components/OrgPage";
 import DevicesPage from "@/components/DevicesPage";
 import ShiftsPage from "@/components/ShiftsPage";
 import ApprovalLinesPage from "@/components/ApprovalLinesPage";
-import CategoriesPage from "@/components/CategoriesPage";
-import PoliciesPage from "@/components/PoliciesPage";
-import CalendarPage from "@/components/CalendarPage";
-import LookupsPage from "@/components/LookupsPage";
+import SystemSettingsPage from "@/components/SystemSettingsPage";
 import NotMappedNoticePage from "@/components/NotMappedNoticePage";
 import AttendanceOverviewPage from "@/components/AttendanceOverviewPage";
 import ScheduleOverviewPage from "@/components/ScheduleOverviewPage";
@@ -35,11 +32,8 @@ const PAGE_TITLES: Record<PageId, string> = {
   devices: "디바이스 관리",
   shifts: "시프트 패턴",
   "employee-shifts": "직원별 시프트",
-  "approval-lines": "결재선 설정",
-  categories: "근태 항목",
-  policies: "정책 설정",
-  calendar: "Calendar 연동",
-  lookups: "코드 룩업",
+  "approval-lines": "결재라인 설정",
+  "system-settings": "시스템 설정",
 };
 
 export default function Home() {
@@ -96,10 +90,7 @@ export default function Home() {
       case "shifts":          return <ShiftsPage />;
       case "employee-shifts": return <EmployeeShiftsPage />;
       case "approval-lines":  return <ApprovalLinesPage />;
-      case "categories":      return <CategoriesPage />;
-      case "policies":        return <PoliciesPage />;
-      case "calendar":        return <CalendarPage />;
-      case "lookups":         return <LookupsPage />;
+      case "system-settings": return <SystemSettingsPage />;
       default:                return <DashboardPage onNavigate={setPage} />;
     }
   };

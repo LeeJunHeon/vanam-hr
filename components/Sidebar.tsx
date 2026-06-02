@@ -5,7 +5,7 @@ import { signOut } from "next-auth/react";
 import {
   Home, Calendar, FileText, CheckSquare,
   Users, Building2, Smartphone, Clock,
-  Layers, Settings, CalendarDays, Tag,
+  Settings, CalendarDays,
   LogOut, X, ArrowLeft, BarChart3,
 } from "lucide-react";
 
@@ -15,7 +15,7 @@ export type PageId =
   | "schedule-overview"
   | "employees" | "org" | "devices" | "shifts" | "employee-shifts"
   | "approval-lines"
-  | "categories" | "policies" | "calendar" | "lookups";
+  | "system-settings";
 
 interface NavItem {
   id: PageId;
@@ -40,12 +40,8 @@ const NAV_ITEMS: NavItem[] = [
   { id: "devices",        label: "디바이스 관리",  icon: Smartphone,  group: "관리자", adminOnly: true },
   { id: "shifts",         label: "시프트 패턴",    icon: Clock,       group: "관리자", adminOnly: true },
   { id: "employee-shifts", label: "직원별 시프트",  icon: Clock,       group: "관리자", adminOnly: true },
-  { id: "approval-lines", label: "결재선 설정",    icon: Users,       group: "관리자", adminOnly: true },
-  // 시스템
-  { id: "categories",     label: "근태 항목",      icon: Layers,      group: "시스템", adminOnly: true },
-  { id: "policies",       label: "정책 설정",      icon: Settings,    group: "시스템", adminOnly: true },
-  { id: "calendar",       label: "Calendar 연동",  icon: CalendarDays, group: "시스템", adminOnly: true },
-  { id: "lookups",        label: "코드 룩업",      icon: Tag,         group: "시스템", adminOnly: true },
+  { id: "approval-lines", label: "결재라인 설정",  icon: Users,       group: "관리자", adminOnly: true },
+  { id: "system-settings", label: "시스템 설정",   icon: Settings,    group: "관리자", adminOnly: true },
 ];
 
 /**
