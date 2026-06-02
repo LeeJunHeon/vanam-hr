@@ -18,6 +18,7 @@ import {
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import { exportCSV } from "@/lib/csvUtils";
 import DatePicker from "@/components/DatePicker";
+import TimePicker from "@/components/TimePicker";
 import { todayYmd } from "@/lib/dateUtils";
 
 interface AttendanceRequest {
@@ -108,8 +109,25 @@ const EMPTY_FORM = {
   calendarEventDescription: "",
 };
 
+// Phase 6-2F: 시간 입력 정책
+// - 종일 강제 카테고리: 연차(ANNUAL) — 시간 입력란 숨김, 항상 종일 등록
+// - 그 외(반차/병가/외근/출장/재택/기타 등): 시간 입력란 표시, 빈칸 = 종일
+const CATEGORIES_WITHOUT_TIME = new Set(["ANNUAL"]);
+
+// 반차 시간 기본값 (사용자 수정 가능)
+const HALF_DAY_DEFAULTS: Record<string, { in: string; out: string }> = {
+  HALF_AM: { in: "09:00", out: "13:00" },
+  HALF_PM: { in: "13:00", out: "18:00" },
+};
+
+// 카테고리 코드별 시간 입력 정책 헬퍼
+function categoryAllowsTimeInput(code: string | undefined | null): boolean {
+  if (!code) return false;
+  return !CATEGORIES_WITHOUT_TIME.has(code);
+}
+
 export default function RequestPage() {
-  const { currentId, current, loading: empLoading } = useCurrentEmployee();
+  const { currentId, current, me, loading: empLoading } = useCurrentEmployee();
 
   const [requests, setRequests] = useState<AttendanceRequest[]>([]);
   const [loading, setLoading] = useState(false);
@@ -119,6 +137,16 @@ export default function RequestPage() {
   const [statusLookups, setStatusLookups] = useState<StatusLookup[]>([]);
   // Phase 6-2E 캘린더 옵션
   const [calendarSources, setCalendarSources] = useState<CalendarSourceOption[]>([]);
+
+  // Phase 6-2F: 본인 부서 + 결재선 존재 여부 (신청 가능 여부 결정)
+  // - 부서 없음: me.departmentId === null → 즉시 차단
+  // - 결재선 체크: /api/approval-lines는 admin만 호출 가능. 일반 직원은 낙관적 통과
+  //   (API POST가 카테고리별로 추가 검증함)
+  const [approvalLineStatus, setApprovalLineStatus] = useState<{
+    hasDepartment: boolean;
+    hasApprovalLine: boolean;
+    loading: boolean;
+  }>({ hasDepartment: true, hasApprovalLine: true, loading: true });
 
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<AttendanceRequest | null>(null);
@@ -186,6 +214,61 @@ export default function RequestPage() {
     })();
   }, []);
 
+  // Phase 6-2F: 부서 + 결재선 존재 여부 체크
+  useEffect(() => {
+    if (!me) return;
+
+    const departmentId = me.departmentId;
+    if (!departmentId) {
+      // 부서 없음 → 즉시 차단
+      setApprovalLineStatus({
+        hasDepartment: false,
+        hasApprovalLine: false,
+        loading: false,
+      });
+      return;
+    }
+
+    // 결재선 체크 — admin만 호출 가능. 일반 직원은 403 → 낙관적 통과 (API POST가 추가 검증).
+    fetch("/api/approval-lines")
+      .then((r) => {
+        if (r.status === 403 || !r.ok) return null;
+        return r.json();
+      })
+      .then((data) => {
+        if (data == null) {
+          // 응답 없음(403 또는 에러) → 부서는 있으므로 일단 낙관적 통과
+          setApprovalLineStatus({
+            hasDepartment: true,
+            hasApprovalLine: true,
+            loading: false,
+          });
+          return;
+        }
+        // admin이 가져온 전체 결재선 중 본인 부서 매칭 찾기
+        const myLine = Array.isArray(data)
+          ? data.find(
+              (l: { departmentId: number; primaryApproverId: number | null }) =>
+                l.departmentId === departmentId
+            )
+          : null;
+        const hasLine = !!(myLine && myLine.primaryApproverId);
+        setApprovalLineStatus({
+          hasDepartment: true,
+          hasApprovalLine: hasLine,
+          loading: false,
+        });
+      })
+      .catch(() => {
+        // 네트워크 오류 — 낙관적 통과 (POST API가 최종 검증)
+        setApprovalLineStatus({
+          hasDepartment: true,
+          hasApprovalLine: true,
+          loading: false,
+        });
+      });
+  }, [me]);
+
   const fetchRequests = useCallback(async () => {
     if (!currentId) {
       setRequests([]);
@@ -249,29 +332,26 @@ export default function RequestPage() {
     };
   }, [showForm, currentId, form.categoryId, form.startDate, categories]);
 
-  // Phase 6-2E: 카테고리/기간/사유 변경 시 캘린더 자동 매핑 + 제목/설명 자동 생성
-  // 사용자가 한 번이라도 calendarSourceId를 명시적으로 변경했으면 자동 매핑 안 함 (Edit 케이스).
+  // Phase 6-2E + 6-2F: 카테고리/기간/사유 변경 시 캘린더/제목/설명/반차시간 자동 재생성
+  // - 신규 신청(editTarget=null): 무조건 재생성 (사용자가 직전에 수정한 내용도 덮어씀)
+  // - 수정(editTarget≠null): 기존 값 그대로 유지
   useEffect(() => {
     if (!showForm) return;
-    if (calendarSources.length === 0) return;
     const cat = categories.find((c) => c.id === Number(form.categoryId));
     if (!cat) return;
     // 정정(correction) 카테고리는 캘린더 등록 대상 아님 → skip
     if (cat.type === "correction") return;
 
-    // 카테고리 → 캘린더 자동 매핑 (defaultCategoryId 일치)
-    // editTarget이 있고 이미 calendarSourceId가 세팅된 경우는 그대로 유지.
+    // 신규 신청 모드에서는 카테고리 변경 시 무조건 재매핑 (Q4)
     let nextSourceId: string = form.calendarSourceId;
-    if (!editTarget && !form.calendarSourceId) {
+    if (!editTarget) {
       const matched = calendarSources.find(
         (cs) => cs.defaultCategoryId === Number(form.categoryId)
       );
-      if (matched) {
-        nextSourceId = String(matched.id);
-      }
+      nextSourceId = matched ? String(matched.id) : "";
     }
 
-    // 제목 자동: "[카테고리한글이름] 이름" (사용자가 수정했으면 그대로 유지)
+    // 제목 자동: "[카테고리한글이름] 이름"
     const empName = current?.name ?? "";
     const autoTitle = empName ? `[${cat.name}] ${empName}` : `[${cat.name}]`;
 
@@ -288,18 +368,28 @@ export default function RequestPage() {
     ].filter(Boolean);
     const autoDesc = lines.join("\n");
 
+    // Phase 6-2F: 반차 시간 기본값
+    const halfDayDefault = HALF_DAY_DEFAULTS[cat.code];
+
     setForm((f) => {
-      // 사용자가 직접 수정한 경우 보존: editTarget이 있으면 기존 값 유지
       const next = { ...f };
-      if (nextSourceId !== f.calendarSourceId) {
-        next.calendarSourceId = nextSourceId;
-      }
-      // editTarget(수정 모드)이 아닐 때만 자동 채움
+      next.calendarSourceId = nextSourceId;
       if (!editTarget) {
-        if (!f.calendarEventTitle) next.calendarEventTitle = autoTitle;
-        if (!f.calendarEventDescription) {
-          next.calendarEventDescription = autoDesc;
+        // 신규 신청 모드 — 무조건 재생성 (Q4)
+        next.calendarEventTitle = autoTitle;
+        next.calendarEventDescription = autoDesc;
+
+        // Phase 6-2F: 카테고리별 시간 처리
+        if (halfDayDefault) {
+          // 반차(HALF_AM/HALF_PM) → 기본값 채움
+          next.correctedCheckIn = halfDayDefault.in;
+          next.correctedCheckOut = halfDayDefault.out;
+        } else if (!categoryAllowsTimeInput(cat.code)) {
+          // 연차(ANNUAL) 등 시간 불허 카테고리 → 클리어
+          next.correctedCheckIn = "";
+          next.correctedCheckOut = "";
         }
+        // 그 외(외근/출장/재택/기타) → 사용자 입력 유지
       }
       return next;
     });
@@ -431,7 +521,17 @@ export default function RequestPage() {
         payload.correctedCheckOut = needOut && form.correctedCheckOut
           ? `${form.startDate}T${form.correctedCheckOut}:00`
           : null;
+      } else if (categoryAllowsTimeInput(selectedCategory?.code)) {
+        // Phase 6-2F: 연차 외 카테고리는 시간 입력 옵션 (비우면 종일, 채우면 다일 가능)
+        // 시작 시간 → startDate에 붙임, 종료 시간 → endDate에 붙임 (다일 일정 지원)
+        payload.correctedCheckIn = form.correctedCheckIn
+          ? `${form.startDate}T${form.correctedCheckIn}:00`
+          : null;
+        payload.correctedCheckOut = form.correctedCheckOut
+          ? `${form.endDate}T${form.correctedCheckOut}:00`
+          : null;
       } else {
+        // 연차(ANNUAL) — 항상 종일
         payload.correctedCheckIn = null;
         payload.correctedCheckOut = null;
       }
@@ -538,7 +638,11 @@ export default function RequestPage() {
     return { backgroundColor: "#f3f4f6", color: "#4b5563" };
   }
 
-  const canRequest = currentId !== null;
+  // Phase 6-2F: 부서/결재선 체크 통과 + 본인 선택 시에만 신청 가능
+  const blockedByApprovalLine =
+    !approvalLineStatus.loading &&
+    (!approvalLineStatus.hasDepartment || !approvalLineStatus.hasApprovalLine);
+  const canRequest = currentId !== null && !blockedByApprovalLine;
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
@@ -575,8 +679,10 @@ export default function RequestPage() {
             disabled={!canRequest || categories.length === 0}
             className="flex items-center gap-2 px-4 py-2.5 text-sm font-bold text-white bg-blue-500 rounded-xl hover:bg-blue-600 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
             title={
-              !canRequest
+              currentId === null
                 ? "본인을 선택하세요"
+                : blockedByApprovalLine
+                ? "부서/결재선 설정이 필요합니다"
                 : categories.length === 0
                 ? "활성 근태 항목이 없습니다"
                 : ""
@@ -587,6 +693,24 @@ export default function RequestPage() {
           </button>
         </div>
       </div>
+
+      {/* Phase 6-2F: 부서/결재선 없음 안내 (본인이 매핑된 경우만 표시) */}
+      {currentId !== null && blockedByApprovalLine && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl">
+          <div className="flex items-start gap-2">
+            <AlertCircle size={18} className="shrink-0 mt-0.5" />
+            <div className="text-sm">
+              <p className="font-semibold mb-1">신청을 진행할 수 없습니다</p>
+              <p>
+                {!approvalLineStatus.hasDepartment
+                  ? "본인 계정에 부서가 지정되지 않았습니다. "
+                  : "본인 부서에 결재선이 설정되지 않았습니다. "}
+                관리자에게 요청하세요.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 본인 없음 */}
       {empLoading ? (
@@ -715,35 +839,101 @@ export default function RequestPage() {
                   />
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-semibold text-blue-700 mb-1">
-                      시작일 <span className="text-rose-500">*</span>
-                    </label>
-                    <DatePicker
-                      value={form.startDate}
-                      placeholder="시작일 선택"
-                      onChange={(val) =>
-                        setForm((f) => ({
-                          ...f,
-                          startDate: val,
-                          endDate: f.endDate < val ? val : f.endDate,
-                        }))
-                      }
-                    />
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-blue-700 mb-1">
+                        시작일 <span className="text-rose-500">*</span>
+                      </label>
+                      <DatePicker
+                        value={form.startDate}
+                        placeholder="시작일 선택"
+                        onChange={(val) =>
+                          setForm((f) => ({
+                            ...f,
+                            startDate: val,
+                            endDate: f.endDate < val ? val : f.endDate,
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-blue-700 mb-1">
+                        종료일 <span className="text-rose-500">*</span>
+                      </label>
+                      <DatePicker
+                        value={form.endDate}
+                        min={form.startDate || undefined}
+                        placeholder="종료일 선택"
+                        onChange={(val) => setForm((f) => ({ ...f, endDate: val }))}
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-blue-700 mb-1">
-                      종료일 <span className="text-rose-500">*</span>
-                    </label>
-                    <DatePicker
-                      value={form.endDate}
-                      min={form.startDate || undefined}
-                      placeholder="종료일 선택"
-                      onChange={(val) => setForm((f) => ({ ...f, endDate: val }))}
-                    />
-                  </div>
-                </div>
+
+                  {/* Phase 6-2F: 시간 입력 (연차 제외 카테고리만) */}
+                  {categoryAllowsTimeInput(selectedCategory?.code) && (
+                    <div className="space-y-2">
+                      <label className="block text-xs font-semibold text-blue-700">
+                        시간 <span className="text-gray-400">(선택)</span>
+                      </label>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <p className="text-[11px] text-gray-500 mb-1">시작 시간</p>
+                          <TimePicker
+                            value={form.correctedCheckIn}
+                            placeholder="HH:MM"
+                            onChange={(val) =>
+                              setForm((f) => ({ ...f, correctedCheckIn: val }))
+                            }
+                          />
+                        </div>
+                        <div>
+                          <p className="text-[11px] text-gray-500 mb-1">종료 시간</p>
+                          <TimePicker
+                            value={form.correctedCheckOut}
+                            placeholder="HH:MM"
+                            onChange={(val) =>
+                              setForm((f) => ({ ...f, correctedCheckOut: val }))
+                            }
+                          />
+                        </div>
+                      </div>
+
+                      {/* 미리보기 */}
+                      <div className="bg-blue-50 border border-blue-100 text-blue-800 px-3 py-2 rounded-lg text-xs">
+                        <p className="font-semibold mb-1">📅 등록될 일정</p>
+                        {!form.correctedCheckIn && !form.correctedCheckOut ? (
+                          <p>
+                            <span className="font-mono">{form.startDate}</span>
+                            {form.startDate !== form.endDate && (
+                              <>
+                                {" ~ "}
+                                <span className="font-mono">{form.endDate}</span>
+                              </>
+                            )}{" "}
+                            <span className="font-medium">종일</span>
+                          </p>
+                        ) : (
+                          <p>
+                            <span className="font-mono">{form.startDate}</span>{" "}
+                            <span className="font-mono font-semibold">
+                              {form.correctedCheckIn || "--:--"}
+                            </span>
+                            {" → "}
+                            <span className="font-mono">{form.endDate}</span>{" "}
+                            <span className="font-mono font-semibold">
+                              {form.correctedCheckOut || "--:--"}
+                            </span>
+                          </p>
+                        )}
+                      </div>
+
+                      <p className="text-[11px] text-gray-500">
+                        ⓘ 시간을 입력하지 않으면 종일 일정으로 등록됩니다.
+                      </p>
+                    </div>
+                  )}
+                </>
               )}
 
               {/* 현재 기록 + 새 시각 입력 (correction 타입만) */}

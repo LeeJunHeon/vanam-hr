@@ -293,6 +293,36 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
+    } else {
+      // Phase 6-2F: 정정 외 카테고리(휴가/외근/출장/재택/기타)
+      // — correctedCheckIn/Out이 둘 다 비어 있으면 종일 (NULL).
+      // — 채워져 있으면 클라이언트가 startDate+HH:MM / endDate+HH:MM ISO로 전송.
+      // — 다일 일정 시간 지정 가능 (예: "6/3 13:00 ~ 6/5 17:00").
+      if (correctedCheckIn) {
+        cciDate = new Date(correctedCheckIn);
+        if (isNaN(cciDate.getTime())) {
+          return NextResponse.json(
+            { error: "시작 시간 형식이 올바르지 않습니다." },
+            { status: 400 }
+          );
+        }
+      }
+      if (correctedCheckOut) {
+        ccoDate = new Date(correctedCheckOut);
+        if (isNaN(ccoDate.getTime())) {
+          return NextResponse.json(
+            { error: "종료 시간 형식이 올바르지 않습니다." },
+            { status: 400 }
+          );
+        }
+      }
+      // 둘 다 있으면 종료 >= 시작 검증
+      if (cciDate && ccoDate && ccoDate < cciDate) {
+        return NextResponse.json(
+          { error: "종료 시간은 시작 시간 이후여야 합니다." },
+          { status: 400 }
+        );
+      }
     }
 
     // 결재선 lookup
