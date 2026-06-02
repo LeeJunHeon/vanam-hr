@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Plus,
   Edit,
@@ -139,6 +139,11 @@ export default function RequestPage() {
   const [statusLookups, setStatusLookups] = useState<StatusLookup[]>([]);
   // Phase 6-2E 캘린더 옵션
   const [calendarSources, setCalendarSources] = useState<CalendarSourceOption[]>([]);
+
+  // Phase 6-2L-fix-3: 자동채움은 카테고리가 "새로 선택"된 경우 1회만.
+  // 카테고리가 이전에 자동채움된 값과 다를 때만 캘린더/제목/설명/반차시간 기본값 제안.
+  // 사용자가 캘린더를 직접 바꾸거나 시간을 직접 수정한 후에는 자동값으로 되돌아가지 않음.
+  const lastAutoFilledCategoryRef = useRef<string | null>(null);
 
   // Phase 6-2F: 본인 부서 + 결재선 존재 여부 (신청 가능 여부 결정)
   // - 부서 없음: me.departmentId === null → 즉시 차단
@@ -334,89 +339,84 @@ export default function RequestPage() {
     };
   }, [showForm, currentId, form.categoryId, form.startDate, categories]);
 
-  // Phase 6-2E + 6-2F: 카테고리/기간/사유 변경 시 캘린더/제목/설명/반차시간 자동 재생성
-  // - 신규 신청(editTarget=null): 무조건 재생성 (사용자가 직전에 수정한 내용도 덮어씀)
-  // - 수정(editTarget≠null): 기존 값 그대로 유지
+  // Phase 6-2L-fix-3: 자동채움은 "카테고리 새로 선택" 시 1회만.
+  // - lastAutoFilledCategoryRef와 form.categoryId가 다르면 자동채움 1회 실행 후 ref 갱신
+  // - 캘린더 직접 변경/사유/날짜/시간 수정에는 다시 트리거하지 않음 (사용자 수정 존중)
+  // - 매칭 실패 시 calendarSourceId를 빈 값으로 강제하지 않음 (사용자가 직접 고를 수 있게)
+  // - 수정 모드(editTarget≠null)에서는 자동채움 안 함
   useEffect(() => {
     if (!showForm) return;
-    const cat = categories.find((c) => c.id === Number(form.categoryId));
-    if (!cat) return;
-    // 정정(correction) 카테고리는 캘린더 등록 대상 아님 → skip
-    if (cat.type === "correction") return;
-
-    // 신규 신청 모드에서는 카테고리 변경 시 무조건 재매핑 (Q4)
-    // Phase 6-2L: N:M 매핑 — category_ids 배열에 포함된 캘린더 우선, fallback default_category_id
-    let nextSourceId: string = form.calendarSourceId;
-    if (!editTarget) {
-      const categoryIdNum = Number(form.categoryId);
-      let matched = calendarSources.find(
-        (cs) =>
-          Array.isArray(cs.categoryIds) &&
-          cs.categoryIds.includes(categoryIdNum)
-      );
-      // fallback: category_ids 비어있는 경우(legacy) defaultCategoryId 매칭
-      if (!matched) {
-        matched = calendarSources.find(
-          (cs) => cs.defaultCategoryId === categoryIdNum
-        );
-      }
-      nextSourceId = matched ? String(matched.id) : "";
+    if (editTarget) return; // 수정 모드: 자동채움 skip
+    const catId = form.categoryId;
+    if (!catId) return; // 카테고리 미선택
+    const cat = categories.find((c) => c.id === Number(catId));
+    if (!cat) return; // 마스터 로드 전
+    if (cat.type === "correction") {
+      // 정정은 캘린더 등록 대상 아님 — 자동채움 대상 아님. ref만 갱신해 다른 자동값으로 안 되돌아가게.
+      lastAutoFilledCategoryRef.current = String(catId);
+      return;
     }
+    // ⭐ 핵심 가드: 직전 자동채움 카테고리와 같으면 skip (캘린더/시간 사용자 수정 보존)
+    if (lastAutoFilledCategoryRef.current === String(catId)) return;
 
-    // 제목 자동: "[카테고리한글이름] 이름"
+    // ── 1) 캘린더 자동 매칭 (N:M categoryIds 우선, fallback defaultCategoryId)
+    //    매칭 실패 시 빈 값으로 강제하지 않고 사용자가 직접 고를 수 있게 둔다.
+    const categoryIdNum = Number(catId);
+    let matched = calendarSources.find(
+      (cs) =>
+        Array.isArray(cs.categoryIds) &&
+        cs.categoryIds.includes(categoryIdNum)
+    );
+    if (!matched) {
+      matched = calendarSources.find(
+        (cs) => cs.defaultCategoryId === categoryIdNum
+      );
+    }
+    const suggestedSourceId = matched ? String(matched.id) : null;
+
+    // ── 2) 제목/설명 자동
     const empName = current?.name ?? "";
     const autoTitle = empName ? `[${cat.name}] ${empName}` : `[${cat.name}]`;
-
-    // description 자동: 메타 + 사유
     const lines = [
       "[VanaM HR 자동 등록]",
       `신청자: ${empName || "-"}` +
         (current?.departmentName ? ` (${current.departmentName})` : ""),
       `카테고리: ${cat.name}`,
-      `기간: ${form.startDate}${
-        form.endDate !== form.startDate ? ` ~ ${form.endDate}` : ""
-      }`,
-      form.reason?.trim() ? `사유: ${form.reason.trim()}` : "",
     ].filter(Boolean);
     const autoDesc = lines.join("\n");
 
-    // Phase 6-2F: 반차 시간 기본값
+    // ── 3) 반차 시간 기본값 (HALF_AM/HALF_PM)
     const halfDayDefault = HALF_DAY_DEFAULTS[cat.code];
 
     setForm((f) => {
       const next = { ...f };
-      // Phase 6-2L-fix-2: calendarSourceId가 의존성에 들어가므로 실제 변경 시에만 갱신
-      // (같은 값으로 setForm 호출 시 useEffect 추가 트리거 방지)
-      if (f.calendarSourceId !== nextSourceId) {
-        next.calendarSourceId = nextSourceId;
+      // 캘린더: 매칭됐을 때만 제안. 사용자가 이미 다른 값을 선택했어도 카테고리가 새로 바뀐
+      //         시점이므로 매칭값으로 제안. 매칭이 없으면(suggestedSourceId === null)
+      //         사용자 기존 선택을 그대로 둔다 (덮어쓰기 X).
+      if (suggestedSourceId !== null && f.calendarSourceId !== suggestedSourceId) {
+        next.calendarSourceId = suggestedSourceId;
       }
-      if (!editTarget) {
-        // 신규 신청 모드 — 카테고리/캘린더 변경 시 무조건 재생성
-        next.calendarEventTitle = autoTitle;
-        next.calendarEventDescription = autoDesc;
-
-        // Phase 6-2F: 카테고리별 시간 처리
-        if (halfDayDefault) {
-          // 반차(HALF_AM/HALF_PM) → 기본값 채움
-          next.correctedCheckIn = halfDayDefault.in;
-          next.correctedCheckOut = halfDayDefault.out;
-        } else if (!categoryAllowsTimeInput(cat.code)) {
-          // 연차(ANNUAL) 등 시간 불허 카테고리 → 클리어
-          next.correctedCheckIn = "";
-          next.correctedCheckOut = "";
-        }
-        // 그 외(외근/출장/재택/기타) → 사용자 입력 유지
+      next.calendarEventTitle = autoTitle;
+      next.calendarEventDescription = autoDesc;
+      // 시간: 반차면 기본값, 연차(시간불가)면 클리어, 그 외는 사용자 입력 유지
+      if (halfDayDefault) {
+        next.correctedCheckIn = halfDayDefault.in;
+        next.correctedCheckOut = halfDayDefault.out;
+      } else if (!categoryAllowsTimeInput(cat.code)) {
+        next.correctedCheckIn = "";
+        next.correctedCheckOut = "";
       }
       return next;
     });
-    // Phase 6-2L-fix-2: 트리거를 카테고리/캘린더 변경으로만 한정.
-    // form.reason, form.startDate, form.endDate는 의도적으로 제외 — 사용자가 입력 중에
-    // 자동 채움이 다시 일어나 제목/설명을 덮어쓰는 것을 방지.
+
+    // 자동채움 완료 — ref 갱신 (다음 카테고리 변경까지 자동채움 1회로 한정)
+    lastAutoFilledCategoryRef.current = String(catId);
+    // 의존성: 카테고리/마스터 데이터/edit 모드. calendarSourceId는 일부러 제외 —
+    // 사용자가 캘린더만 바꿔도 자동채움이 다시 일어나지 않게.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     showForm,
     form.categoryId,
-    form.calendarSourceId,
     categories,
     calendarSources,
     current,
@@ -443,6 +443,9 @@ export default function RequestPage() {
     setEditTarget(null);
     setForm(EMPTY_FORM);
     setFormError("");
+    // Phase 6-2L-fix-3: 새 신청 → 자동채움 트래커 초기화
+    // (사용자가 처음 카테고리를 고를 때 자동채움이 1회 동작하도록)
+    lastAutoFilledCategoryRef.current = null;
     setShowForm(true);
   };
 
@@ -471,6 +474,8 @@ export default function RequestPage() {
       calendarEventDescription: r.calendarEventDescription ?? "",
     });
     setFormError("");
+    // Phase 6-2L-fix-3: 수정 모드에서는 자동채움 안 함. 카테고리 추적 ref도 현재값으로 고정.
+    lastAutoFilledCategoryRef.current = String(r.categoryId);
     setShowForm(true);
   };
 
