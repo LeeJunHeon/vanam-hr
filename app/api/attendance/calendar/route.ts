@@ -5,15 +5,20 @@ import {
 } from "@/lib/auth-helpers";
 import { prisma } from "@/lib/prisma";
 
-// GET /api/attendance/calendar?yearMonth=2026-06
+// GET /api/attendance/calendar?yearMonth=2026-06[&employeeId=123]
 //
 // 월 단위 attendance_daily + attendance_requests 를 캘린더 뷰용으로 반환.
-// 권한:
+// 권한 (employeeId 없을 때):
 // - CEO 또는 ADMIN(부서 미지정): 전체 직원
 // - ADMIN(부서 지정): 본인 부서 직원만
 // - EMPLOYEE: 본인만
+// 권한 (employeeId 지정 시):
+// - 본인이면 허용 (역할 무관)
+// - canViewAll(CEO/부서없는admin)이면 허용
+// - 부서 admin이면 대상 직원이 본인 부서 소속일 때만 허용 (그 외 403)
+// - 그 외 403
 //
-// 응답: { yearMonth, employees, daily, requests }
+// 응답: { yearMonth, employees, daily, requests, holidays }
 export async function GET(request: NextRequest) {
   try {
     const r = await requireSession();
@@ -40,8 +45,50 @@ export async function GET(request: NextRequest) {
     const role = session.user.role;
     const ownEmployeeId = session.user.employeeId;
 
+    // employeeId 쿼리 파라미터 — 지정되면 그 직원 1명으로 강제 (권한 확인 후)
+    const employeeIdRaw = searchParams.get("employeeId");
+    let targetEmployeeId: number | null = null;
+    if (employeeIdRaw !== null) {
+      const n = Number(employeeIdRaw);
+      if (!Number.isInteger(n) || n <= 0) {
+        return NextResponse.json(
+          { error: "employeeId는 양의 정수여야 합니다." },
+          { status: 400 }
+        );
+      }
+      targetEmployeeId = n;
+
+      // 권한 검증
+      const isSelf = ownEmployeeId === targetEmployeeId;
+      if (isSelf) {
+        // 본인은 항상 허용 (역할 무관)
+      } else if (canViewAll) {
+        // CEO 또는 부서 없는 ADMIN: 모든 직원 허용
+      } else if (role === "admin" && userDeptId != null) {
+        // 부서 ADMIN: 대상 직원이 본인 부서 소속인지 조회
+        const target = await prisma.employee.findUnique({
+          where: { id: targetEmployeeId },
+          select: { departmentId: true },
+        });
+        if (!target || target.departmentId !== userDeptId) {
+          return NextResponse.json(
+            { error: "해당 직원 조회 권한이 없습니다." },
+            { status: 403 }
+          );
+        }
+      } else {
+        return NextResponse.json(
+          { error: "해당 직원 조회 권한이 없습니다." },
+          { status: 403 }
+        );
+      }
+    }
+
     let employeeFilter: { isActive: true; departmentId?: number; id?: number };
-    if (canViewAll) {
+    if (targetEmployeeId !== null) {
+      // 권한 통과한 단일 직원으로 강제
+      employeeFilter = { isActive: true, id: targetEmployeeId };
+    } else if (canViewAll) {
       employeeFilter = { isActive: true };
     } else if (role === "admin" && userDeptId != null) {
       employeeFilter = { isActive: true, departmentId: userDeptId };

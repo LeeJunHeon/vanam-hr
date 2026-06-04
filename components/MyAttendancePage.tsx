@@ -12,21 +12,16 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
+import AttendanceCalendarView from "@/components/AttendanceCalendarView";
 
+// 내 근태 화면용 요약 카드 fetch 결과 타입
+// 캘린더 렌더는 AttendanceCalendarView가 담당하므로 여기서는 상단 4개 카드 통계 계산용으로만 사용한다.
 interface AttendanceDaily {
   id: number;
   workDate: string; // "YYYY-MM-DD"
   checkIn: string | null;
   checkOut: string | null;
   autoStatus: string | null;
-  categoryId: number | null;
-  categoryCode: string | null;
-  categoryName: string | null;
-  categoryColor: string | null;
-  isOverridden: boolean;
-  workMinutes: number | null;
-  note: string | null;
-  isConfirmed: boolean;
 }
 
 interface StatusLookup {
@@ -36,78 +31,42 @@ interface StatusLookup {
   color: string | null;
 }
 
-const DAY_HEADERS = ["일", "월", "화", "수", "목", "금", "토"];
-
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-function formatTime(iso: string | null): string {
-  if (!iso) return "-";
-  const d = new Date(iso);
-  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+// "YYYY-MM" 형식 보장
+function toYm(date: Date): string {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}`;
 }
 
-function ymd(date: Date): string {
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
-}
-
-function AutoStatusBadge({ status }: { status: string | null }) {
-  if (!status) return null;
-  const cls =
-    status === "normal"
-      ? "bg-emerald-50 text-emerald-700"
-      : status === "late"
-      ? "bg-amber-50 text-amber-700"
-      : status === "early_leave"
-      ? "bg-rose-50 text-rose-700"
-      : status === "absent"
-      ? "bg-gray-100 text-gray-500"
-      : "bg-gray-100 text-gray-500";
-  const label =
-    status === "normal"
-      ? "정상"
-      : status === "late"
-      ? "지각"
-      : status === "early_leave"
-      ? "조퇴"
-      : status === "absent"
-      ? "결근"
-      : status;
-  return (
-    <span
-      className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded ${cls}`}
-    >
-      {label}
-    </span>
-  );
+// "YYYY-MM" 문자열의 월에서 ±n 한 새로운 "YYYY-MM" 문자열 반환
+function shiftYm(ym: string, deltaMonths: number): string {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(y, (m - 1) + deltaMonths, 1);
+  return toYm(d);
 }
 
 export default function MyAttendancePage() {
   const { currentId, current, loading: empLoading } = useCurrentEmployee();
 
   const today = useMemo(() => new Date(), []);
-  const [viewDate, setViewDate] = useState(
-    () => new Date(today.getFullYear(), today.getMonth(), 1)
-  );
+  // ym = "YYYY-MM" — AttendanceCalendarView에 controlled로 전달하고, 요약 카드도 이 ym로 fetch 한다.
+  const [ym, setYm] = useState<string>(() => toYm(today));
 
   const [dailies, setDailies] = useState<AttendanceDaily[]>([]);
   const [statusLookups, setStatusLookups] = useState<StatusLookup[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const todayYmd = useMemo(() => ymd(today), [today]);
-
-  const year = viewDate.getFullYear();
-  const monthIdx = viewDate.getMonth(); // 0-based
-  const firstDay = useMemo(
-    () => new Date(year, monthIdx, 1),
-    [year, monthIdx]
-  );
-  const lastDayNum = useMemo(
-    () => new Date(year, monthIdx + 1, 0).getDate(),
-    [year, monthIdx]
-  );
-  const leadingBlanks = firstDay.getDay(); // 0=Sun
+  // ym → 년/월/말일 (요약 카드 fetch 범위 계산용)
+  const { year, monthIdx, lastDayNum } = useMemo(() => {
+    const [yy, mm] = ym.split("-").map(Number);
+    return {
+      year: yy,
+      monthIdx: mm - 1,
+      lastDayNum: new Date(yy, mm, 0).getDate(),
+    };
+  }, [ym]);
 
   // attendance_auto_status lookup 1회
   useEffect(() => {
@@ -123,6 +82,7 @@ export default function MyAttendancePage() {
     })();
   }, []);
 
+  // 상단 요약 카드용 dailies fetch — 캘린더 렌더링은 AttendanceCalendarView가 별도로 한다.
   const fetchDailies = useCallback(async () => {
     if (!currentId) return;
     setLoading(true);
@@ -146,14 +106,7 @@ export default function MyAttendancePage() {
     fetchDailies();
   }, [fetchDailies]);
 
-  // date(YYYY-MM-DD) → daily 매핑
-  const dailyByDate = useMemo(() => {
-    const map = new Map<string, AttendanceDaily>();
-    dailies.forEach((d) => map.set(d.workDate, d));
-    return map;
-  }, [dailies]);
-
-  // status helper (summary 카드용 색상만 — autoStatus 배지는 AutoStatusBadge 사용)
+  // status helper (summary 카드 색상용)
   const getStatusColor = (code: string | null): string | null => {
     if (!code) return null;
     const lookup = statusLookups.find((l) => l.code === code);
@@ -175,23 +128,10 @@ export default function MyAttendancePage() {
     return { attended, normal, late, absent };
   }, [dailies]);
 
-  // 월 네비
-  const prevMonth = () =>
-    setViewDate((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1));
-  const nextMonth = () =>
-    setViewDate((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1));
-  const goToday = () =>
-    setViewDate(new Date(today.getFullYear(), today.getMonth(), 1));
-
-  // 캘린더 셀 배열 (leading blanks + 1~lastDayNum)
-  const cells: (number | null)[] = useMemo(() => {
-    const arr: (number | null)[] = [];
-    for (let i = 0; i < leadingBlanks; i++) arr.push(null);
-    for (let d = 1; d <= lastDayNum; d++) arr.push(d);
-    // 6주(42셀)로 패딩
-    while (arr.length % 7 !== 0) arr.push(null);
-    return arr;
-  }, [leadingBlanks, lastDayNum]);
+  // 월 네비 — ym 문자열 직접 갱신
+  const prevMonth = () => setYm((cur) => shiftYm(cur, -1));
+  const nextMonth = () => setYm((cur) => shiftYm(cur, +1));
+  const goToday = () => setYm(toYm(today));
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
@@ -234,7 +174,7 @@ export default function MyAttendancePage() {
         </div>
       </div>
 
-      {/* 본인 없음 / 로딩 / 캘린더 */}
+      {/* 본인 없음 / 로딩 / 본문 */}
       {empLoading ? (
         <div className="flex items-center justify-center h-32">
           <Loader2 size={24} className="animate-spin text-blue-500" />
@@ -282,189 +222,20 @@ export default function MyAttendancePage() {
             />
           </div>
 
-          {/* 로딩 */}
-          {loading ? (
-            <div className="flex items-center justify-center h-64">
-              <Loader2 size={28} className="animate-spin text-blue-500" />
-              <span className="ml-2 text-sm text-gray-500">로딩 중...</span>
+          {loading && (
+            <div className="flex items-center justify-center h-8">
+              <Loader2 size={18} className="animate-spin text-blue-500" />
+              <span className="ml-2 text-xs text-gray-500">요약 갱신 중...</span>
             </div>
-          ) : (
-            <>
-              {/* 데스크탑 캘린더 그리드 */}
-              <div className="hidden sm:block bg-white rounded-2xl border border-gray-100 p-4 overflow-hidden">
-                {/* 요일 헤더 */}
-                <div className="grid grid-cols-7 gap-1 mb-1">
-                  {DAY_HEADERS.map((h, i) => (
-                    <div
-                      key={h}
-                      className={`text-center text-xs font-semibold py-2 ${
-                        i === 0
-                          ? "text-rose-500"
-                          : i === 6
-                          ? "text-blue-500"
-                          : "text-gray-500"
-                      }`}
-                    >
-                      {h}
-                    </div>
-                  ))}
-                </div>
-
-                {/* 날짜 셀 */}
-                <div className="grid grid-cols-7 gap-1">
-                  {cells.map((day, idx) => {
-                    if (day === null) {
-                      return (
-                        <div
-                          key={`blank-${idx}`}
-                          className="min-h-[88px] bg-gray-50/50 rounded-lg"
-                        />
-                      );
-                    }
-                    const dateStr = `${year}-${pad2(monthIdx + 1)}-${pad2(day)}`;
-                    const daily = dailyByDate.get(dateStr);
-                    const isToday = dateStr === todayYmd;
-                    const dow = (leadingBlanks + day - 1) % 7;
-                    const dayColor =
-                      dow === 0
-                        ? "text-rose-500"
-                        : dow === 6
-                        ? "text-blue-500"
-                        : "text-gray-700";
-
-                    return (
-                      <div
-                        key={dateStr}
-                        className={`min-h-[88px] rounded-lg border p-1.5 transition-colors ${
-                          isToday
-                            ? "border-blue-500 bg-blue-50/40"
-                            : daily
-                            ? "border-gray-100 bg-white hover:bg-gray-50"
-                            : "border-gray-100 bg-white"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span
-                            className={`text-sm font-semibold ${
-                              isToday ? "text-blue-600" : dayColor
-                            }`}
-                          >
-                            {day}
-                          </span>
-                          {daily?.isConfirmed && (
-                            <span
-                              className="w-1.5 h-1.5 rounded-full bg-emerald-500"
-                              title="확정됨"
-                            />
-                          )}
-                        </div>
-
-                        {daily ? (
-                          <div className="mt-1 space-y-1">
-                            {(daily.checkIn || daily.checkOut) && (
-                              <div className="text-xs text-gray-600 font-mono leading-tight">
-                                {formatTime(daily.checkIn)} -{" "}
-                                {formatTime(daily.checkOut)}
-                              </div>
-                            )}
-                            {daily.autoStatus && (
-                              <div className="mt-0.5">
-                                <AutoStatusBadge status={daily.autoStatus} />
-                              </div>
-                            )}
-                            {daily.categoryName && (
-                              <div
-                                className="text-[10px] font-medium px-1.5 py-0.5 rounded inline-block truncate max-w-full"
-                                style={
-                                  daily.categoryColor &&
-                                  daily.categoryColor.startsWith("#")
-                                    ? {
-                                        backgroundColor: `${daily.categoryColor}20`,
-                                        color: daily.categoryColor,
-                                      }
-                                    : {
-                                        backgroundColor: "#e0e7ff",
-                                        color: "#4f46e5",
-                                      }
-                                }
-                                title={daily.categoryName}
-                              >
-                                {daily.categoryName}
-                              </div>
-                            )}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* 모바일: 데이터 있는 일자만 리스트로 */}
-              <div className="sm:hidden bg-white rounded-2xl border border-gray-100 divide-y divide-gray-50 overflow-hidden">
-                {dailies.length === 0 ? (
-                  <div className="px-4 py-12 text-center text-sm text-gray-400">
-                    이 달의 근태 기록이 없습니다.
-                  </div>
-                ) : (
-                  dailies.map((d) => {
-                    return (
-                      <div
-                        key={d.id}
-                        className="px-4 py-3 flex items-center justify-between gap-3"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-semibold text-gray-900 font-mono">
-                              {d.workDate.slice(5)}
-                            </span>
-                            {d.isConfirmed && (
-                              <span className="text-[10px] text-emerald-600 font-semibold">
-                                확정
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-sm text-gray-500 font-mono mt-0.5">
-                            {formatTime(d.checkIn)} - {formatTime(d.checkOut)}
-                          </div>
-                        </div>
-                        <div className="flex flex-col items-end gap-1 shrink-0">
-                          {d.autoStatus && (
-                            <AutoStatusBadge status={d.autoStatus} />
-                          )}
-                          {d.categoryName && (
-                            <span
-                              className="text-[10px] font-medium px-2 py-0.5 rounded-full"
-                              style={
-                                d.categoryColor && d.categoryColor.startsWith("#")
-                                  ? {
-                                      backgroundColor: `${d.categoryColor}20`,
-                                      color: d.categoryColor,
-                                    }
-                                  : {
-                                      backgroundColor: "#e0e7ff",
-                                      color: "#4f46e5",
-                                    }
-                              }
-                            >
-                              {d.categoryName}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-
-              {/* 빈 상태 안내 (데스크탑/모바일 공통) */}
-              {dailies.length === 0 && (
-                <div className="bg-gray-50 border border-gray-100 rounded-2xl px-4 py-3 text-xs text-gray-500">
-                  이 달의 근태 기록이 없습니다.
-                </div>
-              )}
-            </>
           )}
+
+          {/* 전체 근태와 동일한 캘린더 UI — employeeId로 본인 데이터만, hideHeader로 상단 월 네비는 부모(이 페이지)가 제공 */}
+          <AttendanceCalendarView
+            employeeId={currentId}
+            yearMonth={ym}
+            onMonthChange={setYm}
+            hideHeader
+          />
         </>
       )}
     </div>

@@ -76,8 +76,36 @@ function formatTime(iso: string | null): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-export default function AttendanceCalendarView() {
-  const [yearMonth, setYearMonth] = useState(thisMonthYm);
+// Phase 6-2L+ 내근태 통일: 옵션 props로 일반화. 미지정 시 기존 동작 100% 동일.
+// - employeeId: 지정 시 fetch에 &employeeId=... 추가 (API가 권한 검증)
+// - yearMonth + onMonthChange: 둘 다 주어지면 controlled (부모가 월 관리),
+//                              하나라도 없으면 uncontrolled (내부 state)
+// - hideHeader: 부모가 월 네비를 제공할 때 컴포넌트 자체 헤더 숨김
+interface AttendanceCalendarViewProps {
+  employeeId?: number;
+  yearMonth?: string;
+  onMonthChange?: (yearMonth: string) => void;
+  hideHeader?: boolean;
+}
+
+export default function AttendanceCalendarView({
+  employeeId,
+  yearMonth: yearMonthProp,
+  onMonthChange,
+  hideHeader,
+}: AttendanceCalendarViewProps = {}) {
+  // controlled 여부: yearMonth + onMonthChange 둘 다 있을 때만 controlled
+  const isControlled = yearMonthProp !== undefined && onMonthChange !== undefined;
+  const [internalYm, setInternalYm] = useState(thisMonthYm);
+  const effectiveYm = isControlled ? (yearMonthProp as string) : internalYm;
+  const applyYm = (next: string) => {
+    if (isControlled) {
+      onMonthChange!(next);
+    } else {
+      setInternalYm(next);
+    }
+  };
+
   const [data, setData] = useState<CalendarResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -88,7 +116,10 @@ export default function AttendanceCalendarView() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetch(`/api/attendance/calendar?yearMonth=${yearMonth}`)
+    const url =
+      `/api/attendance/calendar?yearMonth=${effectiveYm}` +
+      (employeeId != null ? `&employeeId=${employeeId}` : "");
+    fetch(url)
       .then(async (r) => {
         if (!r.ok) {
           const j = await r.json().catch(() => ({}));
@@ -108,7 +139,7 @@ export default function AttendanceCalendarView() {
     return () => {
       cancelled = true;
     };
-  }, [yearMonth]);
+  }, [effectiveYm, employeeId]);
 
   // 셀별 집계 (날짜 → key → count)
   // key: "status_normal" / "ANNUAL" / "CORRECTION" 등
@@ -162,7 +193,7 @@ export default function AttendanceCalendarView() {
 
   // 월 그리드 생성
   const grid = useMemo(() => {
-    const [yy, mm] = yearMonth.split("-").map(Number);
+    const [yy, mm] = effectiveYm.split("-").map(Number);
     const firstDay = new Date(yy, mm - 1, 1);
     const lastDay = new Date(yy, mm, 0);
     const startDow = firstDay.getDay(); // 0=일
@@ -173,16 +204,16 @@ export default function AttendanceCalendarView() {
       days.push({ day: d, ymd, dow: new Date(yy, mm - 1, d).getDay() });
     }
     return days;
-  }, [yearMonth]);
+  }, [effectiveYm]);
 
-  const goPrev = () => setYearMonth(shiftMonth(yearMonth, -1));
-  const goNext = () => setYearMonth(shiftMonth(yearMonth, 1));
-  const goThisMonth = () => setYearMonth(thisMonthYm());
+  const goPrev = () => applyYm(shiftMonth(effectiveYm, -1));
+  const goNext = () => applyYm(shiftMonth(effectiveYm, 1));
+  const goThisMonth = () => applyYm(thisMonthYm());
 
   // 월 CSV (wide format: 행=직원, 열=날짜)
   const downloadMonthCSV = () => {
     if (!data) return;
-    const [yy, mm] = yearMonth.split("-").map(Number);
+    const [yy, mm] = effectiveYm.split("-").map(Number);
     const lastDay = new Date(yy, mm, 0).getDate();
     const dateCols = Array.from(
       { length: lastDay },
@@ -246,66 +277,82 @@ export default function AttendanceCalendarView() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `근태_${yearMonth}.csv`;
+    a.download = `근태_${effectiveYm}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
   // 헤더용: "YYYY-MM" → "YYYY년 M월"
-  const [hYearStr, hMonthStr] = yearMonth.split("-");
+  const [hYearStr, hMonthStr] = effectiveYm.split("-");
   const headerLabel = `${hYearStr}년 ${Number(hMonthStr)}월`;
 
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5 space-y-4">
-      {/* Phase 6-2K: 헤더 — 모바일에서 2줄로 */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Calendar size={18} className="text-blue-600" />
-          <h3 className="text-base sm:text-lg font-bold text-gray-900">
-            근태 캘린더
-          </h3>
+      {/* Phase 6-2K: 헤더 — 모바일에서 2줄로.
+          내 근태처럼 부모가 월 네비를 제공하면 hideHeader로 숨김.
+          단 CSV 버튼은 헤더 숨겨도 노출되어야 하므로 별도 분기에 둠. */}
+      {!hideHeader ? (
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Calendar size={18} className="text-blue-600" />
+            <h3 className="text-base sm:text-lg font-bold text-gray-900">
+              근태 캘린더
+            </h3>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={goPrev}
+              className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"
+              aria-label="이전 달"
+            >
+              <ChevronLeft size={16} />
+            </button>
+            {/* Phase 6-2K: 년월 클릭 시 MonthPicker (이번달 더블클릭 단축은 아래 별도 버튼) */}
+            <button
+              onClick={() => setMonthPickerOpen(true)}
+              className="font-semibold text-sm sm:text-base px-3 py-1.5 hover:bg-gray-100 rounded-lg min-w-[110px] text-center text-gray-900"
+              title="년월 선택"
+            >
+              {headerLabel}
+            </button>
+            <button
+              onClick={goNext}
+              className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"
+              aria-label="다음 달"
+            >
+              <ChevronRight size={16} />
+            </button>
+            <button
+              onClick={goThisMonth}
+              className="text-xs text-blue-600 hover:text-blue-700 px-2 py-1 rounded hover:bg-blue-50"
+              title="이번 달로 이동"
+            >
+              오늘
+            </button>
+            {/* Phase 6-2K: CSV 버튼 — RequestPage 패턴으로 통일 */}
+            <button
+              onClick={downloadMonthCSV}
+              disabled={!data || loading}
+              className="ml-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 bg-white text-gray-700 rounded-xl hover:bg-gray-50 disabled:opacity-50"
+            >
+              <Download size={14} />
+              CSV
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={goPrev}
-            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"
-            aria-label="이전 달"
-          >
-            <ChevronLeft size={16} />
-          </button>
-          {/* Phase 6-2K: 년월 클릭 시 MonthPicker (이번달 더블클릭 단축은 아래 별도 버튼) */}
-          <button
-            onClick={() => setMonthPickerOpen(true)}
-            className="font-semibold text-sm sm:text-base px-3 py-1.5 hover:bg-gray-100 rounded-lg min-w-[110px] text-center text-gray-900"
-            title="년월 선택"
-          >
-            {headerLabel}
-          </button>
-          <button
-            onClick={goNext}
-            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"
-            aria-label="다음 달"
-          >
-            <ChevronRight size={16} />
-          </button>
-          <button
-            onClick={goThisMonth}
-            className="text-xs text-blue-600 hover:text-blue-700 px-2 py-1 rounded hover:bg-blue-50"
-            title="이번 달로 이동"
-          >
-            오늘
-          </button>
-          {/* Phase 6-2K: CSV 버튼 — RequestPage 패턴으로 통일 */}
+      ) : (
+        // 헤더 숨김 모드 (내 근태 등 부모가 월 네비 제공) — CSV 버튼만 우측 정렬로 노출
+        <div className="flex justify-end">
           <button
             onClick={downloadMonthCSV}
             disabled={!data || loading}
-            className="ml-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 bg-white text-gray-700 rounded-xl hover:bg-gray-50 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 bg-white text-gray-700 rounded-xl hover:bg-gray-50 disabled:opacity-50"
           >
             <Download size={14} />
             CSV
           </button>
         </div>
-      </div>
+      )}
 
       {/* Phase 6-2K: 범례 — 글자 키움 + flex-wrap 강화 */}
       <div className="bg-gray-50 rounded-lg p-2 sm:p-3 text-xs sm:text-sm flex flex-wrap gap-x-3 gap-y-1.5 text-gray-700">
@@ -456,8 +503,8 @@ export default function AttendanceCalendarView() {
       {/* Phase 6-2K: 년월 선택 다이얼로그 */}
       {monthPickerOpen && (
         <MonthPicker
-          value={yearMonth}
-          onChange={(yM) => setYearMonth(yM)}
+          value={effectiveYm}
+          onChange={(yM) => applyYm(yM)}
           onClose={() => setMonthPickerOpen(false)}
         />
       )}
