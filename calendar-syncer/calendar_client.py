@@ -69,11 +69,14 @@ class CalendarClient:
 
         반환: {
             event_id, summary, start_raw, is_all_day,
-            start_date_or_datetime, creator_email, ext_props
+            start_date_or_datetime, creator_email, ext_props,
+            attendees,
         }
         - start에 "date"가 있으면 종일(all_day), "dateTime"이면 시간지정
         - creator는 event.creator.email
         - ext_props는 event.extendedProperties.private (시스템 생성분 판별용)
+        - attendees는 [{"email": str, "response_status": str}] — accepted/declined/
+          tentative/needsAction. 호출자는 'accepted'만 근태 처리하는 식으로 필터.
         """
         start = event.get("start", {}) or {}
         is_all_day = "date" in start
@@ -81,6 +84,16 @@ class CalendarClient:
 
         creator_email = (event.get("creator", {}) or {}).get("email")
         ext_props = (event.get("extendedProperties", {}) or {}).get("private", {}) or {}
+
+        # 참석자 (email + responseStatus). email 없는 항목은 제외 (캘린더 자원 등).
+        attendees = [
+            {
+                "email": a.get("email"),
+                "response_status": a.get("responseStatus"),
+            }
+            for a in (event.get("attendees") or [])
+            if a.get("email")
+        ]
 
         return {
             "event_id": event.get("id"),
@@ -90,6 +103,7 @@ class CalendarClient:
             "start_date_or_datetime": start_date_or_datetime,
             "creator_email": creator_email,
             "ext_props": ext_props,
+            "attendees": attendees,
         }
 
     def insert_event(

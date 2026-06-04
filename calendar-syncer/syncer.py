@@ -481,18 +481,7 @@ class Syncer:
                     timed_cnt += 1
                     when_label = f"시간 {p['start_date_or_datetime']}"
 
-                # 직원 매칭
-                creator = p["creator_email"]
-                emp_id = None
-                if creator:
-                    emp_id = email_map.get(creator.lower().strip())
-                if emp_id is not None:
-                    matched_cnt += 1
-                    emp_label = f"employee_id={emp_id}"
-                else:
-                    emp_label = "매칭 안 됨"
-
-                # 카테고리 판정
+                # 카테고리 판정 (일정 단위 1회 — 모든 직원에게 공통 적용)
                 cat_id, cat_code, matched_kw = self._match_category(
                     p["summary"], keyword_rules, default_cat_id, default_cat_code
                 )
@@ -501,47 +490,81 @@ class Syncer:
                 else:
                     cat_label = f"category={cat_code} (default)"
 
-                # ⭐ attendance_request UPSERT (직원 매칭 + 카테고리 있을 때만)
-                # ETC 포함 모든 카테고리를 auto_approved로 INSERT (사용자 결정 Q1c)
-                # 무한루프 방지(vanam_source 스킵)는 위에서 이미 처리됨
-                if emp_id and cat_id:
-                    try:
-                        # 종일 vs 시간 지정 구분
-                        # parse_event는 end_date_or_datetime을 안 주므로 raw event["end"]에서 직접 추출
-                        end_raw = (event.get("end") or {})
-                        if p["is_all_day"]:
-                            # 종일: start.date / end.date (end.date는 Google API exclusive=다음날)
-                            start_date_str = p["start_date_or_datetime"]  # "YYYY-MM-DD"
-                            end_exclusive = end_raw.get("date")
-                            if end_exclusive:
-                                end_dt_obj = datetime.strptime(
-                                    end_exclusive, "%Y-%m-%d"
-                                ).date()
-                                end_date_str = (
-                                    end_dt_obj - timedelta(days=1)
-                                ).strftime("%Y-%m-%d")
-                            else:
-                                end_date_str = start_date_str
-                            corrected_check_in = None
-                            corrected_check_out = None
-                        else:
-                            # 시간 지정: start.dateTime / end.dateTime (ISO 문자열, TZ 포함)
-                            start_iso = p["start_date_or_datetime"]
-                            end_iso = end_raw.get("dateTime")
-                            if not end_iso:
-                                raise ValueError("end.dateTime 없음")
-                            # Python 3.11+은 Z 직접 지원하나 안전하게 +00:00로 치환
-                            start_dt_obj = datetime.fromisoformat(
-                                start_iso.replace("Z", "+00:00")
-                            )
-                            end_dt_obj = datetime.fromisoformat(
-                                end_iso.replace("Z", "+00:00")
-                            )
-                            start_date_str = start_dt_obj.strftime("%Y-%m-%d")
-                            end_date_str = end_dt_obj.strftime("%Y-%m-%d")
-                            corrected_check_in = start_dt_obj
-                            corrected_check_out = end_dt_obj
+                # 처리 대상 이메일 집합 — creator + accepted 참석자 (중복 제거)
+                # - creator: 응답 상태 무관하게 항상 포함 (기존 동작)
+                # - 참석자: response_status='accepted'만 (declined/needsAction/tentative 제외)
+                creator = p["creator_email"]
+                target_emails: set[str] = set()
+                if creator:
+                    target_emails.add(creator.lower().strip())
+                accepted_count = 0
+                for a in p.get("attendees") or []:
+                    email = a.get("email")
+                    if a.get("response_status") == "accepted" and email:
+                        target_emails.add(email.lower().strip())
+                        accepted_count += 1
 
+                # 카테고리 없으면 아무도 처리 안 함
+                if not cat_id:
+                    self.logger.info(
+                        f"  [{cal_name}] {when_label} | {p['summary']} "
+                        f"| creator={creator or '-'} | 대상 {len(target_emails)}명 "
+                        f"(accepted {accepted_count}) | {cat_label} → 스킵 (cat 없음)"
+                    )
+                    continue
+
+                # 날짜/시간 계산 (일정 단위 1회 — 모든 직원에게 공통)
+                try:
+                    end_raw = (event.get("end") or {})
+                    if p["is_all_day"]:
+                        # 종일: start.date / end.date (end.date는 Google API exclusive=다음날)
+                        start_date_str = p["start_date_or_datetime"]  # "YYYY-MM-DD"
+                        end_exclusive = end_raw.get("date")
+                        if end_exclusive:
+                            end_dt_obj = datetime.strptime(
+                                end_exclusive, "%Y-%m-%d"
+                            ).date()
+                            end_date_str = (
+                                end_dt_obj - timedelta(days=1)
+                            ).strftime("%Y-%m-%d")
+                        else:
+                            end_date_str = start_date_str
+                        corrected_check_in = None
+                        corrected_check_out = None
+                    else:
+                        # 시간 지정: start.dateTime / end.dateTime (ISO 문자열, TZ 포함)
+                        start_iso = p["start_date_or_datetime"]
+                        end_iso = end_raw.get("dateTime")
+                        if not end_iso:
+                            raise ValueError("end.dateTime 없음")
+                        # Python 3.11+은 Z 직접 지원하나 안전하게 +00:00로 치환
+                        start_dt_obj = datetime.fromisoformat(
+                            start_iso.replace("Z", "+00:00")
+                        )
+                        end_dt_obj = datetime.fromisoformat(
+                            end_iso.replace("Z", "+00:00")
+                        )
+                        start_date_str = start_dt_obj.strftime("%Y-%m-%d")
+                        end_date_str = end_dt_obj.strftime("%Y-%m-%d")
+                        corrected_check_in = start_dt_obj
+                        corrected_check_out = end_dt_obj
+                except Exception as e:
+                    self.logger.exception(
+                        f"  [{cal_name}] 날짜/시간 파싱 실패: {e}"
+                    )
+                    continue
+
+                # ⭐ 직원별 attendance_request UPSERT
+                # 같은 일정이라도 직원마다 1행. DB UNIQUE는 (external_source,
+                # external_event_id, employee_id)이므로 중복 없이 직원별 갱신.
+                per_event_matched = 0
+                per_event_results: list[str] = []
+                for email in sorted(target_emails):
+                    emp_id = email_map.get(email)
+                    if not emp_id:
+                        per_event_results.append(f"{email}: 매칭 안 됨")
+                        continue
+                    try:
                         request_id = self.db.upsert_attendance_request(
                             employee_id=emp_id,
                             category_id=cat_id,
@@ -552,20 +575,27 @@ class Syncer:
                             corrected_check_in=corrected_check_in,
                             corrected_check_out=corrected_check_out,
                         )
-                        upsert_label = f"→ request_id={request_id} ✅"
+                        per_event_matched += 1
+                        per_event_results.append(
+                            f"emp={emp_id}({email}) → req#{request_id} ✅"
+                        )
                     except Exception as e:
                         self.logger.exception(
-                            f"  [{cal_name}] UPSERT 실패: {e}"
+                            f"  [{cal_name}] UPSERT 실패 (emp={emp_id}, email={email}): {e}"
                         )
-                        upsert_label = "→ UPSERT 실패 ❌"
-                else:
-                    # 직원 매칭 안 됨 → INSERT 스킵 (로그만)
-                    upsert_label = "→ 스킵 (매칭 안 됨)"
+                        per_event_results.append(
+                            f"emp={emp_id}({email}) → UPSERT 실패 ❌"
+                        )
+
+                matched_cnt += per_event_matched
 
                 self.logger.info(
                     f"  [{cal_name}] {when_label} | {p['summary']} "
-                    f"| creator={creator or '-'} ({emp_label}) | {cat_label} {upsert_label}"
+                    f"| creator={creator or '-'} | 대상 {len(target_emails)}명 "
+                    f"(accepted {accepted_count}) | {cat_label} | 매칭 {per_event_matched}건"
                 )
+                for entry in per_event_results:
+                    self.logger.info(f"  [{cal_name}]   - {entry}")
 
             self.logger.info(
                 f"  [{cal_name}] 요약 — 종일 {all_day_cnt}건 / "

@@ -194,9 +194,8 @@ class Database:
                 'google_calendar', %s,
                 'auto_approved', NOW(), NOW()
             )
-            ON CONFLICT (external_source, external_event_id)
+            ON CONFLICT (external_source, external_event_id, employee_id)
             DO UPDATE SET
-                employee_id = EXCLUDED.employee_id,
                 category_id = EXCLUDED.category_id,
                 start_date = EXCLUDED.start_date,
                 end_date = EXCLUDED.end_date,
