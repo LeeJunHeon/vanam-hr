@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   ClipboardCheck,
   CheckCircle,
@@ -13,10 +13,18 @@ import {
   User,
   Shield,
   X,
+  Plane,
+  Filter,
+  Users as UsersIcon,
+  MapPin,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 
+// Phase 7 3단계: 결재함이 attendance + trip 두 종류를 모두 다룸.
+// 응답에 kind 필드가 추가됨 — 'attendance' or 'trip'.
+
 interface ApprovalItem {
+  kind?: "attendance"; // 신규 — 미지정 시 attendance(레거시 호환)
   id: number;
   employeeId: number;
   employeeNo: string;
@@ -54,6 +62,54 @@ interface ApprovalItem {
   calendarEventDescription: string | null;
   externalSource: string | null;
   externalEventId: string | null;
+}
+
+// Phase 7 3단계: 출장 결재 항목
+interface TripPendingParticipant {
+  participantId: number;
+  employeeId: number;
+  employeeName: string;
+  employeeNo: string | null;
+  departmentName: string | null;
+  inviteStatus: string;
+  approvalStatus: string;
+  approvedById: number | null;
+  approvedByName: string | null;
+  approvedAt: string | null;
+  rejectReason: string | null;
+  dates: Array<{
+    attendDate: string;
+    startTime: string | null;
+    endTime: string | null;
+  }>;
+}
+interface TripApprovalItem {
+  kind: "trip";
+  id: number;
+  categoryCode: string;
+  categoryName: string;
+  categoryType: string;
+  categoryColor: string | null;
+  status: string;
+  startDate: string;
+  endDate: string;
+  requestedAt: string;
+  employeeId: number;
+  employeeName: string | null;
+  isSelfRequest: boolean;
+  tripEventId: number;
+  eventName: string;
+  location: string | null;
+  eventStartDate: string;
+  eventEndDate: string;
+  pendingCount: number;
+  pendingParticipants: TripPendingParticipant[];
+  approvedAt: string | null;
+}
+
+type AnyApprovalItem = ApprovalItem | TripApprovalItem;
+function isTrip(it: AnyApprovalItem): it is TripApprovalItem {
+  return it.kind === "trip";
 }
 
 interface CalendarSourceOption {
@@ -107,7 +163,7 @@ export default function ApprovalPage() {
   const { currentId, current, me, loading: empLoading } = useCurrentEmployee();
 
   const [tab, setTab] = useState<Tab>("pending");
-  const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
+  const [approvals, setApprovals] = useState<AnyApprovalItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [statusLookups, setStatusLookups] = useState<StatusLookup[]>([]);
   const [rejectModal, setRejectModal] = useState<RejectModalState>(EMPTY_REJECT);
@@ -115,6 +171,9 @@ export default function ApprovalPage() {
   // Phase 6-2E 캘린더 옵션 + 결재자 인라인 수정값
   const [calendarSources, setCalendarSources] = useState<CalendarSourceOption[]>([]);
   const [editedCalendar, setEditedCalendar] = useState<Record<number, EditedCalendar>>({});
+  // Phase 7 3단계: 카테고리 필터(categoryCode 기준, "all" = 전체) + 출장 결재 팝업 대상
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [openTripItem, setOpenTripItem] = useState<TripApprovalItem | null>(null);
 
   const updateEditedCalendar = (
     reqId: number,
@@ -180,6 +239,12 @@ export default function ApprovalPage() {
   useEffect(() => {
     fetchApprovals();
   }, [fetchApprovals]);
+
+  // 카테고리 필터 적용
+  const filteredApprovals = useMemo(() => {
+    if (categoryFilter === "all") return approvals;
+    return approvals.filter((it) => it.categoryCode === categoryFilter);
+  }, [approvals, categoryFilter]);
 
   const getStatusLabel = (code: string): string => {
     const lookup = statusLookups.find((l) => l.code === code);
@@ -358,30 +423,64 @@ export default function ApprovalPage() {
         </div>
       ) : (
         <>
+          {/* 카테고리 필터 — 출장 포함, 보이는 항목들에서 동적으로 추출 */}
+          <CategoryFilterBar
+            items={approvals}
+            value={categoryFilter}
+            onChange={setCategoryFilter}
+          />
+
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {approvals.map((item) => (
-              <ApprovalCard
-                key={item.id}
-                item={item}
-                tab={tab}
-                viewerRole={me?.role ?? null}
-                getStatusLabel={getStatusLabel}
-                statusBadge={statusBadge}
-                onApprove={() => handleApprove(item)}
-                onReject={() => openReject(item)}
-                calendarSources={calendarSources}
-                edited={editedCalendar[item.id]}
-                onEditCalendar={(field, value) =>
-                  updateEditedCalendar(item.id, field, value)
-                }
-              />
-            ))}
+            {filteredApprovals.map((item) =>
+              isTrip(item) ? (
+                <TripApprovalCard
+                  key={`trip-${item.tripEventId}`}
+                  item={item}
+                  tab={tab}
+                  getStatusLabel={getStatusLabel}
+                  statusBadge={statusBadge}
+                  onOpen={() => setOpenTripItem(item)}
+                />
+              ) : (
+                <ApprovalCard
+                  key={`att-${item.id}`}
+                  item={item}
+                  tab={tab}
+                  viewerRole={me?.role ?? null}
+                  getStatusLabel={getStatusLabel}
+                  statusBadge={statusBadge}
+                  onApprove={() => handleApprove(item)}
+                  onReject={() => openReject(item)}
+                  calendarSources={calendarSources}
+                  edited={editedCalendar[item.id]}
+                  onEditCalendar={(field, value) =>
+                    updateEditedCalendar(item.id, field, value)
+                  }
+                />
+              )
+            )}
           </div>
 
           <p className="text-xs text-gray-400 text-center pt-2">
-            총 {approvals.length}건
+            총 {filteredApprovals.length}건
+            {filteredApprovals.length !== approvals.length &&
+              ` / 전체 ${approvals.length}건`}
           </p>
         </>
+      )}
+
+      {/* 출장 결재 팝업 */}
+      {openTripItem && (
+        <TripApprovalModal
+          item={openTripItem}
+          tab={tab}
+          onClose={() => setOpenTripItem(null)}
+          onProcessed={() => {
+            setOpenTripItem(null);
+            fetchApprovals();
+          }}
+          showToast={showToast}
+        />
       )}
 
       {/* 반려 모달 */}
@@ -758,6 +857,453 @@ function ApprovalCard({
             </button>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ===================== Phase 7 3단계: 카테고리 필터 바 =====================
+function CategoryFilterBar({
+  items,
+  value,
+  onChange,
+}: {
+  items: AnyApprovalItem[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  // 보이는 항목들에서 등장한 categoryCode 모음 → 칩 버튼으로 노출
+  const options = useMemo(() => {
+    const seen = new Map<string, { code: string; name: string; color: string | null }>();
+    for (const it of items) {
+      if (!seen.has(it.categoryCode)) {
+        seen.set(it.categoryCode, {
+          code: it.categoryCode,
+          name: it.categoryName,
+          color: it.categoryColor ?? null,
+        });
+      }
+    }
+    return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  }, [items]);
+
+  if (options.length <= 1) return null;
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap text-sm">
+      <span className="inline-flex items-center gap-1 text-xs text-gray-500 font-semibold">
+        <Filter size={12} />
+        카테고리
+      </span>
+      <button
+        onClick={() => onChange("all")}
+        className={`px-3 py-1 text-xs font-medium rounded-full border transition-colors ${
+          value === "all"
+            ? "bg-gray-900 text-white border-gray-900"
+            : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+        }`}
+      >
+        전체
+      </button>
+      {options.map((o) => {
+        const selected = value === o.code;
+        return (
+          <button
+            key={o.code}
+            onClick={() => onChange(o.code)}
+            className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-full border transition-colors ${
+              selected
+                ? "bg-gray-900 text-white border-gray-900"
+                : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+            }`}
+          >
+            {o.color && o.color.startsWith("#") && (
+              <span
+                className="w-2 h-2 rounded-full border border-white/70"
+                style={{ backgroundColor: o.color }}
+              />
+            )}
+            {o.name}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ===================== Phase 7 3단계: 출장 결재 카드 =====================
+function TripApprovalCard({
+  item,
+  tab,
+  getStatusLabel,
+  statusBadge,
+  onOpen,
+}: {
+  item: TripApprovalItem;
+  tab: Tab;
+  getStatusLabel: (code: string) => string;
+  statusBadge: (code: string) => React.CSSProperties;
+  onOpen: () => void;
+}) {
+  const isPending = item.status === "pending";
+  return (
+    <button
+      onClick={onOpen}
+      className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5 hover:border-blue-200 transition-colors text-left w-full"
+    >
+      {/* 카테고리(출장) + 상태 */}
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2 min-w-0">
+          {item.categoryColor && item.categoryColor.startsWith("#") && (
+            <div
+              className="w-3 h-3 rounded-full border border-gray-200 shrink-0"
+              style={{ backgroundColor: item.categoryColor }}
+            />
+          )}
+          <h3 className="text-base font-bold text-gray-900 truncate inline-flex items-center gap-1.5">
+            <Plane size={14} className="text-amber-600 shrink-0" />
+            {item.categoryName} — {item.eventName}
+          </h3>
+        </div>
+        <span
+          className="text-xs font-semibold px-2 py-0.5 rounded-full shrink-0"
+          style={statusBadge(item.status)}
+        >
+          {getStatusLabel(item.status)}
+        </span>
+      </div>
+
+      {/* 기간 */}
+      <div className="flex items-center gap-2 text-sm text-gray-700 mb-1.5">
+        <Calendar size={13} className="text-gray-400" />
+        <span className="font-mono">
+          {item.eventStartDate}
+          {item.eventEndDate !== item.eventStartDate && ` ~ ${item.eventEndDate}`}
+        </span>
+      </div>
+
+      {/* 장소 */}
+      {item.location && (
+        <div className="flex items-center gap-2 text-sm text-gray-600 mb-1.5">
+          <MapPin size={13} className="text-gray-400" />
+          <span className="truncate">{item.location}</span>
+        </div>
+      )}
+
+      {/* 대기/처리 인원 + 액션 안내 */}
+      <div className="flex items-center justify-between pt-2 border-t border-gray-50 mt-2">
+        <span className="inline-flex items-center gap-1 text-xs text-amber-700 font-semibold">
+          <UsersIcon size={12} />
+          {isPending
+            ? `대기 ${item.pendingCount}명`
+            : `${tab === "history" ? "처리" : "대상"} ${item.pendingCount}명`}
+        </span>
+        <span className="text-[11px] text-blue-600 font-semibold">
+          {isPending ? "결재 처리 →" : "상세 보기 →"}
+        </span>
+      </div>
+    </button>
+  );
+}
+
+// ===================== Phase 7 3단계: 출장 결재 팝업 =====================
+function TripApprovalModal({
+  item,
+  tab,
+  onClose,
+  onProcessed,
+  showToast,
+}: {
+  item: TripApprovalItem;
+  tab: Tab;
+  onClose: () => void;
+  onProcessed: () => void;
+  showToast: (msg: string) => void;
+}) {
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(
+    () => new Set(item.pendingParticipants.map((p) => p.participantId))
+  );
+  const [rejectReason, setRejectReason] = useState("");
+  const [showRejectInput, setShowRejectInput] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const isPendingTab = tab === "pending" && item.status === "pending";
+
+  // pending 참석자만 선택/처리 대상이 됨 (history 탭에선 readonly)
+  const selectablePids = useMemo(
+    () =>
+      item.pendingParticipants
+        .filter((p) => p.approvalStatus === "pending")
+        .map((p) => p.participantId),
+    [item]
+  );
+
+  const toggleAll = () => {
+    if (selectedIds.size === selectablePids.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(selectablePids));
+    }
+  };
+  const toggleOne = (pid: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(pid)) next.delete(pid);
+      else next.add(pid);
+      return next;
+    });
+  };
+
+  const submit = async (action: "approve" | "reject") => {
+    if (action === "reject" && !rejectReason.trim()) {
+      alert("반려 사유를 입력하세요.");
+      return;
+    }
+    if (selectedIds.size === 0) {
+      alert("처리할 참석자를 선택하세요.");
+      return;
+    }
+    if (
+      action === "approve" &&
+      !confirm(`선택된 ${selectedIds.size}명을 승인하시겠습니까?`)
+    )
+      return;
+
+    setSubmitting(true);
+    try {
+      const res = await fetch(`/api/approvals`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "trip",
+          tripEventId: item.tripEventId,
+          action,
+          rejectReason: action === "reject" ? rejectReason.trim() : undefined,
+          participantIds: [...selectedIds],
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || `처리 실패 (${res.status})`);
+        setSubmitting(false);
+        return;
+      }
+      showToast(
+        action === "approve"
+          ? `✅ ${data.processedCount}명 승인되었습니다`
+          : `✅ ${data.processedCount}명 반려되었습니다`
+      );
+      onProcessed();
+    } catch (e) {
+      console.error("trip approval PUT error:", e);
+      alert("네트워크 오류");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ backgroundColor: "rgba(0,0,0,0.4)" }}
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-5 sm:p-6 space-y-4 max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2 truncate">
+            <Plane size={18} className="text-amber-600" />
+            <span className="truncate">출장 결재 — {item.eventName}</span>
+          </h3>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400">
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* 이벤트 정보 */}
+        <div className="bg-gray-50 rounded-xl p-3 text-sm space-y-1">
+          <div className="flex items-center gap-2 text-gray-700">
+            <Calendar size={13} className="text-gray-400" />
+            <span className="font-mono text-xs">
+              {item.eventStartDate}
+              {item.eventEndDate !== item.eventStartDate && ` ~ ${item.eventEndDate}`}
+            </span>
+          </div>
+          {item.location && (
+            <div className="flex items-center gap-2 text-gray-700">
+              <MapPin size={13} className="text-gray-400" />
+              {item.location}
+            </div>
+          )}
+          {item.employeeName && (
+            <div className="flex items-center gap-2 text-gray-500">
+              <User size={13} className="text-gray-400" />
+              <span className="text-xs">생성자: {item.employeeName}</span>
+            </div>
+          )}
+        </div>
+
+        {/* 참석자 목록 */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-sm font-bold text-gray-700 flex items-center gap-1.5">
+              <UsersIcon size={14} />
+              {isPendingTab ? "결재 대상 참석자" : "처리된 참석자"} {item.pendingCount}명
+            </h4>
+            {isPendingTab && selectablePids.length > 0 && (
+              <button
+                onClick={toggleAll}
+                className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+              >
+                {selectedIds.size === selectablePids.length ? "전체 해제" : "전체 선택"}
+              </button>
+            )}
+          </div>
+          <div className="space-y-2 max-h-72 overflow-y-auto">
+            {item.pendingParticipants.map((p) => {
+              const checked = selectedIds.has(p.participantId);
+              const isPending = p.approvalStatus === "pending";
+              return (
+                <div
+                  key={p.participantId}
+                  className="border border-gray-100 rounded-xl p-3 flex items-start gap-2"
+                >
+                  {isPendingTab && isPending && (
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleOne(p.participantId)}
+                      className="mt-1"
+                    />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-semibold text-gray-900">
+                        {p.employeeName}
+                      </span>
+                      {p.employeeNo && (
+                        <span className="text-[10px] text-gray-400 font-mono">
+                          {p.employeeNo}
+                        </span>
+                      )}
+                      <span
+                        className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                          p.approvalStatus === "pending"
+                            ? "bg-amber-50 text-amber-700"
+                            : p.approvalStatus === "approved"
+                            ? "bg-emerald-50 text-emerald-700"
+                            : "bg-rose-50 text-rose-700"
+                        }`}
+                      >
+                        {p.approvalStatus === "pending"
+                          ? "결재대기"
+                          : p.approvalStatus === "approved"
+                          ? "승인"
+                          : "반려"}
+                      </span>
+                    </div>
+                    {p.departmentName && (
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        {p.departmentName}
+                      </div>
+                    )}
+                    {p.dates.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap gap-1">
+                        {p.dates.map((d, idx) => (
+                          <span
+                            key={`${d.attendDate}-${idx}`}
+                            className="text-[11px] font-mono bg-gray-50 text-gray-700 px-1.5 py-0.5 rounded"
+                          >
+                            {d.attendDate}
+                            {d.startTime || d.endTime
+                              ? ` ${d.startTime ?? "-"}~${d.endTime ?? "-"}`
+                              : " 종일"}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {p.rejectReason && (
+                      <div className="mt-1.5 text-xs text-rose-600">
+                        반려 사유: {p.rejectReason}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 반려 사유 입력 */}
+        {isPendingTab && showRejectInput && (
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 mb-1">
+              반려 사유 <span className="text-rose-500">*</span>
+            </label>
+            <textarea
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              rows={3}
+              placeholder="선택된 참석자들에게 동일하게 적용됩니다"
+              className="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-rose-400 resize-none"
+            />
+          </div>
+        )}
+
+        <p className="text-[11px] text-gray-400 leading-relaxed border-t border-gray-100 pt-3">
+          * 이번 단계에선 결재 처리(승인/반려)까지만 반영됩니다. 캘린더 등록·근태 반영은 다음 단계.
+        </p>
+
+        {/* 액션 버튼 */}
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            onClick={onClose}
+            disabled={submitting}
+            className="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200 disabled:opacity-50"
+          >
+            닫기
+          </button>
+          {isPendingTab &&
+            (showRejectInput ? (
+              <>
+                <button
+                  onClick={() => setShowRejectInput(false)}
+                  disabled={submitting}
+                  className="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200 disabled:opacity-50"
+                >
+                  취소
+                </button>
+                <button
+                  onClick={() => submit("reject")}
+                  disabled={submitting || !rejectReason.trim() || selectedIds.size === 0}
+                  className="px-4 py-2 text-sm font-bold text-white bg-rose-500 rounded-xl hover:bg-rose-600 disabled:opacity-50 inline-flex items-center gap-1.5"
+                >
+                  {submitting ? <Loader2 size={14} className="animate-spin" /> : <XCircle size={14} />}
+                  반려 확정 ({selectedIds.size}명)
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => setShowRejectInput(true)}
+                  disabled={submitting || selectedIds.size === 0}
+                  className="px-4 py-2 text-sm font-bold text-white bg-rose-500 rounded-xl hover:bg-rose-600 disabled:opacity-50 inline-flex items-center gap-1.5"
+                >
+                  <XCircle size={14} />
+                  반려
+                </button>
+                <button
+                  onClick={() => submit("approve")}
+                  disabled={submitting || selectedIds.size === 0}
+                  className="px-4 py-2 text-sm font-bold text-white bg-emerald-500 rounded-xl hover:bg-emerald-600 disabled:opacity-50 inline-flex items-center gap-1.5"
+                >
+                  {submitting ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+                  승인 ({selectedIds.size}명)
+                </button>
+              </>
+            ))}
+        </div>
       </div>
     </div>
   );

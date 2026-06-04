@@ -1,6 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getApproverId, requireSession } from "@/lib/auth-helpers";
+import { getApproverId, requireSession, isAdminSession } from "@/lib/auth-helpers";
+
+// Phase 7 3단계: 결재함에 출장(trip) 결재를 합치는 방식 A.
+// - 출장 카테고리 표기는 attendance 카테고리와 통일된 키로 노출(필터/표시 공유).
+// - 색상은 AttendanceCalendarView의 BUSINESS_TRIP 색(#f97316)과 동일.
+const TRIP_CATEGORY = {
+  code: "BUSINESS_TRIP",
+  name: "출장",
+  type: "work",
+  color: "#f97316",
+} as const;
+
+// @db.Time(6) → "HH:MM" 추출. 없으면 null.
+function hhmmFromTime(d: Date | null | undefined): string | null {
+  if (!d) return null;
+  return d.toISOString().slice(11, 16);
+}
 
 // Phase 6-2E: 캘린더 일정 등록 (calendar-syncer POST 호출).
 // 성공 시 event_id 반환. 실패 시 throw (호출자가 try/catch로 결재 자체는 유지).
@@ -67,6 +83,114 @@ async function createCalendarEvent(
   }
   const data = await res.json();
   return data.eventId ?? data.event_id ?? data.id ?? null;
+}
+
+// Phase 7 3단계: 출장 결재 항목 1개(이벤트 묶음)를 빌드.
+// ps: 같은 trip_event에 속하는 trip_participant 묶음 (조건에 맞는 것만 — pending or 본인 처리).
+function buildTripItem(
+  ps: Array<{
+    id: number;
+    employeeId: number;
+    inviteStatus: string;
+    approvalStatus: string;
+    approvedById: number | null;
+    approvedAt: Date | null;
+    rejectReason: string | null;
+    createdAt: Date;
+    employee: {
+      id: number;
+      name: string;
+      employeeNo: string | null;
+      department: { id: number; name: string } | null;
+    };
+    approvedBy: { id: number; name: string } | null;
+    dates: Array<{
+      id: number;
+      attendDate: Date;
+      startTime: Date | null;
+      endTime: Date | null;
+    }>;
+    tripEvent: {
+      id: number;
+      name: string;
+      location: string | null;
+      startDate: Date;
+      endDate: Date;
+      status: string;
+      createdAt: Date;
+      createdById: number;
+      createdBy: { id: number; name: string } | null;
+    };
+  }>,
+  approverId: number
+) {
+  const ev = ps[0].tripEvent;
+  // requestedAt 정렬키: 가장 오래된 참석자 createdAt (대기 큐의 머리 역할)
+  const oldest = ps.reduce(
+    (min, p) => (p.createdAt.getTime() < min.getTime() ? p.createdAt : min),
+    ps[0].createdAt
+  );
+  // 가장 최근 처리 시각 (history 표시용)
+  const latestApproved = ps
+    .map((p) => p.approvedAt?.getTime() ?? 0)
+    .reduce((mx, t) => (t > mx ? t : mx), 0);
+
+  // 모든 참석자가 같은 처리 결과면 그 상태 — 섞여있으면 'pending' 우선(이벤트 카드에 노출되는 상태)
+  const allPending = ps.every((p) => p.approvalStatus === "pending");
+  const allApproved = ps.every((p) => p.approvalStatus === "approved");
+  const allRejected = ps.every((p) => p.approvalStatus === "rejected");
+  const itemStatus = allPending
+    ? "pending"
+    : allApproved
+    ? "approved"
+    : allRejected
+    ? "rejected"
+    : "pending";
+
+  return {
+    kind: "trip" as const,
+    // 결재함 공통 필드 (한 줄 카드 표시 + 필터용)
+    id: ev.id, // attendance.id와 의미 다름. PUT은 tripEventId로 명시 호출.
+    categoryCode: TRIP_CATEGORY.code,
+    categoryName: TRIP_CATEGORY.name,
+    categoryType: TRIP_CATEGORY.type,
+    categoryColor: TRIP_CATEGORY.color,
+    status: itemStatus,
+    startDate: ev.startDate.toISOString().split("T")[0],
+    endDate: ev.endDate.toISOString().split("T")[0],
+    requestedAt: oldest.toISOString(),
+    // 표시용 대표 신청자: 이벤트 생성자
+    employeeId: ev.createdById,
+    employeeName: ev.createdBy?.name ?? null,
+    isSelfRequest: ev.createdById === approverId,
+    // 출장 고유 필드
+    tripEventId: ev.id,
+    eventName: ev.name,
+    location: ev.location,
+    eventStartDate: ev.startDate.toISOString().split("T")[0],
+    eventEndDate: ev.endDate.toISOString().split("T")[0],
+    pendingCount: ps.length,
+    pendingParticipants: ps.map((p) => ({
+      participantId: p.id,
+      employeeId: p.employeeId,
+      employeeName: p.employee.name,
+      employeeNo: p.employee.employeeNo,
+      departmentName: p.employee.department?.name ?? null,
+      inviteStatus: p.inviteStatus,
+      approvalStatus: p.approvalStatus,
+      approvedById: p.approvedById,
+      approvedByName: p.approvedBy?.name ?? null,
+      approvedAt: p.approvedAt ? p.approvedAt.toISOString() : null,
+      rejectReason: p.rejectReason,
+      dates: p.dates.map((d) => ({
+        attendDate: d.attendDate.toISOString().split("T")[0],
+        startTime: hhmmFromTime(d.startTime),
+        endTime: hhmmFromTime(d.endTime),
+      })),
+    })),
+    // history 카드용 처리 시각 (가장 최근)
+    approvedAt: latestApproved > 0 ? new Date(latestApproved).toISOString() : null,
+  };
 }
 
 // 자동 위임 시간 계산
@@ -181,78 +305,181 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    return NextResponse.json(
-      requests.map((r) => {
-        const isPrimary = r.primaryApproverId === approverId;
-        const isDeputy = r.deputyApproverId === approverId;
-        const autoDelegateHours =
-          r.employee.department?.approvalLine?.autoDelegateHours ?? 24;
-        const delegated = isDelegationElapsed(r.requestedAt, autoDelegateHours);
-        const hoursLeft = hoursUntilDelegation(r.requestedAt, autoDelegateHours);
+    // 기존 attendance 항목 — Phase 7 3단계: kind:'attendance' 필드만 추가.
+    // 그 외 모든 필드/형식 변경 금지.
+    const attendanceItems = requests.map((r) => {
+      const isPrimary = r.primaryApproverId === approverId;
+      const isDeputy = r.deputyApproverId === approverId;
+      const autoDelegateHours =
+        r.employee.department?.approvalLine?.autoDelegateHours ?? 24;
+      const delegated = isDelegationElapsed(r.requestedAt, autoDelegateHours);
+      const hoursLeft = hoursUntilDelegation(r.requestedAt, autoDelegateHours);
 
-        let canApprove = false;
-        let myRole: "primary" | "deputy" | null = null;
-        if (isPrimary) {
-          canApprove = true;
-          myRole = "primary";
-        } else if (isDeputy) {
-          canApprove = delegated;
-          myRole = "deputy";
+      let canApprove = false;
+      let myRole: "primary" | "deputy" | null = null;
+      if (isPrimary) {
+        canApprove = true;
+        myRole = "primary";
+      } else if (isDeputy) {
+        canApprove = delegated;
+        myRole = "deputy";
+      }
+
+      // Phase 6-2J: 본인 신청은 일반 직원만 차단 (ADMIN/CEO는 본인 결재 허용)
+      if (r.employeeId === approverId) {
+        const viewerRole = session.user.role;
+        if (viewerRole !== "admin" && viewerRole !== "ceo") {
+          canApprove = false;
         }
+      }
 
-        // Phase 6-2J: 본인 신청은 일반 직원만 차단 (ADMIN/CEO는 본인 결재 허용)
-        if (r.employeeId === approverId) {
-          const viewerRole = session.user.role;
-          if (viewerRole !== "admin" && viewerRole !== "ceo") {
-            canApprove = false;
-          }
-        }
+      return {
+        kind: "attendance" as const,
+        id: r.id,
+        employeeId: r.employeeId,
+        employeeNo: r.employee.employeeNo,
+        employeeName: r.employee.name,
+        departmentName: r.employee.department?.name ?? null,
+        categoryId: r.categoryId,
+        categoryCode: r.category.code,
+        categoryName: r.category.name,
+        categoryType: r.category.type,
+        categoryColor: r.category.displayColor,
+        requestType: r.requestType,
+        startDate: r.startDate.toISOString().split("T")[0],
+        endDate: r.endDate.toISOString().split("T")[0],
+        reason: r.reason,
+        correctedCheckIn: r.correctedCheckIn
+          ? r.correctedCheckIn.toISOString()
+          : null,
+        correctedCheckOut: r.correctedCheckOut
+          ? r.correctedCheckOut.toISOString()
+          : null,
+        status: r.status,
+        primaryApproverId: r.primaryApproverId,
+        primaryApproverName: r.primaryApprover?.name ?? null,
+        deputyApproverId: r.deputyApproverId,
+        deputyApproverName: r.deputyApprover?.name ?? null,
+        approvedById: r.approvedById,
+        approvedAt: r.approvedAt ? r.approvedAt.toISOString() : null,
+        rejectReason: r.rejectReason,
+        requestedAt: r.requestedAt.toISOString(),
+        myRole,
+        autoDelegateHours,
+        delegated,
+        hoursLeft,
+        canApprove,
+        isSelfRequest: r.employeeId === approverId,
+        // Phase 6-2E 캘린더 등록 정보
+        calendarSourceId: r.calendarSourceId ?? null,
+        calendarEventTitle: r.calendarEventTitle ?? null,
+        calendarEventDescription: r.calendarEventDescription ?? null,
+        externalSource: r.externalSource ?? null,
+        externalEventId: r.externalEventId ?? null,
+      };
+    });
 
-        return {
-          id: r.id,
-          employeeId: r.employeeId,
-          employeeNo: r.employee.employeeNo,
-          employeeName: r.employee.name,
-          departmentName: r.employee.department?.name ?? null,
-          categoryId: r.categoryId,
-          categoryCode: r.category.code,
-          categoryName: r.category.name,
-          categoryType: r.category.type,
-          categoryColor: r.category.displayColor,
-          requestType: r.requestType,
-          startDate: r.startDate.toISOString().split("T")[0],
-          endDate: r.endDate.toISOString().split("T")[0],
-          reason: r.reason,
-          correctedCheckIn: r.correctedCheckIn
-            ? r.correctedCheckIn.toISOString()
-            : null,
-          correctedCheckOut: r.correctedCheckOut
-            ? r.correctedCheckOut.toISOString()
-            : null,
-          status: r.status,
-          primaryApproverId: r.primaryApproverId,
-          primaryApproverName: r.primaryApprover?.name ?? null,
-          deputyApproverId: r.deputyApproverId,
-          deputyApproverName: r.deputyApprover?.name ?? null,
-          approvedById: r.approvedById,
-          approvedAt: r.approvedAt ? r.approvedAt.toISOString() : null,
-          rejectReason: r.rejectReason,
-          requestedAt: r.requestedAt.toISOString(),
-          myRole,
-          autoDelegateHours,
-          delegated,
-          hoursLeft,
-          canApprove,
-          isSelfRequest: r.employeeId === approverId,
-          // Phase 6-2E 캘린더 등록 정보
-          calendarSourceId: r.calendarSourceId ?? null,
-          calendarEventTitle: r.calendarEventTitle ?? null,
-          calendarEventDescription: r.calendarEventDescription ?? null,
-          externalSource: r.externalSource ?? null,
-          externalEventId: r.externalEventId ?? null,
+    // ────────────────────────────────────────────────────
+    // Phase 7 3단계: 출장(trip) 결재 항목 합치기 (admin/ceo만)
+    // - 부서 결재선과 무관. role이 admin/ceo면 모든 trip 결재 표시.
+    // - pending: approval_status='pending'인 참석자가 있는 이벤트 1줄
+    // - approved/rejected: 본인이 직접 처리한 것(approvedById === approverId)
+    // - all(else): 본인이 처리한 approved/rejected 합쳐서
+    // 정렬은 attendance와 함께 requestedAt(ISO) 기준 desc.
+    // ────────────────────────────────────────────────────
+    const adminLike = isAdminSession(session);
+    type TripItem = ReturnType<typeof buildTripItem>;
+    let tripItems: TripItem[] = [];
+    if (adminLike) {
+      // 어떤 approval_status를 가져올지 결정 + 본인 처리분 필터 여부
+      let participantWhere: {
+        approvalStatus: string | { in: string[] };
+        approvedById?: number;
+      };
+      if (status === "pending") {
+        participantWhere = { approvalStatus: "pending" };
+      } else if (status === "approved") {
+        participantWhere = {
+          approvalStatus: "approved",
+          approvedById: approverId,
         };
-      })
-    );
+      } else if (status === "rejected") {
+        participantWhere = {
+          approvalStatus: "rejected",
+          approvedById: approverId,
+        };
+      } else {
+        // all → 본인이 처리한 전체 이력
+        participantWhere = {
+          approvalStatus: { in: ["approved", "rejected"] },
+          approvedById: approverId,
+        };
+      }
+
+      const tripParticipants = await prisma.tripParticipant.findMany({
+        where: {
+          ...participantWhere,
+          tripEvent: { status: "active" },
+        },
+        include: {
+          employee: {
+            select: {
+              id: true,
+              name: true,
+              employeeNo: true,
+              department: { select: { id: true, name: true } },
+            },
+          },
+          approvedBy: { select: { id: true, name: true } },
+          dates: {
+            orderBy: [{ attendDate: "asc" }],
+            select: {
+              id: true,
+              attendDate: true,
+              startTime: true,
+              endTime: true,
+            },
+          },
+          tripEvent: {
+            select: {
+              id: true,
+              name: true,
+              location: true,
+              startDate: true,
+              endDate: true,
+              status: true,
+              createdAt: true,
+              createdById: true,
+              createdBy: { select: { id: true, name: true } },
+            },
+          },
+        },
+        orderBy: [{ createdAt: "asc" }],
+      });
+
+      // 이벤트별 그룹핑
+      const byEvent = new Map<number, typeof tripParticipants>();
+      for (const p of tripParticipants) {
+        const arr = byEvent.get(p.tripEventId) ?? [];
+        arr.push(p);
+        byEvent.set(p.tripEventId, arr);
+      }
+      tripItems = [...byEvent.entries()].map(([, ps]) =>
+        buildTripItem(ps, approverId)
+      );
+    }
+
+    // 두 종류를 합쳐 requestedAt 기준 최근순 정렬
+    const merged: Array<
+      (typeof attendanceItems)[number] | TripItem
+    > = [...attendanceItems, ...tripItems];
+    merged.sort((a, b) => {
+      const ta = new Date(a.requestedAt).getTime();
+      const tb = new Date(b.requestedAt).getTime();
+      return tb - ta;
+    });
+
+    return NextResponse.json(merged);
   } catch (error) {
     console.error("GET /api/approvals error:", error);
     return NextResponse.json(
@@ -263,18 +490,27 @@ export async function GET(request: NextRequest) {
 }
 
 // PUT /api/approvals?id=N — 승인/반려
-// body: { approverId, action: 'approve' | 'reject', rejectReason? }
-// 비관리자는 본인 명의 결재만 수행 가능. 관리자는 다른 결재자 명의 가능.
+// body(공통): { kind?: 'attendance'|'trip', action: 'approve'|'reject', rejectReason? }
+// kind='attendance'(기본): 기존 동작 그대로. body.approverId 등 기존 필드 사용.
+// kind='trip': 출장 결재. body: { tripEventId, participantIds?, action, rejectReason? }.
+//              권한 admin/ceo, 부서 결재선 무관.
 export async function PUT(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
+
+    const body = await request.json();
+    const kind = body.kind === "trip" ? "trip" : "attendance";
+
+    if (kind === "trip") {
+      return await handleTripApproval(request, body);
+    }
+
     if (!id) {
       return NextResponse.json({ error: "id 파라미터 필요" }, { status: 400 });
     }
     const idNum = Number(id);
 
-    const body = await request.json();
     const {
       approverId: bodyApproverId,
       action,
@@ -693,4 +929,137 @@ export async function PUT(request: NextRequest) {
     console.error("PUT /api/approvals error:", error);
     return NextResponse.json({ error: "결재 처리 실패" }, { status: 500 });
   }
+}
+
+// ─────────────────────────────────────────────────────────
+// Phase 7 3단계: 출장 결재 처리 (kind='trip').
+// body: { tripEventId, action: 'approve'|'reject', rejectReason?, participantIds?: number[] }
+// - 권한: 세션 role이 admin/ceo만. 부서 결재선 무관.
+// - participantIds 미지정 시 해당 이벤트의 approval_status='pending' 전체 일괄 처리.
+// - action='reject'면 rejectReason 필수.
+// - 이미 pending이 아닌 참석자는 건너뜀(부분 처리 가능).
+// - 이번 단계에선 캘린더/근태 반영하지 않음(4단계). approval_status + 승인자 정보까지만.
+async function handleTripApproval(_request: NextRequest, body: any) {
+  const sessionR = await requireSession();
+  if (!sessionR.ok) return sessionR.response;
+  const { session } = sessionR;
+
+  if (!isAdminSession(session)) {
+    return NextResponse.json(
+      { error: "출장 결재는 관리자(admin/ceo)만 처리할 수 있습니다." },
+      { status: 403 }
+    );
+  }
+  const approverEmployeeId = session.user.employeeId;
+  if (!Number.isInteger(approverEmployeeId)) {
+    return NextResponse.json(
+      { error: "본인 직원 정보가 매핑되어 있지 않습니다." },
+      { status: 403 }
+    );
+  }
+
+  const { tripEventId, action, rejectReason, participantIds } = body as {
+    tripEventId?: unknown;
+    action?: unknown;
+    rejectReason?: unknown;
+    participantIds?: unknown;
+  };
+
+  const eventIdNum = Number(tripEventId);
+  if (!Number.isInteger(eventIdNum) || eventIdNum <= 0) {
+    return NextResponse.json(
+      { error: "tripEventId는 양의 정수여야 합니다." },
+      { status: 400 }
+    );
+  }
+  if (action !== "approve" && action !== "reject") {
+    return NextResponse.json(
+      { error: "action은 'approve' 또는 'reject'여야 합니다." },
+      { status: 400 }
+    );
+  }
+  let trimmedReason: string | null = null;
+  if (action === "reject") {
+    if (typeof rejectReason !== "string" || !rejectReason.trim()) {
+      return NextResponse.json(
+        { error: "반려는 사유가 필수입니다." },
+        { status: 400 }
+      );
+    }
+    trimmedReason = rejectReason.trim();
+  }
+
+  // participantIds 검증 (옵션)
+  let participantIdFilter: number[] | null = null;
+  if (participantIds !== undefined && participantIds !== null) {
+    if (!Array.isArray(participantIds)) {
+      return NextResponse.json(
+        { error: "participantIds는 배열이어야 합니다." },
+        { status: 400 }
+      );
+    }
+    const ids = participantIds
+      .map((v) => Number(v))
+      .filter((n) => Number.isInteger(n) && n > 0);
+    if (ids.length === 0) {
+      return NextResponse.json(
+        { error: "participantIds가 비어 있습니다." },
+        { status: 400 }
+      );
+    }
+    participantIdFilter = ids;
+  }
+
+  // 이벤트 존재 확인
+  const ev = await prisma.tripEvent.findUnique({
+    where: { id: eventIdNum },
+    select: { id: true, status: true },
+  });
+  if (!ev) {
+    return NextResponse.json(
+      { error: "이벤트를 찾을 수 없습니다." },
+      { status: 404 }
+    );
+  }
+  if (ev.status !== "active") {
+    return NextResponse.json(
+      { error: "활성(active) 이벤트만 결재할 수 있습니다." },
+      { status: 400 }
+    );
+  }
+
+  // 대상 참석자(반드시 pending인 것만 처리)
+  const targetWhere: {
+    tripEventId: number;
+    approvalStatus: "pending";
+    id?: { in: number[] };
+  } = {
+    tripEventId: eventIdNum,
+    approvalStatus: "pending",
+  };
+  if (participantIdFilter) {
+    targetWhere.id = { in: participantIdFilter };
+  }
+
+  const now = new Date();
+  const result = await prisma.$transaction(async (tx) => {
+    const updateRes = await tx.tripParticipant.updateMany({
+      where: targetWhere,
+      data: {
+        approvalStatus: action === "approve" ? "approved" : "rejected",
+        approvedById: approverEmployeeId as number,
+        approvedAt: now,
+        rejectReason: action === "reject" ? trimmedReason : null,
+      },
+    });
+    return updateRes.count;
+  });
+
+  // 이번 단계엔 캘린더/근태 반영 없음 — 4단계에서 추가.
+  return NextResponse.json({
+    kind: "trip",
+    tripEventId: eventIdNum,
+    action,
+    processedCount: result,
+  });
 }

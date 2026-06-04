@@ -15,6 +15,8 @@ import {
   Trash2,
   Edit3,
   UserPlus,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 
@@ -572,7 +574,13 @@ function TripDetailModal({
       {detail && inviteOpen && (
         <InviteModal
           event={detail}
-          existingEmployeeIds={new Set(detail.participants.map((p) => p.employeeId))}
+          // D-1: 초대 후보에서 (1) 본인(self-join이 따로 있음) (2) 이미 참석자인 직원 제외
+          excludedEmployeeIds={
+            new Set<number>([
+              ...(currentEmployeeId !== null ? [currentEmployeeId] : []),
+              ...detail.participants.map((p) => p.employeeId),
+            ])
+          }
           onClose={() => setInviteOpen(false)}
           onDone={() => {
             setInviteOpen(false);
@@ -785,12 +793,12 @@ async function callPatch(pid: number, body: Record<string, unknown>) {
 // ── 초대 모달 ────────────────────────────────
 function InviteModal({
   event,
-  existingEmployeeIds,
+  excludedEmployeeIds,
   onClose,
   onDone,
 }: {
   event: TripEventDetail;
-  existingEmployeeIds: Set<number>;
+  excludedEmployeeIds: Set<number>;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -822,7 +830,7 @@ function InviteModal({
     if (!employees) return [];
     const q = search.trim().toLowerCase();
     return employees
-      .filter((e) => e.isActive && !existingEmployeeIds.has(e.id))
+      .filter((e) => e.isActive && !excludedEmployeeIds.has(e.id))
       .filter((e) => {
         if (!q) return true;
         return (
@@ -832,7 +840,7 @@ function InviteModal({
         );
       })
       .slice(0, 50);
-  }, [employees, existingEmployeeIds, search]);
+  }, [employees, excludedEmployeeIds, search]);
 
   const submit = async () => {
     if (!selectedEmpId) {
@@ -1033,6 +1041,10 @@ interface ApiDatePayload {
   endTime?: string;
 }
 
+// Phase 7 3단계 D-2: 미니 캘린더(월 그리드) + 선택 날짜 시간 입력 리스트.
+// - 이벤트 기간 내 날짜만 클릭 가능(범위 밖은 비활성/회색).
+// - 클릭 토글, 불연속 선택 가능.
+// - 월 네비는 이벤트 기간을 포함하는 범위로 제한.
 function DatesPicker({
   event,
   value,
@@ -1046,16 +1058,52 @@ function DatesPicker({
   requireAtLeastOne: boolean;
   helpText?: string;
 }) {
-  const allDates = useMemo(
-    () => enumerateDates(event.startDate, event.endDate),
-    [event.startDate, event.endDate]
-  );
+  // 이벤트 기간 내 모든 YYYY-MM-DD (선택 가능 셀 판정용)
+  const inRange = useMemo(() => {
+    const set = new Set(enumerateDates(event.startDate, event.endDate));
+    return set;
+  }, [event.startDate, event.endDate]);
 
+  // 선택된 항목 맵 + 정렬된 표시용 리스트
   const byDate = useMemo(() => {
     const m = new Map<string, DatePayloadRow>();
     for (const v of value) m.set(v.attendDate, v);
     return m;
   }, [value]);
+  const sortedSelected = useMemo(
+    () => [...value].sort((a, b) => a.attendDate.localeCompare(b.attendDate)),
+    [value]
+  );
+
+  // 현재 보고 있는 월(YYYY-MM). 기본은 이벤트 시작월.
+  const [viewYm, setViewYm] = useState(() => event.startDate.slice(0, 7));
+
+  // 이벤트 시작/종료 월 (월 네비 범위 클램프용)
+  const eventStartYm = event.startDate.slice(0, 7);
+  const eventEndYm = event.endDate.slice(0, 7);
+  const canPrev = viewYm > eventStartYm;
+  const canNext = viewYm < eventEndYm;
+
+  function shiftYm(ym: string, delta: number): string {
+    const [y, m] = ym.split("-").map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  }
+
+  // 월 그리드 셀 배열 (leading blanks + days, 6주 패딩)
+  const cells = useMemo(() => {
+    const [yy, mm] = viewYm.split("-").map(Number);
+    const firstDow = new Date(yy, mm - 1, 1).getDay(); // 0=일
+    const lastDay = new Date(yy, mm, 0).getDate();
+    const arr: ({ ymd: string; day: number; dow: number } | null)[] = [];
+    for (let i = 0; i < firstDow; i++) arr.push(null);
+    for (let d = 1; d <= lastDay; d++) {
+      const ymd = `${yy}-${String(mm).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+      arr.push({ ymd, day: d, dow: new Date(yy, mm - 1, d).getDay() });
+    }
+    while (arr.length % 7 !== 0) arr.push(null);
+    return arr;
+  }, [viewYm]);
 
   const toggle = (ymd: string) => {
     if (byDate.has(ymd)) {
@@ -1077,9 +1125,12 @@ function DatesPicker({
     onChange(value.map((v) => (v.attendDate === ymd ? { ...v, [field]: next } : v)));
   };
 
+  const [headerYy, headerMm] = viewYm.split("-").map(Number);
+  const DOW_HEADERS = ["일", "월", "화", "수", "목", "금", "토"] as const;
+
   return (
     <div>
-      <div className="flex items-center justify-between mb-1">
+      <div className="flex items-center justify-between mb-1.5">
         <label className="text-xs font-semibold text-gray-600">
           참여 날짜 {requireAtLeastOne && <span className="text-rose-500">*</span>}
         </label>
@@ -1087,30 +1138,109 @@ function DatesPicker({
           이벤트 기간: {formatDateRange(event.startDate, event.endDate)}
         </span>
       </div>
-      <div className="max-h-56 overflow-y-auto border border-gray-100 rounded-xl divide-y divide-gray-50">
-        {allDates.map((ymd) => {
-          const checked = byDate.has(ymd);
-          const row = byDate.get(ymd);
-          return (
-            <div key={ymd} className="px-3 py-2 flex items-center gap-2 flex-wrap">
-              <label className="inline-flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-800 min-w-[120px]">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => toggle(ymd)}
-                  className="rounded"
-                />
-                <span className="font-mono text-xs">
-                  {ymd} ({weekdayLabel(ymd)})
+
+      {/* 미니 캘린더 */}
+      <div className="border border-gray-100 rounded-xl p-3 bg-white">
+        {/* 월 네비 */}
+        <div className="flex items-center justify-between mb-2">
+          <button
+            type="button"
+            onClick={() => canPrev && setViewYm(shiftYm(viewYm, -1))}
+            disabled={!canPrev}
+            className="p-1 rounded hover:bg-gray-100 text-gray-500 disabled:opacity-30 disabled:cursor-not-allowed"
+            aria-label="이전 달"
+          >
+            <ChevronLeft size={14} />
+          </button>
+          <span className="text-sm font-semibold text-gray-900">
+            {headerYy}년 {headerMm}월
+          </span>
+          <button
+            type="button"
+            onClick={() => canNext && setViewYm(shiftYm(viewYm, 1))}
+            disabled={!canNext}
+            className="p-1 rounded hover:bg-gray-100 text-gray-500 disabled:opacity-30 disabled:cursor-not-allowed"
+            aria-label="다음 달"
+          >
+            <ChevronRight size={14} />
+          </button>
+        </div>
+
+        {/* 요일 헤더 */}
+        <div className="grid grid-cols-7 gap-1 mb-1">
+          {DOW_HEADERS.map((h, i) => (
+            <div
+              key={h}
+              className={`text-center text-[10px] font-semibold py-1 ${
+                i === 0
+                  ? "text-rose-400"
+                  : i === 6
+                  ? "text-blue-400"
+                  : "text-gray-400"
+              }`}
+            >
+              {h}
+            </div>
+          ))}
+        </div>
+
+        {/* 날짜 셀 */}
+        <div className="grid grid-cols-7 gap-1">
+          {cells.map((c, idx) => {
+            if (c === null) {
+              return <div key={`blank-${idx}`} className="h-9" />;
+            }
+            const isInRange = inRange.has(c.ymd);
+            const isSelected = byDate.has(c.ymd);
+            const baseColor =
+              c.dow === 0
+                ? "text-rose-500"
+                : c.dow === 6
+                ? "text-blue-500"
+                : "text-gray-700";
+            return (
+              <button
+                key={c.ymd}
+                type="button"
+                onClick={() => isInRange && toggle(c.ymd)}
+                disabled={!isInRange}
+                className={`h-9 rounded-lg text-xs font-semibold transition-colors ${
+                  !isInRange
+                    ? "text-gray-300 cursor-not-allowed bg-gray-50/60"
+                    : isSelected
+                    ? "bg-blue-500 text-white hover:bg-blue-600"
+                    : `bg-white hover:bg-blue-50 border border-gray-100 ${baseColor}`
+                }`}
+                title={c.ymd}
+              >
+                {c.day}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 선택된 날짜 + 시간 입력 리스트 */}
+      {sortedSelected.length > 0 && (
+        <div className="mt-3 space-y-1.5">
+          <div className="text-[11px] font-semibold text-gray-600">
+            선택된 날짜 {sortedSelected.length}개 (시간 비우면 종일)
+          </div>
+          <div className="border border-gray-100 rounded-xl divide-y divide-gray-50 max-h-44 overflow-y-auto">
+            {sortedSelected.map((row) => (
+              <div
+                key={row.attendDate}
+                className="px-3 py-2 flex items-center gap-2 flex-wrap"
+              >
+                <span className="font-mono text-xs text-gray-700 min-w-[110px]">
+                  {row.attendDate} ({weekdayLabel(row.attendDate)})
                 </span>
-              </label>
-              {checked && row && (
                 <div className="flex items-center gap-1 ml-auto">
                   <input
                     type="time"
                     value={row.startTime}
                     onChange={(e) =>
-                      updateTime(ymd, "startTime", e.target.value)
+                      updateTime(row.attendDate, "startTime", e.target.value)
                     }
                     className="px-2 py-1 text-xs border border-gray-200 rounded-lg font-mono w-[88px]"
                   />
@@ -1119,21 +1249,27 @@ function DatesPicker({
                     type="time"
                     value={row.endTime}
                     onChange={(e) =>
-                      updateTime(ymd, "endTime", e.target.value)
+                      updateTime(row.attendDate, "endTime", e.target.value)
                     }
                     className="px-2 py-1 text-xs border border-gray-200 rounded-lg font-mono w-[88px]"
                   />
-                  <span className="text-[10px] text-gray-400 ml-1">
-                    {!row.startTime && !row.endTime ? "종일" : ""}
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => toggle(row.attendDate)}
+                    className="p-1 rounded hover:bg-rose-50 text-rose-400"
+                    title="제거"
+                  >
+                    <X size={12} />
+                  </button>
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-      <p className="text-[11px] text-gray-400 mt-1.5 leading-relaxed">
-        {helpText ?? "시작/종료 시간을 비우면 종일로 처리됩니다."}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <p className="text-[11px] text-gray-400 mt-2 leading-relaxed">
+        {helpText ?? "캘린더에서 날짜를 클릭해 선택하세요. 시작/종료 시간은 선택사항(비우면 종일)."}
       </p>
     </div>
   );
