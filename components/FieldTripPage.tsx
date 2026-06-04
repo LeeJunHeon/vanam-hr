@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Plane,
   Plus,
@@ -11,46 +11,128 @@ import {
   User,
   Users as UsersIcon,
   X,
+  Check,
+  Trash2,
+  Edit3,
+  UserPlus,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 
-// Phase 7 1단계: 출장 관리 페이지 — 이벤트 생성 + 목록만.
-// 참석자/초대/결재/캘린더 연동은 다음 단계.
+// Phase 7 2단계: 출장 관리 페이지 — 이벤트 + 참석자(초대/self-join/수락/거절/날짜수정/제거).
+// 결재 처리(approve/reject)와 캘린더/근태 반영은 3·4단계.
 
-interface TripEvent {
+// ── 타입 ─────────────────────────────────────
+interface TripEventListRow {
   id: number;
   name: string;
   location: string | null;
-  startDate: string; // YYYY-MM-DD
+  startDate: string;
   endDate: string;
   status: string;
   createdById: number;
   createdByName: string | null;
   creatorIsAdmin: boolean;
-  createdAt: string; // ISO
+  createdAt: string;
   participantCount: number;
 }
 
+interface ParticipantDate {
+  id: number;
+  attendDate: string; // YYYY-MM-DD
+  startTime: string | null; // HH:MM
+  endTime: string | null;
+  calendarEventId: string | null;
+  attendanceRequestId: number | null;
+}
+
+interface Participant {
+  id: number;
+  employeeId: number;
+  employeeName: string | null;
+  employeeNo: string | null;
+  departmentId: number | null;
+  departmentName: string | null;
+  inviteStatus: string; // invited/accepted/declined
+  approvalStatus: string; // not_required/pending/approved/rejected
+  approvedById: number | null;
+  approvedByName: string | null;
+  approvedAt: string | null;
+  rejectReason: string | null;
+  dates: ParticipantDate[];
+}
+
+interface TripEventDetail {
+  id: number;
+  name: string;
+  location: string | null;
+  startDate: string;
+  endDate: string;
+  status: string;
+  createdById: number;
+  createdByName: string | null;
+  creatorIsAdmin: boolean;
+  createdAt: string;
+  participants: Participant[];
+}
+
+interface EmployeeOption {
+  id: number;
+  employeeNo: string | null;
+  name: string;
+  departmentName: string | null;
+  isActive: boolean;
+}
+
+// ── 유틸 ─────────────────────────────────────
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
-
 function todayYmd(): string {
   const d = new Date();
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
-
 function formatDateRange(start: string, end: string): string {
-  if (start === end) return start;
-  return `${start} ~ ${end}`;
+  return start === end ? start : `${start} ~ ${end}`;
+}
+// "YYYY-MM-DD" 두 날짜 사이 모든 날짜 배열 (UTC 기준)
+function enumerateDates(startYmd: string, endYmd: string): string[] {
+  const out: string[] = [];
+  const s = new Date(startYmd + "T00:00:00Z");
+  const e = new Date(endYmd + "T00:00:00Z");
+  if (isNaN(s.getTime()) || isNaN(e.getTime())) return out;
+  const cur = new Date(s);
+  while (cur.getTime() <= e.getTime()) {
+    out.push(cur.toISOString().split("T")[0]);
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return out;
+}
+function weekdayLabel(ymd: string): string {
+  const d = new Date(ymd + "T00:00:00Z");
+  return ["일", "월", "화", "수", "목", "금", "토"][d.getUTCDay()];
 }
 
+// 상태 → 한글 + 색상 클래스
+const INVITE_LABEL: Record<string, { label: string; cls: string }> = {
+  invited: { label: "초대됨", cls: "bg-blue-50 text-blue-700" },
+  accepted: { label: "수락", cls: "bg-emerald-50 text-emerald-700" },
+  declined: { label: "거절", cls: "bg-gray-100 text-gray-500" },
+};
+const APPROVAL_LABEL: Record<string, { label: string; cls: string }> = {
+  not_required: { label: "결재불요", cls: "bg-gray-100 text-gray-600" },
+  pending: { label: "결재대기", cls: "bg-amber-50 text-amber-700" },
+  approved: { label: "승인", cls: "bg-emerald-100 text-emerald-700" },
+  rejected: { label: "반려", cls: "bg-rose-50 text-rose-700" },
+};
+
+// ── 페이지 본체 ──────────────────────────────
 export default function FieldTripPage() {
   const { current, loading: empLoading } = useCurrentEmployee();
-  const [events, setEvents] = useState<TripEvent[] | null>(null);
+  const [events, setEvents] = useState<TripEventListRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [openEventId, setOpenEventId] = useState<number | null>(null);
 
   const fetchEvents = useCallback(async () => {
     setLoading(true);
@@ -119,12 +201,17 @@ export default function FieldTripPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
           {(events ?? []).map((ev) => (
-            <TripEventCard key={ev.id} event={ev} />
+            <button
+              key={ev.id}
+              onClick={() => setOpenEventId(ev.id)}
+              className="text-left"
+            >
+              <TripEventCard event={ev} />
+            </button>
           ))}
         </div>
       )}
 
-      {/* 생성 모달 */}
       {createOpen && (
         <CreateTripModal
           onClose={() => setCreateOpen(false)}
@@ -134,14 +221,23 @@ export default function FieldTripPage() {
           }}
         />
       )}
+
+      {openEventId !== null && (
+        <TripDetailModal
+          eventId={openEventId}
+          currentEmployeeId={current?.id ?? null}
+          onClose={() => setOpenEventId(null)}
+          onMutated={fetchEvents}
+        />
+      )}
     </div>
   );
 }
 
-// ── 카드 ──────────────────────────────────────
-function TripEventCard({ event }: { event: TripEvent }) {
+// ── 카드 ─────────────────────────────────────
+function TripEventCard({ event }: { event: TripEventListRow }) {
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5 hover:shadow-md transition-shadow">
+    <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5 hover:shadow-md hover:border-blue-200 transition-all">
       <div className="flex items-start justify-between gap-2">
         <h3 className="text-base font-bold text-gray-900 truncate flex-1">
           {event.name}
@@ -150,7 +246,6 @@ function TripEventCard({ event }: { event: TripEvent }) {
           {event.status === "active" ? "진행중" : event.status}
         </span>
       </div>
-
       <div className="mt-3 space-y-1.5 text-sm">
         <div className="flex items-center gap-2 text-gray-600">
           <CalendarIcon size={14} className="text-gray-400 shrink-0" />
@@ -179,7 +274,7 @@ function TripEventCard({ event }: { event: TripEvent }) {
   );
 }
 
-// ── 생성 모달 ──────────────────────────────────
+// ── 생성 모달 ────────────────────────────────
 function CreateTripModal({
   onClose,
   onCreated,
@@ -231,129 +326,932 @@ function CreateTripModal({
   };
 
   return (
+    <ModalShell title="새 출장 만들기" icon={<Plane size={18} className="text-blue-600" />} onClose={onClose}>
+      <div className="space-y-3">
+        <Field label="출장명" required>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={200}
+            placeholder="예: 2026 추계 학술대회"
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400"
+          />
+        </Field>
+        <Field label="장소">
+          <input
+            type="text"
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+            maxLength={200}
+            placeholder="예: 부산 BEXCO"
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400"
+          />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="시작일" required>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 font-mono"
+            />
+          </Field>
+          <Field label="종료일" required>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              min={startDate}
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 font-mono"
+            />
+          </Field>
+        </div>
+        {startDate > endDate && (
+          <InlineError text="종료일은 시작일 이후여야 합니다." />
+        )}
+        <p className="text-[11px] text-gray-400 leading-relaxed">
+          * 이벤트 생성 후 상세에서 참석자를 초대하거나 본인이 직접 참여할 수 있습니다.
+        </p>
+      </div>
+      {err && <InlineError text={err} />}
+      <ModalActions
+        onClose={onClose}
+        submitting={submitting}
+        canSubmit={canSubmit}
+        onSubmit={submit}
+        submitLabel="생성"
+        submitIcon={<Plus size={14} />}
+      />
+    </ModalShell>
+  );
+}
+
+// ── 상세 모달 ────────────────────────────────
+function TripDetailModal({
+  eventId,
+  currentEmployeeId,
+  onClose,
+  onMutated,
+}: {
+  eventId: number;
+  currentEmployeeId: number | null;
+  onClose: () => void;
+  onMutated: () => void;
+}) {
+  const { me } = useCurrentEmployee();
+  const [detail, setDetail] = useState<TripEventDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [joinOpen, setJoinOpen] = useState(false);
+  // 본인 참석자 행에서 "수락" 또는 "날짜 변경" 모달 (어느 모드인지 표시)
+  const [selfActionMode, setSelfActionMode] = useState<
+    null | "accept" | "update"
+  >(null);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/trip-events/${eventId}`);
+      if (res.ok) {
+        setDetail(await res.json());
+        setErr(null);
+      } else {
+        const j = await res.json().catch(() => ({}));
+        setErr(j.error || `조회 실패 (${res.status})`);
+      }
+    } catch (e) {
+      console.error("trip-events detail fetch error:", e);
+      setErr("이벤트 상세 조회 실패");
+    } finally {
+      setLoading(false);
+    }
+  }, [eventId]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  // 현재 사용자의 participant row (있으면)
+  const myParticipant = useMemo(
+    () =>
+      detail?.participants.find((p) => p.employeeId === currentEmployeeId) ??
+      null,
+    [detail, currentEmployeeId]
+  );
+
+  const isAdmin = me?.isAdmin || me?.isCeo;
+  const isCreator = detail?.createdById === currentEmployeeId;
+
+  const refreshAll = () => {
+    reload();
+    onMutated();
+  };
+
+  return (
+    <ModalShell
+      title={detail?.name ?? "출장 상세"}
+      icon={<Plane size={18} className="text-blue-600" />}
+      onClose={onClose}
+      maxWidth="max-w-2xl"
+    >
+      {loading && !detail ? (
+        <div className="flex items-center justify-center h-32">
+          <Loader2 size={20} className="animate-spin text-blue-500" />
+          <span className="ml-2 text-sm text-gray-500">로딩 중...</span>
+        </div>
+      ) : err ? (
+        <InlineError text={err} />
+      ) : !detail ? null : (
+        <div className="space-y-4">
+          {/* 이벤트 정보 */}
+          <div className="bg-gray-50 rounded-xl p-3 sm:p-4 space-y-1.5 text-sm">
+            <div className="flex items-center gap-2 text-gray-700">
+              <CalendarIcon size={14} className="text-gray-400 shrink-0" />
+              <span className="font-mono text-xs">
+                {formatDateRange(detail.startDate, detail.endDate)}
+              </span>
+            </div>
+            {detail.location && (
+              <div className="flex items-center gap-2 text-gray-700">
+                <MapPin size={14} className="text-gray-400 shrink-0" />
+                <span>{detail.location}</span>
+              </div>
+            )}
+            <div className="flex items-center gap-2 text-gray-500">
+              <User size={14} className="text-gray-400 shrink-0" />
+              <span className="text-xs">
+                생성자: {detail.createdByName ?? `#${detail.createdById}`}
+              </span>
+            </div>
+          </div>
+
+          {/* 액션 버튼 */}
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setInviteOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-blue-700 bg-blue-50 rounded-xl hover:bg-blue-100"
+            >
+              <UserPlus size={14} />
+              참석자 초대
+            </button>
+            {!myParticipant && currentEmployeeId !== null && (
+              <button
+                onClick={() => setJoinOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-emerald-700 bg-emerald-50 rounded-xl hover:bg-emerald-100"
+              >
+                <Check size={14} />
+                나도 참여
+              </button>
+            )}
+          </div>
+
+          {/* 참석자 목록 */}
+          <div>
+            <h4 className="text-sm font-bold text-gray-700 mb-2 flex items-center gap-1.5">
+              <UsersIcon size={14} />
+              참석자 {detail.participants.length}명
+            </h4>
+            {detail.participants.length === 0 ? (
+              <div className="text-xs text-gray-400 px-2 py-4 text-center bg-gray-50 rounded-xl">
+                아직 참석자가 없습니다.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {detail.participants.map((p) => {
+                  const isMe = p.employeeId === currentEmployeeId;
+                  const canRemove = isMe || isCreator || isAdmin;
+                  return (
+                    <ParticipantRow
+                      key={p.id}
+                      p={p}
+                      isMe={isMe}
+                      canRemove={!!canRemove}
+                      onAccept={() => setSelfActionMode("accept")}
+                      onDecline={async () => {
+                        if (!confirm("초대를 거절하시겠습니까?")) return;
+                        await callPatch(p.id, { action: "decline" });
+                        refreshAll();
+                      }}
+                      onUpdateDates={() => setSelfActionMode("update")}
+                      onRemove={async () => {
+                        if (
+                          !confirm(
+                            isMe
+                              ? "본인 참석을 취소하시겠습니까?"
+                              : "이 참석자를 제거하시겠습니까?"
+                          )
+                        )
+                          return;
+                        const res = await fetch(
+                          `/api/trip-participants/${p.id}`,
+                          { method: "DELETE" }
+                        );
+                        if (!res.ok) {
+                          const j = await res.json().catch(() => ({}));
+                          alert(j.error || `제거 실패 (${res.status})`);
+                          return;
+                        }
+                        refreshAll();
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <p className="text-[11px] text-gray-400 leading-relaxed border-t border-gray-100 pt-3">
+            * 결재 처리(승인/반려)와 캘린더 등록은 다음 단계에서 추가될 예정입니다.
+          </p>
+        </div>
+      )}
+
+      {/* 하위 모달들 */}
+      {detail && inviteOpen && (
+        <InviteModal
+          event={detail}
+          existingEmployeeIds={new Set(detail.participants.map((p) => p.employeeId))}
+          onClose={() => setInviteOpen(false)}
+          onDone={() => {
+            setInviteOpen(false);
+            refreshAll();
+          }}
+        />
+      )}
+      {detail && joinOpen && (
+        <DatesModal
+          title="나도 참여"
+          submitLabel="참여"
+          event={detail}
+          initialDates={[]}
+          requireAtLeastOne
+          onClose={() => setJoinOpen(false)}
+          onSubmit={async (datesPayload) => {
+            const res = await fetch(`/api/trip-events/${eventId}/join`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ dates: datesPayload }),
+            });
+            if (!res.ok) {
+              const j = await res.json().catch(() => ({}));
+              return j.error || `참여 실패 (${res.status})`;
+            }
+            setJoinOpen(false);
+            refreshAll();
+            return null;
+          }}
+        />
+      )}
+      {detail && myParticipant && selfActionMode && (
+        <DatesModal
+          title={selfActionMode === "accept" ? "초대 수락" : "날짜·시간 변경"}
+          submitLabel={selfActionMode === "accept" ? "수락" : "저장"}
+          event={detail}
+          initialDates={myParticipant.dates}
+          requireAtLeastOne
+          warningText={
+            selfActionMode === "update" &&
+            myParticipant.approvalStatus === "approved"
+              ? "이미 승인된 참석입니다. 날짜를 변경하면 결재가 다시 필요해집니다."
+              : null
+          }
+          onClose={() => setSelfActionMode(null)}
+          onSubmit={async (datesPayload) => {
+            const res = await fetch(
+              `/api/trip-participants/${myParticipant.id}`,
+              {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  action:
+                    selfActionMode === "accept" ? "accept" : "update_dates",
+                  dates: datesPayload,
+                }),
+              }
+            );
+            if (!res.ok) {
+              const j = await res.json().catch(() => ({}));
+              return j.error || `저장 실패 (${res.status})`;
+            }
+            setSelfActionMode(null);
+            refreshAll();
+            return null;
+          }}
+        />
+      )}
+    </ModalShell>
+  );
+}
+
+// ── 참석자 행 ────────────────────────────────
+function ParticipantRow({
+  p,
+  isMe,
+  canRemove,
+  onAccept,
+  onDecline,
+  onUpdateDates,
+  onRemove,
+}: {
+  p: Participant;
+  isMe: boolean;
+  canRemove: boolean;
+  onAccept: () => void;
+  onDecline: () => void;
+  onUpdateDates: () => void;
+  onRemove: () => void;
+}) {
+  const inv = INVITE_LABEL[p.inviteStatus] ?? {
+    label: p.inviteStatus,
+    cls: "bg-gray-100 text-gray-500",
+  };
+  const apr = APPROVAL_LABEL[p.approvalStatus] ?? {
+    label: p.approvalStatus,
+    cls: "bg-gray-100 text-gray-500",
+  };
+
+  return (
+    <div className="border border-gray-100 rounded-xl p-3 bg-white">
+      <div className="flex items-start justify-between gap-2 flex-wrap">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-semibold text-gray-900">
+              {p.employeeName ?? `#${p.employeeId}`}
+            </span>
+            {isMe && (
+              <span className="text-[10px] font-semibold bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
+                나
+              </span>
+            )}
+            <span
+              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${inv.cls}`}
+            >
+              {inv.label}
+            </span>
+            <span
+              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${apr.cls}`}
+            >
+              {apr.label}
+            </span>
+          </div>
+          <div className="text-xs text-gray-500 mt-0.5">
+            {p.departmentName ?? "-"}
+            {p.employeeNo ? ` · ${p.employeeNo}` : ""}
+          </div>
+          {p.dates.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {p.dates.map((d) => (
+                <span
+                  key={d.id}
+                  className="text-[11px] font-mono bg-gray-50 text-gray-700 px-1.5 py-0.5 rounded"
+                >
+                  {d.attendDate}
+                  {d.startTime || d.endTime
+                    ? ` ${d.startTime ?? "-"}~${d.endTime ?? "-"}`
+                    : " 종일"}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* 액션 버튼 영역 */}
+        <div className="flex items-center gap-1 shrink-0">
+          {isMe && p.inviteStatus === "invited" && (
+            <>
+              <button
+                onClick={onAccept}
+                className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-600"
+                title="수락"
+              >
+                <Check size={14} />
+              </button>
+              <button
+                onClick={onDecline}
+                className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"
+                title="거절"
+              >
+                <X size={14} />
+              </button>
+            </>
+          )}
+          {isMe && p.inviteStatus === "declined" && (
+            <button
+              onClick={onAccept}
+              className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-600"
+              title="다시 수락"
+            >
+              <Check size={14} />
+            </button>
+          )}
+          {isMe && p.inviteStatus === "accepted" && (
+            <button
+              onClick={onUpdateDates}
+              className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600"
+              title="날짜·시간 변경"
+            >
+              <Edit3 size={14} />
+            </button>
+          )}
+          {canRemove && (
+            <button
+              onClick={onRemove}
+              className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500"
+              title="제거"
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+async function callPatch(pid: number, body: Record<string, unknown>) {
+  const res = await fetch(`/api/trip-participants/${pid}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    alert(j.error || `요청 실패 (${res.status})`);
+  }
+}
+
+// ── 초대 모달 ────────────────────────────────
+function InviteModal({
+  event,
+  existingEmployeeIds,
+  onClose,
+  onDone,
+}: {
+  event: TripEventDetail;
+  existingEmployeeIds: Set<number>;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [employees, setEmployees] = useState<EmployeeOption[] | null>(null);
+  const [selectedEmpId, setSelectedEmpId] = useState<number | null>(null);
+  const [search, setSearch] = useState("");
+  const [datesPayload, setDatesPayload] = useState<DatePayloadRow[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/employees");
+        if (res.ok && !cancelled) {
+          setEmployees(await res.json());
+        }
+      } catch (e) {
+        console.error("employees fetch error:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const filtered = useMemo(() => {
+    if (!employees) return [];
+    const q = search.trim().toLowerCase();
+    return employees
+      .filter((e) => e.isActive && !existingEmployeeIds.has(e.id))
+      .filter((e) => {
+        if (!q) return true;
+        return (
+          e.name.toLowerCase().includes(q) ||
+          (e.departmentName ?? "").toLowerCase().includes(q) ||
+          (e.employeeNo ?? "").toLowerCase().includes(q)
+        );
+      })
+      .slice(0, 50);
+  }, [employees, existingEmployeeIds, search]);
+
+  const submit = async () => {
+    if (!selectedEmpId) {
+      setErr("직원을 선택하세요.");
+      return;
+    }
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const res = await fetch(
+        `/api/trip-events/${event.id}/participants`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            employeeId: selectedEmpId,
+            dates: datesPayload.length > 0 ? datesPayload : undefined,
+          }),
+        }
+      );
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setErr(j.error || `초대 실패 (${res.status})`);
+        return;
+      }
+      onDone();
+    } catch (e) {
+      console.error("invite POST error:", e);
+      setErr("초대 중 오류가 발생했습니다.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <ModalShell
+      title="참석자 초대"
+      icon={<UserPlus size={18} className="text-blue-600" />}
+      onClose={onClose}
+      nested
+    >
+      <div className="space-y-4">
+        <Field label="직원" required>
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="이름/부서/사번 검색"
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400"
+          />
+          <div className="mt-2 max-h-40 overflow-y-auto border border-gray-100 rounded-xl divide-y divide-gray-50">
+            {employees === null ? (
+              <div className="px-3 py-3 text-xs text-gray-400 text-center">
+                로딩 중...
+              </div>
+            ) : filtered.length === 0 ? (
+              <div className="px-3 py-3 text-xs text-gray-400 text-center">
+                결과가 없습니다.
+              </div>
+            ) : (
+              filtered.map((e) => (
+                <button
+                  key={e.id}
+                  type="button"
+                  onClick={() => setSelectedEmpId(e.id)}
+                  className={`w-full text-left px-3 py-2 text-sm transition-colors ${
+                    selectedEmpId === e.id
+                      ? "bg-blue-50"
+                      : "hover:bg-gray-50"
+                  }`}
+                >
+                  <div className="font-medium text-gray-900">
+                    {e.name}
+                    {e.employeeNo && (
+                      <span className="ml-2 text-[11px] text-gray-400 font-mono">
+                        {e.employeeNo}
+                      </span>
+                    )}
+                  </div>
+                  {e.departmentName && (
+                    <div className="text-xs text-gray-500">
+                      {e.departmentName}
+                    </div>
+                  )}
+                </button>
+              ))
+            )}
+          </div>
+        </Field>
+
+        <DatesPicker
+          event={event}
+          value={datesPayload}
+          onChange={setDatesPayload}
+          requireAtLeastOne={false}
+          helpText="초대 시 날짜는 비워두고 수락 시 본인이 입력할 수도 있습니다."
+        />
+      </div>
+      {err && <InlineError text={err} />}
+      <ModalActions
+        onClose={onClose}
+        submitting={submitting}
+        canSubmit={!!selectedEmpId && !submitting}
+        onSubmit={submit}
+        submitLabel="초대"
+        submitIcon={<UserPlus size={14} />}
+      />
+    </ModalShell>
+  );
+}
+
+// ── 날짜·시간 입력만 있는 모달 (join/accept/update_dates 공용) ──
+function DatesModal({
+  title,
+  submitLabel,
+  event,
+  initialDates,
+  requireAtLeastOne,
+  warningText,
+  onClose,
+  onSubmit,
+}: {
+  title: string;
+  submitLabel: string;
+  event: TripEventDetail;
+  initialDates: ParticipantDate[];
+  requireAtLeastOne: boolean;
+  warningText?: string | null;
+  onClose: () => void;
+  onSubmit: (datesPayload: ApiDatePayload[]) => Promise<string | null>;
+}) {
+  const [datesPayload, setDatesPayload] = useState<DatePayloadRow[]>(() =>
+    initialDates.map((d) => ({
+      attendDate: d.attendDate,
+      startTime: d.startTime ?? "",
+      endTime: d.endTime ?? "",
+    }))
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (requireAtLeastOne && datesPayload.length === 0) {
+      setErr("참여 날짜를 1개 이상 선택하세요.");
+      return;
+    }
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const payload = datesPayload.map((d) => ({
+        attendDate: d.attendDate,
+        startTime: d.startTime || undefined,
+        endTime: d.endTime || undefined,
+      }));
+      const e = await onSubmit(payload);
+      if (e) setErr(e);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <ModalShell title={title} onClose={onClose} nested>
+      <DatesPicker
+        event={event}
+        value={datesPayload}
+        onChange={setDatesPayload}
+        requireAtLeastOne={requireAtLeastOne}
+      />
+      {warningText && (
+        <div className="bg-amber-50 text-amber-700 text-xs px-3 py-2 rounded-xl flex items-start gap-2">
+          <AlertCircle size={12} className="mt-0.5 shrink-0" />
+          {warningText}
+        </div>
+      )}
+      {err && <InlineError text={err} />}
+      <ModalActions
+        onClose={onClose}
+        submitting={submitting}
+        canSubmit={!submitting && (!requireAtLeastOne || datesPayload.length > 0)}
+        onSubmit={submit}
+        submitLabel={submitLabel}
+      />
+    </ModalShell>
+  );
+}
+
+// ── 날짜·시간 선택 위젯 ──────────────────────
+// UI 내부 상태(빈 문자열로 비어있음 표현)와 API payload(undefined로 비어있음 표현)를 분리.
+interface DatePayloadRow {
+  attendDate: string;
+  startTime: string; // "" if blank
+  endTime: string;
+}
+interface ApiDatePayload {
+  attendDate: string;
+  startTime?: string;
+  endTime?: string;
+}
+
+function DatesPicker({
+  event,
+  value,
+  onChange,
+  requireAtLeastOne,
+  helpText,
+}: {
+  event: TripEventDetail;
+  value: DatePayloadRow[];
+  onChange: (v: DatePayloadRow[]) => void;
+  requireAtLeastOne: boolean;
+  helpText?: string;
+}) {
+  const allDates = useMemo(
+    () => enumerateDates(event.startDate, event.endDate),
+    [event.startDate, event.endDate]
+  );
+
+  const byDate = useMemo(() => {
+    const m = new Map<string, DatePayloadRow>();
+    for (const v of value) m.set(v.attendDate, v);
+    return m;
+  }, [value]);
+
+  const toggle = (ymd: string) => {
+    if (byDate.has(ymd)) {
+      onChange(value.filter((v) => v.attendDate !== ymd));
+    } else {
+      onChange(
+        [...value, { attendDate: ymd, startTime: "", endTime: "" }].sort(
+          (a, b) => a.attendDate.localeCompare(b.attendDate)
+        )
+      );
+    }
+  };
+
+  const updateTime = (
+    ymd: string,
+    field: "startTime" | "endTime",
+    next: string
+  ) => {
+    onChange(value.map((v) => (v.attendDate === ymd ? { ...v, [field]: next } : v)));
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-xs font-semibold text-gray-600">
+          참여 날짜 {requireAtLeastOne && <span className="text-rose-500">*</span>}
+        </label>
+        <span className="text-[10px] text-gray-400">
+          이벤트 기간: {formatDateRange(event.startDate, event.endDate)}
+        </span>
+      </div>
+      <div className="max-h-56 overflow-y-auto border border-gray-100 rounded-xl divide-y divide-gray-50">
+        {allDates.map((ymd) => {
+          const checked = byDate.has(ymd);
+          const row = byDate.get(ymd);
+          return (
+            <div key={ymd} className="px-3 py-2 flex items-center gap-2 flex-wrap">
+              <label className="inline-flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-800 min-w-[120px]">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggle(ymd)}
+                  className="rounded"
+                />
+                <span className="font-mono text-xs">
+                  {ymd} ({weekdayLabel(ymd)})
+                </span>
+              </label>
+              {checked && row && (
+                <div className="flex items-center gap-1 ml-auto">
+                  <input
+                    type="time"
+                    value={row.startTime}
+                    onChange={(e) =>
+                      updateTime(ymd, "startTime", e.target.value)
+                    }
+                    className="px-2 py-1 text-xs border border-gray-200 rounded-lg font-mono w-[88px]"
+                  />
+                  <span className="text-xs text-gray-400">~</span>
+                  <input
+                    type="time"
+                    value={row.endTime}
+                    onChange={(e) =>
+                      updateTime(ymd, "endTime", e.target.value)
+                    }
+                    className="px-2 py-1 text-xs border border-gray-200 rounded-lg font-mono w-[88px]"
+                  />
+                  <span className="text-[10px] text-gray-400 ml-1">
+                    {!row.startTime && !row.endTime ? "종일" : ""}
+                  </span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-gray-400 mt-1.5 leading-relaxed">
+        {helpText ?? "시작/종료 시간을 비우면 종일로 처리됩니다."}
+      </p>
+    </div>
+  );
+}
+
+// ── 작은 공용 UI ─────────────────────────────
+function ModalShell({
+  title,
+  icon,
+  onClose,
+  children,
+  maxWidth = "max-w-md",
+  nested = false,
+}: {
+  title: string;
+  icon?: React.ReactNode;
+  onClose: () => void;
+  children: React.ReactNode;
+  maxWidth?: string;
+  nested?: boolean;
+}) {
+  return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      className={`fixed inset-0 ${nested ? "z-[60]" : "z-50"} flex items-center justify-center p-4`}
       style={{ backgroundColor: "rgba(0,0,0,0.4)" }}
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-5 sm:p-6 space-y-4"
+        className={`bg-white rounded-2xl shadow-2xl w-full ${maxWidth} p-5 sm:p-6 space-y-4 max-h-[90vh] overflow-y-auto`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-            <Plane size={18} className="text-blue-600" />새 출장 만들기
+          <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2 truncate">
+            {icon}
+            <span className="truncate">{title}</span>
           </h3>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400"
+            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 shrink-0"
           >
             <X size={18} />
           </button>
         </div>
-
-        <div className="space-y-3">
-          <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">
-              출장명 <span className="text-rose-500">*</span>
-            </label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              maxLength={200}
-              placeholder="예: 2026 추계 학술대회"
-              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400"
-            />
-          </div>
-
-          <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">
-              장소
-            </label>
-            <input
-              type="text"
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
-              maxLength={200}
-              placeholder="예: 부산 BEXCO"
-              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">
-                시작일 <span className="text-rose-500">*</span>
-              </label>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 font-mono"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1 block">
-                종료일 <span className="text-rose-500">*</span>
-              </label>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                min={startDate}
-                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 font-mono"
-              />
-            </div>
-          </div>
-
-          {startDate > endDate && (
-            <div className="text-xs text-rose-600 flex items-center gap-1">
-              <AlertCircle size={12} />
-              종료일은 시작일 이후여야 합니다.
-            </div>
-          )}
-
-          <p className="text-[11px] text-gray-400 leading-relaxed">
-            * 이번 단계에서는 이벤트만 생성됩니다. 참석자 초대/결재 기능은 추후
-            추가될 예정입니다.
-          </p>
-        </div>
-
-        {err && (
-          <div className="bg-rose-50 text-rose-700 text-sm px-3 py-2 rounded-xl flex items-center gap-2">
-            <AlertCircle size={14} />
-            {err}
-          </div>
-        )}
-
-        <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
-          <button
-            onClick={onClose}
-            disabled={submitting}
-            className="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200 disabled:opacity-50"
-          >
-            취소
-          </button>
-          <button
-            onClick={submit}
-            disabled={!canSubmit}
-            className="px-4 py-2 text-sm font-bold text-white bg-blue-600 rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
-          >
-            {submitting ? (
-              <>
-                <Loader2 size={14} className="animate-spin" />
-                생성 중...
-              </>
-            ) : (
-              <>
-                <Plus size={14} />
-                생성
-              </>
-            )}
-          </button>
-        </div>
+        {children}
       </div>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  required,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <label className="text-xs font-semibold text-gray-600 mb-1 block">
+        {label} {required && <span className="text-rose-500">*</span>}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+function InlineError({ text }: { text: string }) {
+  return (
+    <div className="bg-rose-50 text-rose-700 text-sm px-3 py-2 rounded-xl flex items-center gap-2">
+      <AlertCircle size={14} />
+      {text}
+    </div>
+  );
+}
+
+function ModalActions({
+  onClose,
+  submitting,
+  canSubmit,
+  onSubmit,
+  submitLabel,
+  submitIcon,
+}: {
+  onClose: () => void;
+  submitting: boolean;
+  canSubmit: boolean;
+  onSubmit: () => void;
+  submitLabel: string;
+  submitIcon?: React.ReactNode;
+}) {
+  return (
+    <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+      <button
+        onClick={onClose}
+        disabled={submitting}
+        className="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200 disabled:opacity-50"
+      >
+        취소
+      </button>
+      <button
+        onClick={onSubmit}
+        disabled={!canSubmit}
+        className="px-4 py-2 text-sm font-bold text-white bg-blue-600 rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+      >
+        {submitting ? (
+          <>
+            <Loader2 size={14} className="animate-spin" />
+            처리 중...
+          </>
+        ) : (
+          <>
+            {submitIcon}
+            {submitLabel}
+          </>
+        )}
+      </button>
     </div>
   );
 }

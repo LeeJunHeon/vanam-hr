@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireAdmin } from "@/lib/auth-helpers";
+import { requireAdmin, requireSession } from "@/lib/auth-helpers";
 
 // YYYY-MM-DD 문자열을 Date로 변환 (잘못된 형식이면 null)
 function parseDate(s: string | null | undefined): Date | null {
@@ -19,16 +19,24 @@ function fmtDate(d: Date | null | undefined): string | null {
 }
 
 // GET /api/employees?search=...&departmentId=...&positionId=...&includeInactive=true
+// 권한: 로그인한 모든 사용자(직원 디렉토리는 사내 공유 정보).
+// - 비관리자가 호출하면 includeInactive=false를 강제하고 민감 필드는 제외.
+// - 관리자는 기존 동작 그대로(전 필드 + includeInactive 옵션).
+// 생성/수정/삭제(POST/PUT/DELETE)는 별도로 requireAdmin 유지.
 export async function GET(request: NextRequest) {
   try {
-    const _auth = await requireAdmin();
-    if (!_auth.ok) return _auth.response;
+    const sessionR = await requireSession();
+    if (!sessionR.ok) return sessionR.response;
+    const role = sessionR.session.user.role;
+    const isAdmin = role === "admin" || role === "ceo";
 
     const { searchParams } = new URL(request.url);
     const search = searchParams.get("search") || "";
     const departmentIdRaw = searchParams.get("departmentId");
     const positionIdRaw = searchParams.get("positionId");
-    const includeInactive = searchParams.get("includeInactive") === "true";
+    // 비관리자는 항상 활성 직원만 조회 가능
+    const includeInactive =
+      isAdmin && searchParams.get("includeInactive") === "true";
 
     const where: any = {};
     if (!includeInactive) where.isActive = true;
@@ -58,24 +66,31 @@ export async function GET(request: NextRequest) {
     });
 
     return NextResponse.json(
-      employees.map((e) => ({
-        id: e.id,
-        employeeNo: e.employeeNo,
-        userId: e.userId,
-        name: e.name,
-        email: e.email,
-        departmentId: e.departmentId,
-        departmentCode: e.department?.code ?? null,
-        departmentName: e.department?.name ?? null,
-        positionId: e.positionId,
-        positionCode: e.position?.code ?? null,
-        positionName: e.position?.name ?? null,
-        phone: e.phone,
-        hiredAt: fmtDate(e.hiredAt),
-        resignedAt: fmtDate(e.resignedAt),
-        isActive: e.isActive,
-        note: e.note,
-      }))
+      employees.map((e) => {
+        const base = {
+          id: e.id,
+          employeeNo: e.employeeNo,
+          name: e.name,
+          departmentId: e.departmentId,
+          departmentCode: e.department?.code ?? null,
+          departmentName: e.department?.name ?? null,
+          positionId: e.positionId,
+          positionCode: e.position?.code ?? null,
+          positionName: e.position?.name ?? null,
+          isActive: e.isActive,
+        };
+        // 비관리자에게는 민감 필드(email/phone/userId/입퇴사일/note) 노출 금지
+        if (!isAdmin) return base;
+        return {
+          ...base,
+          userId: e.userId,
+          email: e.email,
+          phone: e.phone,
+          hiredAt: fmtDate(e.hiredAt),
+          resignedAt: fmtDate(e.resignedAt),
+          note: e.note,
+        };
+      })
     );
   } catch (error) {
     console.error("GET /api/employees error:", error);
