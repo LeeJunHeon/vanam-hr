@@ -7,6 +7,7 @@ import Sidebar, { PageId, isAdminOnlyPage } from "@/components/Sidebar";
 import DashboardPage from "@/components/DashboardPage";
 import MyAttendancePage from "@/components/MyAttendancePage";
 import RequestPage from "@/components/RequestPage";
+import FieldTripPage from "@/components/FieldTripPage";
 import ApprovalPage from "@/components/ApprovalPage";
 import EmployeesPage from "@/components/EmployeesPage";
 import OrgPage from "@/components/OrgPage";
@@ -24,6 +25,7 @@ const PAGE_TITLES: Record<PageId, string> = {
   dashboard: "대시보드",
   "my-attendance": "내 근태",
   request: "휴가/근태 신청",
+  "field-trip": "출장 관리",
   approval: "결재함",
   "attendance-overview": "전체 근태 조회",
   "schedule-overview": "전체 일정 조회",
@@ -81,6 +83,7 @@ export default function Home() {
       case "dashboard":          return <DashboardPage onNavigate={setPage} />;
       case "my-attendance":      return <MyAttendancePage />;
       case "request":            return <RequestPage />;
+      case "field-trip":         return <FieldTripPage />;
       case "approval":           return <ApprovalPage />;
       case "attendance-overview": return <AttendanceOverviewPage />;
       case "schedule-overview":   return <ScheduleOverviewPage />;

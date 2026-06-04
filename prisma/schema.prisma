@@ -216,6 +216,11 @@ model Employee {
   attendanceRequestsAsDeputy  AttendanceRequest[] @relation("RequestDeputyApprover")
   attendanceRequestsApproved  AttendanceRequest[] @relation("RequestApprovedBy")
 
+  // 그룹 출장(Field Trip) — 생성자/참가자/승인자 (같은 모델 다중 관계라 모두 이름 지정)
+  tripEventsCreated   TripEvent[]       @relation("TripEventCreatedBy")
+  tripParticipations  TripParticipant[] @relation("TripParticipantEmployee")
+  tripApprovals       TripParticipant[] @relation("TripParticipantApprovedBy")
+
   @@index([isActive], map: "idx_employees_active")
   @@index([departmentId], map: "idx_employees_department")
   @@index([positionId], map: "idx_employees_position")
@@ -373,6 +378,9 @@ model AttendanceRequest {
   deputyApprover  Employee?          @relation("RequestDeputyApprover", fields: [deputyApproverId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   approvedBy      Employee?          @relation("RequestApprovedBy", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
+  // 그룹 출장 참가일자 역참조 — TripParticipantDate.attendanceRequestId가 이쪽으로 가리킴
+  tripParticipantDates TripParticipantDate[] @relation("TripParticipantDateRequest")
+
   @@unique([externalSource, externalEventId], map: "uk_request_external")
   @@index([employeeId, startDate], map: "idx_requests_employee")
   @@index([primaryApproverId, status], map: "idx_requests_primary_approver")
@@ -484,5 +492,75 @@ model Holiday {
   updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
   @@map("holidays")
+  @@schema("hr")
+}
+
+// ============================================
+// 그룹 출장 (Field Trip) — Phase 7 1단계: 모델 정의만.
+// 참석자 초대/결재/캘린더 연동은 다음 단계에서 추가.
+// ============================================
+
+// 출장 이벤트 (학회/단체 출장 모임 단위)
+model TripEvent {
+  id               Int      @id @default(autoincrement())
+  name             String   @db.VarChar(200)
+  location         String?  @db.VarChar(200)
+  startDate        DateTime @map("start_date") @db.Date
+  endDate          DateTime @map("end_date") @db.Date
+  createdById      Int      @map("created_by_id")
+  creatorIsAdmin   Boolean  @default(false) @map("creator_is_admin")
+  status           String   @default("active") @db.VarChar(20)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  createdBy    Employee          @relation("TripEventCreatedBy", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  participants TripParticipant[]
+
+  @@index([status, startDate], map: "idx_trip_events_status_date")
+  @@index([createdById], map: "idx_trip_events_creator")
+  @@map("trip_events")
+  @@schema("hr")
+}
+
+// 출장 참가자 (이벤트 × 직원)
+model TripParticipant {
+  id              Int       @id @default(autoincrement())
+  tripEventId     Int       @map("trip_event_id")
+  employeeId      Int       @map("employee_id")
+  inviteStatus    String    @default("invited") @map("invite_status") @db.VarChar(20)
+  approvalStatus  String    @default("pending") @map("approval_status") @db.VarChar(20)
+  approvedById    Int?      @map("approved_by_id")
+  approvedAt      DateTime? @map("approved_at") @db.Timestamptz(6)
+  rejectReason    String?   @map("reject_reason")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  tripEvent  TripEvent             @relation(fields: [tripEventId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  employee   Employee              @relation("TripParticipantEmployee", fields: [employeeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  approvedBy Employee?             @relation("TripParticipantApprovedBy", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  dates      TripParticipantDate[]
+
+  @@unique([tripEventId, employeeId], map: "uk_trip_participants_event_emp")
+  @@index([employeeId, approvalStatus], map: "idx_trip_participants_emp_status")
+  @@map("trip_participants")
+  @@schema("hr")
+}
+
+// 출장 참가자별 실제 참가일자 (이벤트 기간 중 본인이 실제 가는 날짜 N개)
+model TripParticipantDate {
+  id                    Int      @id @default(autoincrement())
+  tripParticipantId     Int      @map("trip_participant_id")
+  attendDate            DateTime @map("attend_date") @db.Date
+  calendarEventId       String?  @map("calendar_event_id") @db.VarChar(255)
+  attendanceRequestId   Int?     @map("attendance_request_id")
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  tripParticipant   TripParticipant    @relation(fields: [tripParticipantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  attendanceRequest AttendanceRequest? @relation("TripParticipantDateRequest", fields: [attendanceRequestId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([tripParticipantId, attendDate], map: "uk_trip_participant_dates")
+  @@index([attendDate], map: "idx_trip_participant_dates_date")
+  @@map("trip_participant_dates")
   @@schema("hr")
 }

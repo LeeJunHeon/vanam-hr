@@ -1,0 +1,178 @@
+import { NextRequest, NextResponse } from "next/server";
+import { requireSession, isAdminSession } from "@/lib/auth-helpers";
+import { prisma } from "@/lib/prisma";
+
+// 그룹 출장(Field Trip) Phase 7 1단계: 이벤트 생성/목록 API.
+// 참석자/초대/결재/캘린더 연동은 이번 단계에 없음.
+
+// YYYY-MM-DD → Date (UTC midnight). 잘못된 형식이면 null.
+function parseYmd(s: unknown): Date | null {
+  if (typeof s !== "string") return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(s + "T00:00:00.000Z");
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function ymdFromDate(d: Date): string {
+  return d.toISOString().split("T")[0];
+}
+
+// GET /api/trip-events
+// 활성(active) 출장 이벤트 목록. 모든 로그인 사용자가 호출 가능.
+// 응답에 참석자 수(participantCount) 포함 — 이번 단계에선 항상 0이지만 다음 단계 대비.
+export async function GET() {
+  try {
+    const sessionR = await requireSession();
+    if (!sessionR.ok) return sessionR.response;
+
+    const events = await prisma.tripEvent.findMany({
+      where: { status: "active" },
+      orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
+      include: {
+        createdBy: {
+          select: { id: true, name: true, employeeNo: true },
+        },
+        _count: {
+          select: { participants: true },
+        },
+      },
+    });
+
+    return NextResponse.json(
+      events.map((e) => ({
+        id: e.id,
+        name: e.name,
+        location: e.location,
+        startDate: ymdFromDate(e.startDate),
+        endDate: ymdFromDate(e.endDate),
+        status: e.status,
+        createdById: e.createdById,
+        createdByName: e.createdBy?.name ?? null,
+        creatorIsAdmin: e.creatorIsAdmin,
+        createdAt: e.createdAt.toISOString(),
+        participantCount: e._count.participants,
+      }))
+    );
+  } catch (error) {
+    console.error("GET /api/trip-events error:", error);
+    return NextResponse.json(
+      { error: "출장 이벤트를 불러올 수 없습니다." },
+      { status: 500 }
+    );
+  }
+}
+
+// POST /api/trip-events
+// body: { name, location?, startDate, endDate }
+// 로그인한 직원이라면 누구든 출장 이벤트를 만들 수 있다(주최자 본인 = 생성자).
+// 참석자 레코드는 이번 단계에서 생성하지 않는다(다음 단계).
+export async function POST(request: NextRequest) {
+  try {
+    const sessionR = await requireSession();
+    if (!sessionR.ok) return sessionR.response;
+    const { session } = sessionR;
+
+    const ownId = session.user.employeeId;
+    if (!Number.isInteger(ownId)) {
+      return NextResponse.json(
+        {
+          error:
+            "본인 직원 정보가 매핑되어 있지 않습니다. 관리자에게 직원 등록을 요청하세요.",
+        },
+        { status: 403 }
+      );
+    }
+
+    const body = await request.json().catch(() => ({}));
+    const { name, location, startDate, endDate } = body as {
+      name?: unknown;
+      location?: unknown;
+      startDate?: unknown;
+      endDate?: unknown;
+    };
+
+    // 검증
+    if (typeof name !== "string" || name.trim().length === 0) {
+      return NextResponse.json(
+        { error: "name(출장명)은 필수입니다." },
+        { status: 400 }
+      );
+    }
+    if (name.length > 200) {
+      return NextResponse.json(
+        { error: "name은 200자 이하여야 합니다." },
+        { status: 400 }
+      );
+    }
+    if (location !== undefined && location !== null && typeof location !== "string") {
+      return NextResponse.json(
+        { error: "location은 문자열이어야 합니다." },
+        { status: 400 }
+      );
+    }
+    if (typeof location === "string" && location.length > 200) {
+      return NextResponse.json(
+        { error: "location은 200자 이하여야 합니다." },
+        { status: 400 }
+      );
+    }
+    const start = parseYmd(startDate);
+    const end = parseYmd(endDate);
+    if (!start || !end) {
+      return NextResponse.json(
+        { error: "startDate, endDate 형식이 잘못되었습니다 (YYYY-MM-DD)." },
+        { status: 400 }
+      );
+    }
+    if (start.getTime() > end.getTime()) {
+      return NextResponse.json(
+        { error: "startDate는 endDate보다 빠르거나 같아야 합니다." },
+        { status: 400 }
+      );
+    }
+
+    // creator_is_admin = 생성 시점 스냅샷
+    const creatorIsAdmin = isAdminSession(session);
+
+    const created = await prisma.tripEvent.create({
+      data: {
+        name: name.trim(),
+        location:
+          typeof location === "string" && location.trim().length > 0
+            ? location.trim()
+            : null,
+        startDate: start,
+        endDate: end,
+        createdById: ownId as number,
+        creatorIsAdmin,
+        status: "active",
+      },
+      include: {
+        createdBy: { select: { id: true, name: true, employeeNo: true } },
+      },
+    });
+
+    return NextResponse.json(
+      {
+        id: created.id,
+        name: created.name,
+        location: created.location,
+        startDate: ymdFromDate(created.startDate),
+        endDate: ymdFromDate(created.endDate),
+        status: created.status,
+        createdById: created.createdById,
+        createdByName: created.createdBy?.name ?? null,
+        creatorIsAdmin: created.creatorIsAdmin,
+        createdAt: created.createdAt.toISOString(),
+        participantCount: 0,
+      },
+      { status: 201 }
+    );
+  } catch (error) {
+    console.error("POST /api/trip-events error:", error);
+    return NextResponse.json(
+      { error: "출장 이벤트 생성 실패" },
+      { status: 500 }
+    );
+  }
+}
