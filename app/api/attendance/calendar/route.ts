@@ -127,9 +127,22 @@ export async function GET(request: NextRequest) {
       },
     });
 
+    // Phase 6-2L+ B-4: 조회 월 범위의 공휴일 함께 반환 (UI 라벨용)
+    const holidays = await prisma.holiday.findMany({
+      where: {
+        holidayDate: { gte: monthStart, lte: monthEnd },
+      },
+      select: { holidayDate: true, name: true },
+      orderBy: { holidayDate: "asc" },
+    });
+
     return NextResponse.json({
       yearMonth,
       employees,
+      holidays: holidays.map((h) => ({
+        date: h.holidayDate.toISOString().split("T")[0],
+        name: h.name,
+      })),
       daily: daily.map((d) => ({
         id: d.id,
         employeeId: d.employeeId,

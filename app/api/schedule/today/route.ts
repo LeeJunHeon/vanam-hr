@@ -108,10 +108,17 @@ export async function GET() {
       };
     });
 
+    // Phase 6-2L+ B-4: 오늘이 공휴일이면 이름 함께 반환 (UI 라벨용)
+    const holiday = await prisma.holiday.findUnique({
+      where: { holidayDate: today },
+      select: { name: true },
+    });
+
     return NextResponse.json({
       date: todayStr,
       total: schedules.length,
       schedules,
+      holiday: holiday ? holiday.name : null,
     });
   } catch (error) {
     console.error("GET /api/schedule/today error:", error);

@@ -27,6 +27,7 @@ interface ScheduleRow {
 interface ScheduleResponse {
   date: string;
   total: number;
+  holiday?: string | null;
   schedules: ScheduleRow[];
 }
 
@@ -230,9 +231,15 @@ export default function ScheduleOverviewPage() {
       {/* ─── 헤더 ─── */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg sm:text-xl font-bold text-gray-900 flex items-center gap-2">
+          <h2 className="text-lg sm:text-xl font-bold text-gray-900 flex items-center gap-2 flex-wrap">
             <CalendarDays size={22} className="text-blue-600" />
             오늘의 일정
+            {/* Phase 6-2L+ B-4: 오늘이 공휴일이면 라벨 */}
+            {data.holiday && (
+              <span className="text-xs font-semibold bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full">
+                🎌 {data.holiday}
+              </span>
+            )}
           </h2>
           <p className="text-sm text-gray-500 mt-1">
             {formatDateLabel(data.date)}

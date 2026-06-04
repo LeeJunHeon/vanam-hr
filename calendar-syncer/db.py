@@ -2,9 +2,10 @@
 
 Phase 6-2A: 캘린더 소스/키워드 룰 조회 추가 (읽기 전용).
 Phase 6-2B: attendance_requests UPSERT 추가 (캘린더 일정 → 자동 결재 요청).
+Phase 6-2L+ B-2: 공휴일 캘린더 → hr.holidays UPSERT.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 import psycopg2
@@ -216,3 +217,40 @@ class Database:
             ))
             row = c.fetchone()
             return row[0]
+
+    def get_holiday_calendar_id(self) -> Optional[str]:
+        """Phase 6-2L+ B-2: hr.policy_settings에서 'holiday_calendar_id' 값 조회.
+
+        값이 없거나 빈 문자열이면 None 반환 → 공휴일 동기화 skip.
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                "SELECT value FROM hr.policy_settings WHERE key = 'holiday_calendar_id'"
+            )
+            row = c.fetchone()
+            if row is None:
+                return None
+            value = (row[0] or "").strip()
+            return value if value else None
+
+    def upsert_holiday(self, holiday_date: date, name: str) -> None:
+        """Phase 6-2L+ B-2: hr.holidays UPSERT (source='calendar').
+
+        같은 날짜에 다른 이름의 공휴일이 들어오면 마지막 동기화 값으로 갱신됨.
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                INSERT INTO hr.holidays
+                    (holiday_date, name, source, created_at, updated_at)
+                VALUES (%s, %s, 'calendar', NOW(), NOW())
+                ON CONFLICT (holiday_date)
+                DO UPDATE SET
+                    name = EXCLUDED.name,
+                    source = 'calendar',
+                    updated_at = NOW()
+                """,
+                (holiday_date, name),
+            )

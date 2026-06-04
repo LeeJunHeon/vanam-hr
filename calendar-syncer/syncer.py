@@ -325,6 +325,72 @@ class Syncer:
 
         return default_category_id, default_category_code, None
 
+    def _sync_holidays(self, now_kst: datetime) -> None:
+        """Phase 6-2L+ B-2: 공휴일 캘린더 → hr.holidays UPSERT.
+
+        - policy_settings의 'holiday_calendar_id'에서 캘린더 ID 읽음 (없으면 skip)
+        - 오늘 ~ +120일 범위의 종일 일정만 대상 (시간 지정은 공휴일 아님)
+        - 다일 종일 일정: end.date는 exclusive(다음날) → start ~ end-1 각 날짜 upsert
+        - 직원 매칭/attendance_request INSERT는 하지 않음 (근태와 분리)
+        """
+        cal_id = self.db.get_holiday_calendar_id()
+        if not cal_id:
+            self.logger.info(
+                "공휴일 캘린더 ID(policy holiday_calendar_id)가 없어 skip"
+            )
+            return
+
+        # 충분히 미래까지 미리 받아둠 (관리자가 다음 분기 공휴일 미리 보고 싶을 수 있음)
+        time_min = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
+        time_max = time_min + timedelta(days=120)
+
+        events = self.client.list_events(cal_id, time_min, time_max)
+        upsert_cnt = 0
+        skip_cnt = 0
+        for event in events:
+            p = self.client.parse_event(event)
+            # 시스템 생성분 스킵 (혹시 모를 무한루프 방지)
+            if p["ext_props"].get("vanam_source"):
+                continue
+            # 시간 지정 일정은 공휴일 아님 → skip
+            if not p["is_all_day"]:
+                skip_cnt += 1
+                continue
+
+            name = (p["summary"] or "").strip()
+            if not name:
+                continue
+
+            # 종일 일정: start.date / end.date (end.date는 exclusive=종료일 다음날)
+            start_raw = p["start_date_or_datetime"]  # "YYYY-MM-DD"
+            end_dict = event.get("end") or {}
+            end_excl_str = end_dict.get("date") or start_raw  # 단일일이면 fallback
+
+            try:
+                start_d = datetime.strptime(start_raw, "%Y-%m-%d").date()
+                end_excl_d = datetime.strptime(end_excl_str, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+
+            # end_excl은 종료일 다음날 → 마지막 포함일은 end_excl - 1일
+            # 단일일 일정이면 start_d == end_excl_d → 그날 1일만 upsert
+            if end_excl_d <= start_d:
+                # 비정상: start ~ start 하루만
+                self.db.upsert_holiday(start_d, name)
+                upsert_cnt += 1
+                continue
+
+            cursor = start_d
+            while cursor < end_excl_d:
+                self.db.upsert_holiday(cursor, name)
+                upsert_cnt += 1
+                cursor = cursor + timedelta(days=1)
+
+        self.logger.info(
+            f"공휴일 {upsert_cnt}건 동기화 (시간 지정 skip {skip_cnt}건, "
+            f"범위 {time_min.date()} ~ {time_max.date()})"
+        )
+
     def sync_once(self):
         """1회 실행: DB에서 캘린더 목록 읽고 → 일정 조회 → 카테고리 판정 로그."""
         cycle_start = time.time()
@@ -341,6 +407,14 @@ class Syncer:
         # 직원 매칭 맵 갱신
         email_map = self.db.get_employee_email_map()
         self.logger.info(f"직원 {len(email_map)}명 매칭 맵 로드")
+
+        # Phase 6-2L+ B-2: 공휴일 캘린더 → hr.holidays 동기화 (1회)
+        # 근태 캘린더와 독립. 실패해도 근태 동기화에 영향 없도록 try/except로 격리.
+        # 직원 매칭/attendance_request INSERT는 절대 하지 않는다(공휴일은 근태 요청 아님).
+        try:
+            self._sync_holidays(now_kst)
+        except Exception as e:
+            self.logger.exception(f"공휴일 동기화 실패 (계속 진행): {e}")
 
         # 동기화 대상 캘린더 목록 (DB 동적 조회)
         try:

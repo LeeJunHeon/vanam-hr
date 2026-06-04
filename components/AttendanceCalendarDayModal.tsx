@@ -45,6 +45,7 @@ interface ModalProps {
   employees: CalendarEmployee[];
   daily: CalendarDaily[];
   requests: CalendarRequest[];
+  holidayName?: string | null; // Phase 6-2L+ B-4: 공휴일이면 이름
   onClose: () => void;
 }
 
@@ -123,6 +124,7 @@ export default function AttendanceCalendarDayModal({
   employees,
   daily,
   requests,
+  holidayName,
   onClose,
 }: ModalProps) {
   // 해당 날짜 직원별 데이터 추출
@@ -220,8 +222,14 @@ export default function AttendanceCalendarDayModal({
       >
         <div className="sticky top-0 bg-white border-b border-gray-100 px-4 sm:px-5 py-3 flex items-center justify-between z-10">
           {/* Phase 6-2K: 한국어 날짜 헤더 ("2026년 6월 1일 (월)") */}
-          <h3 className="font-bold text-gray-900 text-base">
+          <h3 className="font-bold text-gray-900 text-base flex items-center gap-2">
             {formatDateKorean(date)}
+            {/* Phase 6-2L+ B-4: 공휴일 라벨 (있을 때만) */}
+            {holidayName && (
+              <span className="text-xs font-semibold bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full">
+                🎌 {holidayName}
+              </span>
+            )}
           </h3>
           <button
             onClick={onClose}

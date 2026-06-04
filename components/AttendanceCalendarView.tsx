@@ -45,11 +45,18 @@ const STATUS_ICONS: Record<
 
 const CORRECTION_ICON = { icon: "✏️", color: "#06b6d4", label: "정정" };
 
+// Phase 6-2L+ B-4: 공휴일 (Google Calendar 공휴일 캘린더 → DB 캐시)
+export interface CalendarHoliday {
+  date: string; // "YYYY-MM-DD"
+  name: string;
+}
+
 interface CalendarResponse {
   yearMonth: string;
   employees: CalendarEmployee[];
   daily: CalendarDaily[];
   requests: CalendarRequest[];
+  holidays?: CalendarHoliday[];
 }
 
 function thisMonthYm(): string {
@@ -144,6 +151,13 @@ export default function AttendanceCalendarView() {
       map.set(ymd, m);
     }
     return map;
+  }, [data]);
+
+  // Phase 6-2L+ B-4: 공휴일 맵 (YYYY-MM-DD → name)
+  const holidayMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const h of data?.holidays ?? []) m.set(h.date, h.name);
+    return m;
   }, [data]);
 
   // 월 그리드 생성
@@ -354,6 +368,8 @@ export default function AttendanceCalendarView() {
             const counts = cellAggregates.get(cell.ymd) ?? {};
             const hasData = Object.keys(counts).length > 0;
             const entries = Object.entries(counts).slice(0, 4);
+            // Phase 6-2L+ B-4: 공휴일이면 라벨 표시 + 클릭은 데이터 있을 때만 가능
+            const holidayName = holidayMap.get(cell.ymd) ?? null;
             return (
               <button
                 key={cell.ymd}
@@ -362,19 +378,33 @@ export default function AttendanceCalendarView() {
                 className={`h-24 sm:h-28 p-1.5 rounded border text-left transition-colors ${
                   hasData
                     ? "bg-white border-gray-200 hover:border-blue-400 cursor-pointer"
-                    : "bg-gray-50 border-transparent cursor-default"
+                    : holidayName
+                      ? "bg-rose-50 border-rose-100 cursor-default"
+                      : "bg-gray-50 border-transparent cursor-default"
                 }`}
               >
-                <div
-                  className={`text-sm sm:text-base font-semibold ${
-                    cell.dow === 0
-                      ? "text-rose-500"
-                      : cell.dow === 6
-                        ? "text-blue-500"
-                        : "text-gray-700"
-                  }`}
-                >
-                  {cell.day}
+                <div className="flex items-baseline justify-between gap-1">
+                  <div
+                    className={`text-sm sm:text-base font-semibold ${
+                      holidayName
+                        ? "text-rose-600"
+                        : cell.dow === 0
+                          ? "text-rose-500"
+                          : cell.dow === 6
+                            ? "text-blue-500"
+                            : "text-gray-700"
+                    }`}
+                  >
+                    {cell.day}
+                  </div>
+                  {holidayName && (
+                    <span
+                      className="text-[10px] sm:text-xs text-rose-600 font-medium truncate"
+                      title={holidayName}
+                    >
+                      {holidayName}
+                    </span>
+                  )}
                 </div>
                 <div className="mt-1 space-y-0.5 text-xs sm:text-sm text-gray-700">
                   {entries.map(([key, cnt]) => {
@@ -418,6 +448,7 @@ export default function AttendanceCalendarView() {
           employees={data.employees}
           daily={data.daily}
           requests={data.requests}
+          holidayName={holidayMap.get(selectedDate) ?? null}
           onClose={() => setSelectedDate(null)}
         />
       )}
