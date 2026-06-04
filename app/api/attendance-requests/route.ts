@@ -545,6 +545,9 @@ export async function PUT(request: NextRequest) {
               data: {
                 categoryId: null,
                 isOverridden: false,
+                // Phase 6-2L+: 보정 흔적 제거 (note, override_source도 함께 풀어줌)
+                note: null,
+                overrideSource: null,
                 // checkIn/checkOut/workMinutes/autoStatus는 그대로 — aggregator가 갱신
               },
             });
@@ -574,6 +577,9 @@ export async function PUT(request: NextRequest) {
                 originalCheckOut: null,
                 workMinutes: null, // aggregator 재계산 트리거
                 isOverridden: false,
+                // Phase 6-2L+: 정정 흔적 제거
+                note: null,
+                overrideSource: null,
               },
             });
           }

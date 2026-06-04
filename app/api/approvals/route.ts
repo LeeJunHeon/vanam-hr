@@ -567,6 +567,7 @@ export async function PUT(request: NextRequest) {
             workMinutes: newWorkMinutes,
             autoStatus: newAutoStatus,
             isOverridden: true,
+            overrideSource: "manual", // Phase 6-2L+ C-3: 수동정정 → 보호 대상
             note: `결재정정 #${updated.id}`,
           },
           update: {
@@ -575,6 +576,7 @@ export async function PUT(request: NextRequest) {
             workMinutes: newWorkMinutes,
             autoStatus: newAutoStatus,
             isOverridden: true,
+            overrideSource: "manual", // Phase 6-2L+ C-3: 수동정정 → 보호 대상
             note: existing?.note ?? `결재정정 #${updated.id}`,
             // Phase 6-2I: 첫 정정이면 정정 전 값 백업 (영구 보존)
             ...(shouldBackupOriginal && {
@@ -617,12 +619,14 @@ export async function PUT(request: NextRequest) {
               categoryId: target.categoryId,
               autoStatus: "normal",
               isOverridden: true,
+              overrideSource: "manual", // Phase 6-2L+ C-3: 수동 결재 적용 → 보호 대상
               note: `결재 #${updated.id} (${category.name})`,
             },
             update: {
               categoryId: target.categoryId,
               autoStatus: "normal",
               isOverridden: true,
+              overrideSource: "manual", // Phase 6-2L+ C-3
               note: existing?.note ?? `결재 #${updated.id} (${category.name})`,
             },
           });

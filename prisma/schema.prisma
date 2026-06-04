@@ -322,6 +322,7 @@ model AttendanceDaily {
   autoStatus     String?   @map("auto_status") @db.VarChar(50)
   categoryId     Int?      @map("category_id")
   isOverridden   Boolean   @default(false) @map("is_overridden")
+  overrideSource String?   @map("override_source") @db.VarChar(20)
   workMinutes    Int?      @map("work_minutes")
   note           String?
   isConfirmed    Boolean   @default(false) @map("is_confirmed")
@@ -470,5 +471,18 @@ model PushSubscription {
 
   @@index([employeeId, isActive], map: "idx_push_subs_emp")
   @@map("push_subscriptions")
+  @@schema("hr")
+}
+
+// 공휴일 (Google Calendar 공휴일 캘린더 → DB 캐시)
+// 결근 면제 + UI 라벨 표시용. calendar-syncer가 매 사이클 갱신.
+model Holiday {
+  holidayDate DateTime @id @map("holiday_date") @db.Date
+  name        String   @db.VarChar(200)
+  source      String   @default("calendar") @db.VarChar(20)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("holidays")
   @@schema("hr")
 }

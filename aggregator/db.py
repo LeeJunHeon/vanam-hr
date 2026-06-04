@@ -251,18 +251,22 @@ class Database:
         auto_status: Optional[str] = None,
         category_id: Optional[int] = None,        # Phase 6-2B: 캘린더 보정 카테고리
         is_overridden: bool = False,              # Phase 6-2B: 캘린더 보정이면 True
+        override_source: Optional[str] = None,    # Phase 6-2L+ C: 'calendar' | 'manual' | None
     ) -> Optional[int]:
-        """attendance_daily UPSERT. is_overridden=true면 건드리지 않음.
+        """attendance_daily UPSERT.
 
         auto_status: 자동 판정 결과 ('normal', 'absent' 등 또는 None).
         category_id: Phase 6-2B 캘린더 보정 시 카테고리 (ANNUAL, BUSINESS_TRIP 등).
         is_overridden: True면 이번 INSERT 자체가 is_overridden=true로 박힘.
-                       → 다음 사이클에서 WHERE 절(is_overridden=false)에 막혀 변경 안 됨.
+        override_source: 보정 출처 — 'calendar'면 다음 사이클에 자기 자신을 갱신 가능,
+                        'manual'(또는 NULL+is_overridden=true)이면 보호.
 
-        WHERE 절: 기존 row가 이미 is_overridden=true면 절대 덮어쓰지 않음
-                  (관리자 수동 수정 + 캘린더 보정 둘 다 보호).
-
-        반환: 새/갱신된 row id. is_overridden=true로 막혀 변경 없으면 None.
+        WHERE 절 (Phase 6-2L+ C):
+          - is_overridden=false → 일반 갱신 (기존 동작)
+          - override_source='calendar' → 캘린더 보정 행은 매 사이클 재갱신 허용
+            (캘린더 일정의 사후 수정이 근태에 반영되도록)
+          - 그 외(수동정정, override_source='manual') → 보호
+        반환: 새/갱신된 row id. WHERE 절에 막혀 변경 없으면 None.
         """
         self._ensure_connected()
         with self.conn.cursor() as c:
@@ -270,9 +274,9 @@ class Database:
                 """
                 INSERT INTO hr.attendance_daily
                     (employee_id, work_date, check_in, check_out, work_minutes,
-                     auto_status, category_id, is_overridden,
+                     auto_status, category_id, is_overridden, override_source,
                      created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                 ON CONFLICT (employee_id, work_date)
                 DO UPDATE SET
                     check_in = EXCLUDED.check_in,
@@ -281,12 +285,28 @@ class Database:
                     auto_status = EXCLUDED.auto_status,
                     category_id = EXCLUDED.category_id,
                     is_overridden = EXCLUDED.is_overridden,
+                    override_source = EXCLUDED.override_source,
                     updated_at = NOW()
                 WHERE hr.attendance_daily.is_overridden = false
+                   OR hr.attendance_daily.override_source = 'calendar'
                 RETURNING id
                 """,
                 (employee_id, work_date, check_in, check_out, work_minutes,
-                 auto_status, category_id, is_overridden),
+                 auto_status, category_id, is_overridden, override_source),
+            )
+            row = c.fetchone()
+            return row[0] if row else None
+
+    def get_holiday(self, work_date: date) -> Optional[str]:
+        """Phase 6-2L+ B-3: 해당 날짜의 공휴일 이름 조회 (없으면 None).
+
+        결근(absent) 판정 면제용. work_date당 1회만 호출(aggregate_today에서 캐싱).
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                "SELECT name FROM hr.holidays WHERE holiday_date = %s",
+                (work_date,),
             )
             row = c.fetchone()
             return row[0] if row else None

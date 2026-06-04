@@ -187,6 +187,17 @@ class Aggregator:
             self.logger.debug("활성 직원 0건 — 사이클 건너뜀")
             return
 
+        # Phase 6-2L+ B-3: work_date당 공휴일 조회 1회 캐싱 (직원 루프 밖에서)
+        # 결근(absent) 판정 면제용. 출근기록 있으면 평소대로 처리.
+        holiday_cache: dict = {
+            yesterday: self.db.get_holiday(yesterday),
+            today: self.db.get_holiday(today),
+        }
+        if holiday_cache[today]:
+            self.logger.info(f"  공휴일 (오늘): {holiday_cache[today]}")
+        if holiday_cache[yesterday]:
+            self.logger.info(f"  공휴일 (어제): {holiday_cache[yesterday]}")
+
         # 직원별 처리 (어제 + 오늘 두 work_date)
         upsert_count = 0
         skip_no_data = 0
@@ -202,6 +213,7 @@ class Aggregator:
                     grace_in_minutes,
                     grace_out_minutes,
                     now,
+                    holiday_name=holiday_cache.get(work_date),
                 )
                 if result == "upsert":
                     upsert_count += 1
@@ -225,17 +237,23 @@ class Aggregator:
         grace_in_minutes: int,
         grace_out_minutes: int,
         now: datetime,
+        holiday_name: Optional[str] = None,
     ) -> str:
         """단일 직원 + 단일 work_date 처리. 반환: 'upsert' | 'overridden' | 'no_data'.
 
         Phase 6-2B: presence_raw가 없어도 캘린더에 휴가/외근 등록되어 있으면 처리.
+        Phase 6-2L+ B-3: 공휴일이면 결근(absent) 면제 — 출근기록 없으면 daily 행을
+                       만들지 않고(no_data), 출근기록 있으면 평소대로 처리.
         흐름:
           1) presence_raw → check_in/out 계산 (없으면 None, None)
           2) 캘린더 보정 확인 (get_auto_approved_request)
-          3) 캘린더 있음 → category_id 적용, auto_status='normal', is_overridden=true
-             (시간 지정 일정이면 corrected_check_in/out으로 덮어쓰기)
+          3) 캘린더 있음 → category_id 적용, auto_status='normal',
+             is_overridden=true, override_source='calendar'
           4) 캘린더 없음 + presence_raw도 없음 → no_data
-          5) 캘린더 없음 + presence_raw 있음 → 기존 _determine_auto_status 로직
+             (공휴일이든 평일이든 동일)
+          5) 캘린더 없음 + presence_raw 있음 → _determine_auto_status
+             - 공휴일 + auto_status='absent' → no_data (daily 행 만들지 않음)
+             - 그 외 → 평소대로 INSERT
         """
         emp_id = emp["id"]
         emp_no = emp.get("employee_no", "?")
@@ -283,6 +301,8 @@ class Aggregator:
 
             auto_status = "normal"  # 캘린더 자동 등록은 항상 정상 (휴가/외근은 결근 아님)
             is_overridden = True    # 다음 사이클 보호
+            # Phase 6-2L+ C-1: 캘린더 보정 출처 마킹 → upsert WHERE 절에서 재갱신 허용
+            override_source = "calendar"
         else:
             # 4) 캘린더 없음 + presence_raw 없음 → INSERT 의미 없음
             if not raw or (check_in is None and check_out is None):
@@ -291,6 +311,7 @@ class Aggregator:
             # 5) 캘린더 없음 + presence_raw 있음 → 기존 로직
             category_id = None
             is_overridden = False
+            override_source = None
             auto_status = self._determine_auto_status(
                 check_in=check_in,
                 check_out=check_out,
@@ -298,6 +319,15 @@ class Aggregator:
                 grace_in_minutes=grace_in_minutes,
                 grace_out_minutes=grace_out_minutes,
             )
+
+            # Phase 6-2L+ B-3: 공휴일이면 결근(absent) 면제 → daily 행 만들지 않음.
+            # 출근기록이 있어 normal/working/late/early_leave가 나오면 평소대로 INSERT.
+            if holiday_name and auto_status == "absent":
+                self.logger.debug(
+                    f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} "
+                    f"— 공휴일({holiday_name}) absent 면제, 행 생성 안 함"
+                )
+                return "no_data"
 
         # work_minutes 계산 (분기 무관)
         work_minutes = None
@@ -314,6 +344,7 @@ class Aggregator:
             auto_status=auto_status,
             category_id=category_id,
             is_overridden=is_overridden,
+            override_source=override_source,
         )
 
         if new_id is None:
