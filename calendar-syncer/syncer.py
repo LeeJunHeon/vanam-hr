@@ -251,6 +251,84 @@ class Syncer:
                 self.logger.exception(f"캘린더 일정 등록 실패: {e}")
                 return jsonify({"ok": False, "error": str(e)}), 500
 
+        @app.patch("/internal/calendar-event/<event_id>")
+        def patch_calendar_event(event_id):
+            """캘린더 일정 부분 수정.
+
+            Phase 7 4단계: 출장 날짜·시간 변경 시 기존 일정을 수정하기 위해 추가.
+            Body: {
+              calendar_id?: str,            # 없으면 write_target_id
+              summary?: str, description?: str,
+              start?: {date|dateTime, ...}, # 종일 vs 시간지정
+              end?: {date|dateTime, ...},
+            }
+            전달된 필드만 patch에 포함. 404는 명확한 에러로 반환(멱등 처리하지 않음 —
+            호출자가 의도적으로 patch를 요청한 것이므로 대상 없으면 알려준다).
+            """
+            # 1) 토큰 검증
+            token = request.headers.get("X-Internal-Token")
+            if not token or token != self.config.internal_api_token:
+                self.logger.warning(
+                    f"인증 실패 (PATCH, X-Internal-Token 불일치): "
+                    f"remote={request.remote_addr}"
+                )
+                return jsonify({"ok": False, "error": "Unauthorized"}), 401
+
+            if not event_id:
+                return jsonify({"ok": False, "error": "event_id required"}), 400
+
+            # 2) Body 파싱
+            try:
+                data = request.get_json(force=True, silent=True) or {}
+            except Exception:
+                data = {}
+            if not isinstance(data, dict):
+                return jsonify({"ok": False, "error": "Body must be JSON object"}), 400
+
+            calendar_id = data.get("calendar_id") or self.config.write_target_id
+
+            # 3) patch body 구성 (전달된 필드만 포함)
+            patch_body = {}
+            if "summary" in data and isinstance(data["summary"], str):
+                patch_body["summary"] = data["summary"]
+            if "description" in data and isinstance(data["description"], str):
+                patch_body["description"] = data["description"]
+            if "start" in data and isinstance(data["start"], dict):
+                patch_body["start"] = data["start"]
+            if "end" in data and isinstance(data["end"], dict):
+                patch_body["end"] = data["end"]
+
+            if not patch_body:
+                return (
+                    jsonify({"ok": False, "error": "no patchable fields provided"}),
+                    400,
+                )
+
+            # 4) Google Calendar API patch
+            try:
+                self.client.service.events().patch(
+                    calendarId=calendar_id,
+                    eventId=event_id,
+                    body=patch_body,
+                ).execute()
+                self.logger.info(
+                    f"캘린더 일정 수정 완료: calendar_id={calendar_id}, "
+                    f"eventId={event_id}, fields={list(patch_body.keys())}"
+                )
+                return jsonify({"ok": True, "eventId": event_id}), 200
+            except Exception as e:
+                err = str(e)
+                if "404" in err or "Not Found" in err:
+                    self.logger.warning(
+                        f"캘린더 일정 수정 대상 없음 (404): eventId={event_id}"
+                    )
+                    return (
+                        jsonify({"ok": False, "error": "event_not_found"}),
+                        404,
+                    )
+                self.logger.exception(f"캘린더 일정 수정 실패: {e}")
+                return jsonify({"ok": False, "error": err}), 500
+
         @app.delete("/internal/calendar-event/<event_id>")
         def delete_calendar_event(event_id):
             """캘린더 일정 삭제 (멱등적: 404는 already_deleted로 OK 처리).

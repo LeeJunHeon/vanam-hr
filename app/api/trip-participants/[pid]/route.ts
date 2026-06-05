@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession, isAdminSession } from "@/lib/auth-helpers";
 import { prisma } from "@/lib/prisma";
 import { parseDatesArray } from "@/lib/trip-helpers";
+import { cleanupTripParticipantFutureDates } from "@/lib/trip-calendar";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: 참석자 수락/거절/날짜수정 + 제거.
 // PATCH /api/trip-participants/[pid]
@@ -140,6 +141,23 @@ export async function PATCH(
       nextApprovalStatus = "pending";
     }
 
+    // Phase 7 4단계: approved였던 참석자가 update_dates로 pending이 되면,
+    // 트랜잭션에서 dates를 전부 교체하기 전에 미래 날짜의 캘린더·근태를 정리한다.
+    // (과거 날짜는 보존). 정리 실패는 로그만 — 데이터 변경은 진행.
+    if (
+      action === "update_dates" &&
+      participant.approvalStatus === "approved"
+    ) {
+      try {
+        await cleanupTripParticipantFutureDates(pid);
+      } catch (e) {
+        console.error(
+          `[trip-participants PATCH] cleanup 실패 (pid=${pid}):`,
+          e
+        );
+      }
+    }
+
     const updated = await prisma.$transaction(async (tx) => {
       // 날짜 교체가 필요한 경우만 삭제 후 재생성
       if (parsedDates !== null) {
@@ -222,6 +240,18 @@ export async function DELETE(
       return NextResponse.json(
         { error: "참석자를 제거할 권한이 없습니다." },
         { status: 403 }
+      );
+    }
+
+    // Phase 7 4단계: 삭제 전에 미래 날짜의 캘린더·근태 정리.
+    // (CASCADE로 dates는 곧 삭제되지만, 그 전에 외부 캘린더 + attendance_request를
+    //  미리 치우지 않으면 고아 데이터가 남는다. 과거 날짜는 보존.)
+    try {
+      await cleanupTripParticipantFutureDates(pid);
+    } catch (e) {
+      console.error(
+        `[trip-participants DELETE] cleanup 실패 (pid=${pid}):`,
+        e
       );
     }
 

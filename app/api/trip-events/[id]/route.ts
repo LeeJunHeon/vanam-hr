@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/auth-helpers";
+import { NextRequest, NextResponse } from "next/server";
+import { requireSession, isAdminSession } from "@/lib/auth-helpers";
 import { prisma } from "@/lib/prisma";
+import { cleanupTripEventFutureDates } from "@/lib/trip-calendar";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: 이벤트 단건 조회 + 참석자 상세.
 
@@ -111,6 +112,85 @@ export async function GET(
     console.error("GET /api/trip-events/[id] error:", error);
     return NextResponse.json(
       { error: "이벤트 조회 실패" },
+      { status: 500 }
+    );
+  }
+}
+
+// Phase 7 4단계: 이벤트 취소.
+// PATCH /api/trip-events/[id]  body: { action: 'cancel' }
+// - 권한: 이벤트 생성자 또는 admin/ceo
+// - 동작: status='closed' + 모든 참석자의 미래 날짜 캘린더·근태 정리(과거 보호)
+// - 이미 closed면 정리만 재실행하지 않고 OK 반환
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const sessionR = await requireSession();
+    if (!sessionR.ok) return sessionR.response;
+    const { session } = sessionR;
+    const ownId = session.user.employeeId;
+    const isAdmin = isAdminSession(session);
+
+    const { id: idRaw } = await params;
+    const eventId = Number(idRaw);
+    if (!Number.isInteger(eventId) || eventId <= 0) {
+      return NextResponse.json({ error: "잘못된 이벤트 id" }, { status: 400 });
+    }
+
+    const body = await request.json().catch(() => ({}));
+    const action = (body as { action?: unknown }).action;
+    if (action !== "cancel") {
+      return NextResponse.json(
+        { error: "action은 'cancel'만 지원합니다." },
+        { status: 400 }
+      );
+    }
+
+    const ev = await prisma.tripEvent.findUnique({
+      where: { id: eventId },
+      select: { id: true, status: true, createdById: true },
+    });
+    if (!ev) {
+      return NextResponse.json(
+        { error: "이벤트를 찾을 수 없습니다." },
+        { status: 404 }
+      );
+    }
+
+    // 권한: 생성자 또는 admin/ceo
+    if (ev.createdById !== ownId && !isAdmin) {
+      return NextResponse.json(
+        { error: "이벤트를 취소할 권한이 없습니다." },
+        { status: 403 }
+      );
+    }
+
+    if (ev.status === "closed") {
+      return NextResponse.json({ ok: true, alreadyClosed: true });
+    }
+
+    // 캘린더·근태 정리(미래 날짜만) → 트랜잭션 밖. 실패해도 status 변경은 진행.
+    try {
+      await cleanupTripEventFutureDates(eventId);
+    } catch (e) {
+      console.error(
+        `[trip-events PATCH] cleanup 실패 (eventId=${eventId}):`,
+        e
+      );
+    }
+
+    await prisma.tripEvent.update({
+      where: { id: eventId },
+      data: { status: "closed" },
+    });
+
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error("PATCH /api/trip-events/[id] error:", error);
+    return NextResponse.json(
+      { error: "이벤트 취소 실패" },
       { status: 500 }
     );
   }

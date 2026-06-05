@@ -491,21 +491,61 @@ function TripDetailModal({
 
           {/* 액션 버튼 */}
           <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => setInviteOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-blue-700 bg-blue-50 rounded-xl hover:bg-blue-100"
-            >
-              <UserPlus size={14} />
-              참석자 초대
-            </button>
-            {!myParticipant && currentEmployeeId !== null && (
+            {detail.status === "active" && (
               <button
-                onClick={() => setJoinOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-emerald-700 bg-emerald-50 rounded-xl hover:bg-emerald-100"
+                onClick={() => setInviteOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-blue-700 bg-blue-50 rounded-xl hover:bg-blue-100"
               >
-                <Check size={14} />
-                나도 참여
+                <UserPlus size={14} />
+                참석자 초대
               </button>
+            )}
+            {detail.status === "active" &&
+              !myParticipant &&
+              currentEmployeeId !== null && (
+                <button
+                  onClick={() => setJoinOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-emerald-700 bg-emerald-50 rounded-xl hover:bg-emerald-100"
+                >
+                  <Check size={14} />
+                  나도 참여
+                </button>
+              )}
+            {/* Phase 7 4단계: 이벤트 취소(생성자 or admin/ceo, active일 때만).
+                취소 시 미래 날짜의 캘린더·근태를 자동 정리(과거 보호). */}
+            {detail.status === "active" && (isCreator || isAdmin) && (
+              <button
+                onClick={async () => {
+                  if (
+                    !confirm(
+                      "이 이벤트를 취소하시겠습니까?\n" +
+                        "- 오늘 이후 캘린더 일정 및 근태 반영이 삭제됩니다.\n" +
+                        "- 과거 날짜는 그대로 보존됩니다."
+                    )
+                  )
+                    return;
+                  const res = await fetch(`/api/trip-events/${eventId}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "cancel" }),
+                  });
+                  if (!res.ok) {
+                    const j = await res.json().catch(() => ({}));
+                    alert(j.error || `취소 실패 (${res.status})`);
+                    return;
+                  }
+                  refreshAll();
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-rose-700 bg-rose-50 rounded-xl hover:bg-rose-100 ml-auto"
+              >
+                <X size={14} />
+                이벤트 취소
+              </button>
+            )}
+            {detail.status !== "active" && (
+              <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-lg ml-auto">
+                종료된 이벤트
+              </span>
             )}
           </div>
 
