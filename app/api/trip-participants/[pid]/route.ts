@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { parseDatesArray } from "@/lib/trip-helpers";
 import {
   cleanupTripParticipantAttendanceFuture,
+  collectParticipantFutureEventIds,
   createTripParticipantAttendanceRequests,
   rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
@@ -162,6 +163,22 @@ export async function PATCH(
       }
     }
 
+    // update_dates는 트랜잭션에서 dates를 전부 지우고 다시 만든다(calendar_event_id NULL).
+    // 트랜잭션 후 rebuild가 호출되는데, 그 시점엔 옛 dates의 calendar_event_id가
+    // 사라져 단독 참석자의 캘린더 일정이 고아로 남는다. → 트랜잭션 시작 전에
+    // 미래 event_id를 미리 수집해 rebuild의 extra로 넘긴다.
+    let removedEventIds: string[] = [];
+    if (action === "update_dates") {
+      try {
+        removedEventIds = await collectParticipantFutureEventIds(pid);
+      } catch (e) {
+        console.error(
+          `[trip-participants PATCH(update_dates)] collectParticipantFutureEventIds(${pid}) 실패:`,
+          e
+        );
+      }
+    }
+
     const updated = await prisma.$transaction(async (tx) => {
       // 날짜 교체가 필요한 경우만 삭제 후 재생성
       if (parsedDates !== null) {
@@ -210,7 +227,8 @@ export async function PATCH(
         );
       }
       try {
-        await rebuildTripEventCalendar(participant.tripEvent.id);
+        // accept 경로의 removedEventIds는 빈 배열 — 기존 동작과 동일.
+        await rebuildTripEventCalendar(participant.tripEvent.id, removedEventIds);
       } catch (e) {
         console.error(
           `[trip-participants PATCH] rebuildTripEventCalendar(${participant.tripEvent.id}) 실패:`,
@@ -222,8 +240,9 @@ export async function PATCH(
       participant.approvalStatus === "approved"
     ) {
       // approved→pending: 이 참석자는 확정 집합에서 빠진다. 이벤트 캘린더 재구성.
+      // 트랜잭션 시작 전에 수집한 removedEventIds를 함께 넘겨 고아 일정 제거.
       try {
-        await rebuildTripEventCalendar(participant.tripEvent.id);
+        await rebuildTripEventCalendar(participant.tripEvent.id, removedEventIds);
       } catch (e) {
         console.error(
           `[trip-participants PATCH] rebuildTripEventCalendar(${participant.tripEvent.id}) 실패:`,
@@ -287,6 +306,20 @@ export async function DELETE(
     // 삭제 전에 미래 근태(attendance_request)부터 정리(과거 보존).
     // 캘린더는 삭제 후 이벤트 단위로 rebuild하면 자동으로 정리·재구성된다.
     const tripEventId = participant.tripEvent.id;
+
+    // ★ 참석자/dates가 CASCADE로 사라지기 전에 미래 calendar_event_id를 수집해 둔다.
+    // 그러지 않으면 단독 참석자의 캘린더 일정이 고아로 남는다(rebuild는 살아있는
+    // dates의 event_id만 찾음).
+    let removedEventIds: string[] = [];
+    try {
+      removedEventIds = await collectParticipantFutureEventIds(pid);
+    } catch (e) {
+      console.error(
+        `[trip-participants DELETE] collectParticipantFutureEventIds(${pid}) 실패:`,
+        e
+      );
+    }
+
     try {
       await cleanupTripParticipantAttendanceFuture(pid);
     } catch (e) {
@@ -300,8 +333,9 @@ export async function DELETE(
     await prisma.tripParticipant.delete({ where: { id: pid } });
 
     // 이벤트 캘린더 재구성(이 참석자는 이미 제거되어 새 일정에 포함되지 않음)
+    // 미리 수집한 event_id를 함께 넘겨 단독 참석자 일정도 확실히 삭제.
     try {
-      await rebuildTripEventCalendar(tripEventId);
+      await rebuildTripEventCalendar(tripEventId, removedEventIds);
     } catch (e) {
       console.error(
         `[trip-participants DELETE] rebuildTripEventCalendar(${tripEventId}) 실패:`,

@@ -389,6 +389,29 @@ function buildEventDescription(eventMemo: string | null): string {
 }
 
 /**
+ * 특정 참석자의 "미래(KST 오늘 이상)" dates에 연결된 calendar_event_id 목록.
+ * 호출자(참석자 DELETE / update_dates)가 dates를 삭제하기 직전에 미리 모아
+ * rebuildTripEventCalendar의 extraEventIdsToDelete로 넘기는 용도.
+ * 과거 일정은 보존 원칙에 따라 제외.
+ */
+export async function collectParticipantFutureEventIds(
+  participantId: number
+): Promise<string[]> {
+  const todayKst = kstTodayMidnightUtc();
+  const rows = await prisma.tripParticipantDate.findMany({
+    where: {
+      tripParticipantId: participantId,
+      attendDate: { gte: todayKst },
+      calendarEventId: { not: null },
+    },
+    select: { calendarEventId: true },
+  });
+  return rows
+    .map((r) => r.calendarEventId)
+    .filter((v): v is string => typeof v === "string" && v.length > 0);
+}
+
+/**
  * 이벤트의 캘린더 일정을 처음부터 다시 만든다.
  *  1) 미래(KST 오늘 이상) 날짜에 연결된 기존 calendar_event_id를 모두 삭제(syncer DELETE).
  *     계산 후 trip_participant_dates의 calendar_event_id를 NULL로.
@@ -399,8 +422,16 @@ function buildEventDescription(eventMemo: string | null): string {
  *
  * 과거 날짜의 캘린더 일정은 어떤 단계에서도 건드리지 않음(보존).
  * 외부 호출 실패는 로그만, 전체 작업은 계속 진행.
+ *
+ * extraEventIdsToDelete: 호출자가 "참석자/dates 삭제 전에 미리 수집한" event_id 목록.
+ *   참석자 DELETE / update_dates 시 dates가 사라져서 Step1 쿼리로 잡히지 않는
+ *   고아 일정을 함께 삭제하기 위한 hook(rebuild 호출자가 collectParticipantFutureEventIds로
+ *   미리 모아 넘긴다). 빈 배열이면 기존 동작과 동일.
  */
-export async function rebuildTripEventCalendar(tripEventId: number): Promise<void> {
+export async function rebuildTripEventCalendar(
+  tripEventId: number,
+  extraEventIdsToDelete: string[] = []
+): Promise<void> {
   const event = await prisma.tripEvent.findUnique({
     where: { id: tripEventId },
     select: {
@@ -433,11 +464,17 @@ export async function rebuildTripEventCalendar(tripEventId: number): Promise<voi
     },
     select: { id: true, calendarEventId: true },
   });
-  const existingEventIds = [
-    ...new Set(
-      futureLinked.map((d) => d.calendarEventId).filter((v): v is string => !!v)
-    ),
-  ];
+  // 삭제 대상 = (현재 DB의 미래 dates에 남아있는 calendar_event_id) ∪
+  //              (호출자가 미리 수집해 넘긴 extraEventIdsToDelete).
+  // 후자는 "참석자/dates 삭제 전 사라질 event_id" 보전용. syncer DELETE는 404 멱등.
+  const existingEventIds = new Set<string>(
+    futureLinked
+      .map((d) => d.calendarEventId)
+      .filter((v): v is string => typeof v === "string" && v.length > 0)
+  );
+  for (const eid of extraEventIdsToDelete) {
+    if (typeof eid === "string" && eid.length > 0) existingEventIds.add(eid);
+  }
   for (const eid of existingEventIds) {
     try {
       await callDeleteCalendarEvent(fieldTripCalendarId, eid);
