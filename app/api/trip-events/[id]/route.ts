@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession, isAdminSession } from "@/lib/auth-helpers";
 import { prisma } from "@/lib/prisma";
-import { cleanupTripEventFutureDates } from "@/lib/trip-calendar";
+import {
+  cleanupTripParticipantAttendanceFuture,
+  rebuildTripEventCalendar,
+} from "@/lib/trip-calendar";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: 이벤트 단건 조회 + 참석자 상세.
 
@@ -78,6 +81,7 @@ export async function GET(
       id: ev.id,
       name: ev.name,
       location: ev.location,
+      description: ev.description,
       startDate: ymdFromDate(ev.startDate),
       endDate: ymdFromDate(ev.endDate),
       status: ev.status,
@@ -171,20 +175,37 @@ export async function PATCH(
       return NextResponse.json({ ok: true, alreadyClosed: true });
     }
 
-    // 캘린더·근태 정리(미래 날짜만) → 트랜잭션 밖. 실패해도 status 변경은 진행.
-    try {
-      await cleanupTripEventFutureDates(eventId);
-    } catch (e) {
-      console.error(
-        `[trip-events PATCH] cleanup 실패 (eventId=${eventId}):`,
-        e
-      );
+    // 1) 모든 참석자의 미래 근태(attendance_request) 정리(과거 보존)
+    const allParticipants = await prisma.tripParticipant.findMany({
+      where: { tripEventId: eventId },
+      select: { id: true },
+    });
+    for (const p of allParticipants) {
+      try {
+        await cleanupTripParticipantAttendanceFuture(p.id);
+      } catch (e) {
+        console.error(
+          `[trip-events PATCH] attendance cleanup 실패 (pid=${p.id}):`,
+          e
+        );
+      }
     }
 
+    // 2) status='closed'로 변경 (rebuild가 active 아니면 cleanup-only 모드로 동작)
     await prisma.tripEvent.update({
       where: { id: eventId },
       data: { status: "closed" },
     });
+
+    // 3) 이벤트 캘린더 재구성 → status가 closed이므로 미래 캘린더 일정 삭제만 수행
+    try {
+      await rebuildTripEventCalendar(eventId);
+    } catch (e) {
+      console.error(
+        `[trip-events PATCH] rebuildTripEventCalendar(${eventId}) 실패:`,
+        e
+      );
+    }
 
     return NextResponse.json({ ok: true });
   } catch (error) {

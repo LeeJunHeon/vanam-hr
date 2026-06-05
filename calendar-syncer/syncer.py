@@ -177,9 +177,36 @@ class Syncer:
                         },
                     }
 
+                    # Phase 7 추가: location 문자열 / attendees 이메일 배열.
+                    # 없거나 빈 값이면 body에 포함하지 않음(하위호환).
+                    location_in = data.get("location")
+                    if isinstance(location_in, str) and location_in.strip():
+                        body["location"] = location_in.strip()
+                    attendees_in = data.get("attendees")
+                    if isinstance(attendees_in, list):
+                        valid_emails = []
+                        for a in attendees_in:
+                            if isinstance(a, str) and a.strip():
+                                valid_emails.append(a.strip())
+                        # 중복 제거(순서 유지)
+                        seen = set()
+                        deduped = []
+                        for e in valid_emails:
+                            if e.lower() not in seen:
+                                seen.add(e.lower())
+                                deduped.append(e)
+                        if deduped:
+                            body["attendees"] = [{"email": e} for e in deduped]
+
+                    # sendUpdates='none': 참석자에게 초대 메일 발송 X
+                    # (이미 근태에서 승인 완료된 일정이므로 메일 불요)
                     created = (
                         self.client.service.events()
-                        .insert(calendarId=calendar_id, body=body)
+                        .insert(
+                            calendarId=calendar_id,
+                            body=body,
+                            sendUpdates="none",
+                        )
                         .execute()
                     )
                     event_id = created.get("id", "")
@@ -297,6 +324,25 @@ class Syncer:
                 patch_body["start"] = data["start"]
             if "end" in data and isinstance(data["end"], dict):
                 patch_body["end"] = data["end"]
+            # Phase 7: location(문자열, "" 입력 시 클리어 의도), attendees(이메일 배열)
+            if "location" in data:
+                loc = data["location"]
+                if loc is None:
+                    patch_body["location"] = ""
+                elif isinstance(loc, str):
+                    patch_body["location"] = loc
+            if "attendees" in data and isinstance(data["attendees"], list):
+                valid_emails = []
+                for a in data["attendees"]:
+                    if isinstance(a, str) and a.strip():
+                        valid_emails.append(a.strip())
+                seen = set()
+                deduped = []
+                for e in valid_emails:
+                    if e.lower() not in seen:
+                        seen.add(e.lower())
+                        deduped.append(e)
+                patch_body["attendees"] = [{"email": e} for e in deduped]
 
             if not patch_body:
                 return (
@@ -304,12 +350,13 @@ class Syncer:
                     400,
                 )
 
-            # 4) Google Calendar API patch
+            # 4) Google Calendar API patch (메일 미발송)
             try:
                 self.client.service.events().patch(
                     calendarId=calendar_id,
                     eventId=event_id,
                     body=patch_body,
+                    sendUpdates="none",
                 ).execute()
                 self.logger.info(
                     f"캘린더 일정 수정 완료: calendar_id={calendar_id}, "

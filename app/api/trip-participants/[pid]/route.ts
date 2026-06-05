@@ -3,8 +3,9 @@ import { requireSession, isAdminSession } from "@/lib/auth-helpers";
 import { prisma } from "@/lib/prisma";
 import { parseDatesArray } from "@/lib/trip-helpers";
 import {
-  cleanupTripParticipantFutureDates,
-  registerTripParticipantApproval,
+  cleanupTripParticipantAttendanceFuture,
+  createTripParticipantAttendanceRequests,
+  rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: 참석자 수락/거절/날짜수정 + 제거.
@@ -144,18 +145,18 @@ export async function PATCH(
       nextApprovalStatus = "pending";
     }
 
-    // Phase 7 4단계: approved였던 참석자가 update_dates로 pending이 되면,
-    // 트랜잭션에서 dates를 전부 교체하기 전에 미래 날짜의 캘린더·근태를 정리한다.
-    // (과거 날짜는 보존). 정리 실패는 로그만 — 데이터 변경은 진행.
+    // approved였던 참석자가 update_dates로 pending이 되면,
+    // 트랜잭션에서 dates를 전부 교체하기 전에 미래 근태를 정리한다(과거 보존).
+    // 캘린더는 트랜잭션 후 rebuildTripEventCalendar가 일괄 처리.
     if (
       action === "update_dates" &&
       participant.approvalStatus === "approved"
     ) {
       try {
-        await cleanupTripParticipantFutureDates(pid);
+        await cleanupTripParticipantAttendanceFuture(pid);
       } catch (e) {
         console.error(
-          `[trip-participants PATCH] cleanup 실패 (pid=${pid}):`,
+          `[trip-participants PATCH] attendance cleanup 실패 (pid=${pid}):`,
           e
         );
       }
@@ -194,18 +195,38 @@ export async function PATCH(
       return p;
     });
 
-    // Phase 7 4단계 보완: not_required 참석자는 결재를 안 거치므로
-    // accept 시점에 캘린더·근태를 생성해야 한다.
-    // - accept + approval_status='not_required' → 트리거
-    // - accept + approval_status='pending'      → admin 결재 승인 시 트리거(기존)
-    // - update_dates는 호출 불필요(approved 재승인 시 handleTripApproval이 다룸)
-    // 외부 호출은 트랜잭션 밖에서, 실패는 로그만(수락 자체는 유지).
+    // ── 트랜잭션 후처리 ──
+    // (1) accept + not_required: 근태 생성 + 이벤트 캘린더 재구성
+    // (2) update_dates approved→pending: 캘린더 재구성(이 참석자는 이제 제외됨)
+    // (3) update_dates approved이지만 여전히 approved 유지(드문 경로)면: 캘린더 재구성
+    // 외부 호출은 모두 트랜잭션 밖, 실패는 로그.
     if (action === "accept" && updated.approvalStatus === "not_required") {
       try {
-        await registerTripParticipantApproval(pid);
+        await createTripParticipantAttendanceRequests(pid);
       } catch (e) {
         console.error(
-          `[trip-participants PATCH] registerTripParticipantApproval(${pid}) 실패:`,
+          `[trip-participants PATCH] createTripParticipantAttendanceRequests(${pid}) 실패:`,
+          e
+        );
+      }
+      try {
+        await rebuildTripEventCalendar(participant.tripEvent.id);
+      } catch (e) {
+        console.error(
+          `[trip-participants PATCH] rebuildTripEventCalendar(${participant.tripEvent.id}) 실패:`,
+          e
+        );
+      }
+    } else if (
+      action === "update_dates" &&
+      participant.approvalStatus === "approved"
+    ) {
+      // approved→pending: 이 참석자는 확정 집합에서 빠진다. 이벤트 캘린더 재구성.
+      try {
+        await rebuildTripEventCalendar(participant.tripEvent.id);
+      } catch (e) {
+        console.error(
+          `[trip-participants PATCH] rebuildTripEventCalendar(${participant.tripEvent.id}) 실패:`,
           e
         );
       }
@@ -263,20 +284,31 @@ export async function DELETE(
       );
     }
 
-    // Phase 7 4단계: 삭제 전에 미래 날짜의 캘린더·근태 정리.
-    // (CASCADE로 dates는 곧 삭제되지만, 그 전에 외부 캘린더 + attendance_request를
-    //  미리 치우지 않으면 고아 데이터가 남는다. 과거 날짜는 보존.)
+    // 삭제 전에 미래 근태(attendance_request)부터 정리(과거 보존).
+    // 캘린더는 삭제 후 이벤트 단위로 rebuild하면 자동으로 정리·재구성된다.
+    const tripEventId = participant.tripEvent.id;
     try {
-      await cleanupTripParticipantFutureDates(pid);
+      await cleanupTripParticipantAttendanceFuture(pid);
     } catch (e) {
       console.error(
-        `[trip-participants DELETE] cleanup 실패 (pid=${pid}):`,
+        `[trip-participants DELETE] attendance cleanup 실패 (pid=${pid}):`,
         e
       );
     }
 
     // CASCADE로 dates도 함께 삭제됨
     await prisma.tripParticipant.delete({ where: { id: pid } });
+
+    // 이벤트 캘린더 재구성(이 참석자는 이미 제거되어 새 일정에 포함되지 않음)
+    try {
+      await rebuildTripEventCalendar(tripEventId);
+    } catch (e) {
+      console.error(
+        `[trip-participants DELETE] rebuildTripEventCalendar(${tripEventId}) 실패:`,
+        e
+      );
+    }
+
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("DELETE /api/trip-participants/[pid] error:", error);

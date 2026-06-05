@@ -505,6 +505,7 @@ model TripEvent {
   id               Int      @id @default(autoincrement())
   name             String   @db.VarChar(200)
   location         String?  @db.VarChar(200)
+  description      String?  @db.Text
   startDate        DateTime @map("start_date") @db.Date
   endDate          DateTime @map("end_date") @db.Date
   createdById      Int      @map("created_by_id")

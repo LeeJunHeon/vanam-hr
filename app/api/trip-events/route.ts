@@ -43,6 +43,7 @@ export async function GET() {
         id: e.id,
         name: e.name,
         location: e.location,
+        description: e.description,
         startDate: ymdFromDate(e.startDate),
         endDate: ymdFromDate(e.endDate),
         status: e.status,
@@ -84,9 +85,10 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json().catch(() => ({}));
-    const { name, location, startDate, endDate } = body as {
+    const { name, location, description, startDate, endDate } = body as {
       name?: unknown;
       location?: unknown;
+      description?: unknown;
       startDate?: unknown;
       endDate?: unknown;
     };
@@ -116,6 +118,12 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+    if (description !== undefined && description !== null && typeof description !== "string") {
+      return NextResponse.json(
+        { error: "description은 문자열이어야 합니다." },
+        { status: 400 }
+      );
+    }
     const start = parseYmd(startDate);
     const end = parseYmd(endDate);
     if (!start || !end) {
@@ -141,6 +149,10 @@ export async function POST(request: NextRequest) {
           typeof location === "string" && location.trim().length > 0
             ? location.trim()
             : null,
+        description:
+          typeof description === "string" && description.trim().length > 0
+            ? description.trim()
+            : null,
         startDate: start,
         endDate: end,
         createdById: ownId as number,
@@ -157,6 +169,7 @@ export async function POST(request: NextRequest) {
         id: created.id,
         name: created.name,
         location: created.location,
+        description: created.description,
         startDate: ymdFromDate(created.startDate),
         endDate: ymdFromDate(created.endDate),
         status: created.status,

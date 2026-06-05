@@ -28,6 +28,7 @@ interface TripEventListRow {
   id: number;
   name: string;
   location: string | null;
+  description: string | null;
   startDate: string;
   endDate: string;
   status: string;
@@ -67,6 +68,7 @@ interface TripEventDetail {
   id: number;
   name: string;
   location: string | null;
+  description: string | null;
   startDate: string;
   endDate: string;
   status: string;
@@ -286,10 +288,21 @@ function CreateTripModal({
 }) {
   const [name, setName] = useState("");
   const [location, setLocation] = useState("");
+  const [description, setDescription] = useState("");
+  // 메모를 사용자가 직접 손댔는지 추적 — 손대기 전까지는 이벤트명 변경에 맞춰
+  // 기본 메모를 자동 갱신("{이벤트명} 출장 일정")한다.
+  const [descTouched, setDescTouched] = useState(false);
   const [startDate, setStartDate] = useState(todayYmd());
   const [endDate, setEndDate] = useState(todayYmd());
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // 이름이 바뀌면, 사용자가 아직 메모를 수정하지 않은 경우만 기본 메모 자동 채움
+  useEffect(() => {
+    if (descTouched) return;
+    const trimmed = name.trim();
+    setDescription(trimmed.length > 0 ? `${trimmed} 출장 일정` : "");
+  }, [name, descTouched]);
 
   const canSubmit =
     name.trim().length > 0 &&
@@ -309,6 +322,7 @@ function CreateTripModal({
         body: JSON.stringify({
           name: name.trim(),
           location: location.trim() || undefined,
+          description: description.trim() || undefined,
           startDate,
           endDate,
         }),
@@ -349,6 +363,21 @@ function CreateTripModal({
             placeholder="예: 부산 BEXCO"
             className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400"
           />
+        </Field>
+        <Field label="메모(설명)">
+          <textarea
+            value={description}
+            onChange={(e) => {
+              setDescTouched(true);
+              setDescription(e.target.value);
+            }}
+            rows={3}
+            placeholder="구글 캘린더 일정 설명에 표시됩니다"
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 resize-none"
+          />
+          <p className="text-[10px] text-gray-400 mt-1">
+            * 캘린더 일정 설명에 자동 안내 문구가 함께 표시됩니다.
+          </p>
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="시작일" required>
@@ -487,6 +516,11 @@ function TripDetailModal({
                 생성자: {detail.createdByName ?? `#${detail.createdById}`}
               </span>
             </div>
+            {detail.description && detail.description.trim().length > 0 && (
+              <div className="mt-1 text-xs text-gray-600 whitespace-pre-wrap bg-white border border-gray-100 rounded-lg p-2">
+                {detail.description}
+              </div>
+            )}
           </div>
 
           {/* 액션 버튼 */}

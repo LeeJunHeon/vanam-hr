@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getApproverId, requireSession, isAdminSession } from "@/lib/auth-helpers";
-import { registerTripParticipantApproval } from "@/lib/trip-calendar";
+import {
+  createTripParticipantAttendanceRequests,
+  rebuildTripEventCalendar,
+} from "@/lib/trip-calendar";
 
 // Phase 7 3단계: 결재함에 출장(trip) 결재를 합치는 방식 A.
 // - 출장 카테고리 표기는 attendance 카테고리와 통일된 키로 노출(필터/표시 공유).
@@ -1064,20 +1067,28 @@ async function handleTripApproval(_request: NextRequest, body: any) {
     return updateRes.count;
   });
 
-  // Phase 7 4단계: 승인된 참석자들에 대해 캘린더 등록 + attendance_request 생성.
-  // 트랜잭션 밖에서 실행 — 외부(syncer) 호출 시간 동안 DB 락 잡지 않음.
-  // 개별 실패는 helper 안에서 로깅. 여기 try/catch는 전체 예외 흡수용
-  // (결재 자체는 이미 트랜잭션에서 커밋되었음).
+  // Phase 7 (이벤트 단위 재구성):
+  //  - 승인된 참석자 각각에 대해 근태(attendance_request) 생성
+  //  - 이벤트 단위로 캘린더 재구성 한 번
+  // 트랜잭션 밖에서 실행 — 외부 호출 시간 동안 DB 락 잡지 않음.
   if (action === "approve" && targetIds.length > 0) {
     for (const pid of targetIds) {
       try {
-        await registerTripParticipantApproval(pid);
+        await createTripParticipantAttendanceRequests(pid);
       } catch (e) {
         console.error(
-          `[trip-approval] registerTripParticipantApproval(${pid}) 실패:`,
+          `[trip-approval] createTripParticipantAttendanceRequests(${pid}) 실패:`,
           e
         );
       }
+    }
+    try {
+      await rebuildTripEventCalendar(eventIdNum);
+    } catch (e) {
+      console.error(
+        `[trip-approval] rebuildTripEventCalendar(${eventIdNum}) 실패:`,
+        e
+      );
     }
   }
 
