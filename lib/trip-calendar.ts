@@ -258,7 +258,16 @@ export async function registerTripParticipantApproval(
     },
   });
   if (!participant) return;
-  if (participant.approvalStatus !== "approved") return;
+  // 캘린더·근태를 만들어야 하는 두 경우:
+  //   (a) 결재 승인됨 (approved) — handleTripApproval 흐름
+  //   (b) 결재 불요 + 수락 완료 (not_required + accepted)
+  //       admin/ceo가 개입한 참석은 결재를 거치지 않으므로 수락 시점에 트리거.
+  // invited 상태(미수락)에서는 갈지 안 갈지 미확정이라 생성하지 않는다.
+  const okApproved = participant.approvalStatus === "approved";
+  const okNotRequired =
+    participant.approvalStatus === "not_required" &&
+    participant.inviteStatus === "accepted";
+  if (!okApproved && !okNotRequired) return;
   if (participant.tripEvent.status !== "active") return;
   if (participant.dates.length === 0) return;
 

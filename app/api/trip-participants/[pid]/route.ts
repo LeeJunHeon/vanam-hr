@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession, isAdminSession } from "@/lib/auth-helpers";
 import { prisma } from "@/lib/prisma";
 import { parseDatesArray } from "@/lib/trip-helpers";
-import { cleanupTripParticipantFutureDates } from "@/lib/trip-calendar";
+import {
+  cleanupTripParticipantFutureDates,
+  registerTripParticipantApproval,
+} from "@/lib/trip-calendar";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: 참석자 수락/거절/날짜수정 + 제거.
 // PATCH /api/trip-participants/[pid]
@@ -190,6 +193,23 @@ export async function PATCH(
       });
       return p;
     });
+
+    // Phase 7 4단계 보완: not_required 참석자는 결재를 안 거치므로
+    // accept 시점에 캘린더·근태를 생성해야 한다.
+    // - accept + approval_status='not_required' → 트리거
+    // - accept + approval_status='pending'      → admin 결재 승인 시 트리거(기존)
+    // - update_dates는 호출 불필요(approved 재승인 시 handleTripApproval이 다룸)
+    // 외부 호출은 트랜잭션 밖에서, 실패는 로그만(수락 자체는 유지).
+    if (action === "accept" && updated.approvalStatus === "not_required") {
+      try {
+        await registerTripParticipantApproval(pid);
+      } catch (e) {
+        console.error(
+          `[trip-participants PATCH] registerTripParticipantApproval(${pid}) 실패:`,
+          e
+        );
+      }
+    }
 
     return NextResponse.json({
       id: updated.id,

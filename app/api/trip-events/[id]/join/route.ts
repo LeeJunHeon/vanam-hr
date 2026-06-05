@@ -5,6 +5,7 @@ import {
   parseDatesArray,
   computeApprovalStatus,
 } from "@/lib/trip-helpers";
+import { registerTripParticipantApproval } from "@/lib/trip-calendar";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: self-join.
 // POST /api/trip-events/[id]/join
@@ -110,6 +111,21 @@ export async function POST(
       });
       return p;
     });
+
+    // Phase 7 4단계 보완: self-join은 invite_status='accepted'로 생성된다.
+    // approval_status가 'not_required'(=본인이 admin/ceo)이면 결재를 거치지 않으므로
+    // 여기서 캘린더·근태를 생성. 'pending'(=employee)이면 결재 승인 시 트리거.
+    // 외부 호출은 트랜잭션 밖, 실패는 로그만(self-join 자체는 유지).
+    if (created.approvalStatus === "not_required") {
+      try {
+        await registerTripParticipantApproval(created.id);
+      } catch (e) {
+        console.error(
+          `[trip-events/join] registerTripParticipantApproval(${created.id}) 실패:`,
+          e
+        );
+      }
+    }
 
     return NextResponse.json(
       {
