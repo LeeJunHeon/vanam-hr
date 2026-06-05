@@ -146,12 +146,15 @@ export async function PATCH(
       nextApprovalStatus = "pending";
     }
 
-    // approved였던 참석자가 update_dates로 pending이 되면,
-    // 트랜잭션에서 dates를 전부 교체하기 전에 미래 근태를 정리한다(과거 보존).
-    // 캘린더는 트랜잭션 후 rebuildTripEventCalendar가 일괄 처리.
+    // update_dates 시 옛 근태(attendance_request) 정리(과거 보존).
+    // - approved였다가 pending으로 되돌리는 경우 (재승인 필요)
+    // - not_required 유지 케이스(admin self-join 등): cleanup 후 새 dates 기준으로 재생성
+    // 두 경우 모두 트랜잭션에서 dates를 갈아엎기 전에 정리해야 함.
+    // pending이었으면 근태/캘린더가 없어서 cleanup은 no-op.
     if (
       action === "update_dates" &&
-      participant.approvalStatus === "approved"
+      (participant.approvalStatus === "approved" ||
+        participant.approvalStatus === "not_required")
     ) {
       try {
         await cleanupTripParticipantAttendanceFuture(pid);
@@ -214,8 +217,10 @@ export async function PATCH(
 
     // ── 트랜잭션 후처리 ──
     // (1) accept + not_required: 근태 생성 + 이벤트 캘린더 재구성
-    // (2) update_dates approved→pending: 캘린더 재구성(이 참석자는 이제 제외됨)
-    // (3) update_dates approved이지만 여전히 approved 유지(드문 경로)면: 캘린더 재구성
+    // (2) update_dates(전체): 옛 캘린더 일정 정리 + (확정 유지 시) 근태 재생성 + rebuild
+    //     - approved→pending: 이 참석자는 확정 집합에서 빠짐(rebuild가 자동 제외)
+    //     - not_required 유지: 근태 재생성 후 새 날짜로 rebuild 포함
+    //     - pending 유지(현재 코드상 발생 X, 안전 분기): rebuild만(no-op 가까움)
     // 외부 호출은 모두 트랜잭션 밖, 실패는 로그.
     if (action === "accept" && updated.approvalStatus === "not_required") {
       try {
@@ -235,17 +240,26 @@ export async function PATCH(
           e
         );
       }
-    } else if (
-      action === "update_dates" &&
-      participant.approvalStatus === "approved"
-    ) {
-      // approved→pending: 이 참석자는 확정 집합에서 빠진다. 이벤트 캘린더 재구성.
-      // 트랜잭션 시작 전에 수집한 removedEventIds를 함께 넘겨 고아 일정 제거.
+    } else if (action === "update_dates") {
+      // not_required 유지: 새 dates 기준으로 근태 재생성(approved→pending이면 skip).
+      // createTripParticipantAttendanceRequests는 멱등(이미 링크된 그룹 skip)이라
+      // 위에서 cleanup된 직후 호출해도 안전.
+      if (updated.approvalStatus === "not_required") {
+        try {
+          await createTripParticipantAttendanceRequests(pid);
+        } catch (e) {
+          console.error(
+            `[trip-participants PATCH] update_dates createTripParticipantAttendanceRequests(${pid}) 실패:`,
+            e
+          );
+        }
+      }
+      // 트랜잭션 시작 전에 수집한 removedEventIds를 함께 넘겨 고아 일정 제거 + rebuild.
       try {
         await rebuildTripEventCalendar(participant.tripEvent.id, removedEventIds);
       } catch (e) {
         console.error(
-          `[trip-participants PATCH] rebuildTripEventCalendar(${participant.tripEvent.id}) 실패:`,
+          `[trip-participants PATCH] update_dates rebuildTripEventCalendar(${participant.tripEvent.id}) 실패:`,
           e
         );
       }
