@@ -286,23 +286,33 @@ function CreateTripModal({
   onClose: () => void;
   onCreated: () => void;
 }) {
+  const { current } = useCurrentEmployee();
   const [name, setName] = useState("");
   const [location, setLocation] = useState("");
   const [description, setDescription] = useState("");
-  // 메모를 사용자가 직접 손댔는지 추적 — 손대기 전까지는 이벤트명 변경에 맞춰
-  // 기본 메모를 자동 갱신("{이벤트명} 출장 일정")한다.
+  // 메모를 사용자가 직접 손댔는지 추적 — 손대기 전까지는 자동 헤더로 채워둔다.
+  // (RequestPage 휴가/외근 autoDesc와 동일 형식)
   const [descTouched, setDescTouched] = useState(false);
   const [startDate, setStartDate] = useState(todayYmd());
   const [endDate, setEndDate] = useState(todayYmd());
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // 이름이 바뀌면, 사용자가 아직 메모를 수정하지 않은 경우만 기본 메모 자동 채움
+  // 사용자가 메모를 수정하기 전까지 RequestPage 휴가/외근과 동일 형식으로 자동 채움.
+  // 이벤트명과 무관(생성자/카테고리는 고정) — current 로드 시점에 1회 채워지면 충분.
   useEffect(() => {
     if (descTouched) return;
-    const trimmed = name.trim();
-    setDescription(trimmed.length > 0 ? `${trimmed} 출장 일정` : "");
-  }, [name, descTouched]);
+    const empName = current?.name ?? "-";
+    const deptSuffix = current?.departmentName
+      ? ` (${current.departmentName})`
+      : "";
+    const lines = [
+      "[VanaM HR 자동 등록]",
+      `신청자: ${empName}${deptSuffix}`,
+      "카테고리: 출장",
+    ];
+    setDescription(lines.join("\n"));
+  }, [current, descTouched]);
 
   const canSubmit =
     name.trim().length > 0 &&

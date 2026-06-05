@@ -378,13 +378,14 @@ export async function cleanupTripParticipantAttendanceFuture(
 // 캘린더(Google) 이벤트 단위 재구성
 // ─────────────────────────────────────────────────
 
-const CALENDAR_NOTICE =
-  "본 일정은 VanaM HR 근태 시스템에서 자동 생성·관리됩니다. 직접 수정하지 마세요.";
-
+// 캘린더 description은 사용자가 입력한 메모를 그대로 사용한다.
+// 메모는 생성 폼에서 RequestPage 휴가/외근 autoDesc 형식("[VanaM HR 자동 등록]" 헤더 포함)
+// 으로 기본 채워지므로 별도의 시스템 안내문을 추가하지 않는다.
+// 메모가 비어 있는 경우만 최소 헤더 문구로 폴백.
 function buildEventDescription(eventMemo: string | null): string {
   const memo = (eventMemo ?? "").trim();
-  if (memo.length === 0) return CALENDAR_NOTICE;
-  return `${memo}\n\n${CALENDAR_NOTICE}`;
+  if (memo.length > 0) return memo;
+  return "[VanaM HR 자동 등록]\n카테고리: 출장";
 }
 
 /**

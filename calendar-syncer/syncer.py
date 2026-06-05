@@ -196,7 +196,13 @@ class Syncer:
                                 seen.add(e.lower())
                                 deduped.append(e)
                         if deduped:
-                            body["attendees"] = [{"email": e} for e in deduped]
+                            # responseStatus='accepted'로 미리 표시 → "회신 대기 중" 제거 시도.
+                            # 같은 도메인/도메인 위임 권한에 따라 무시될 수 있으나(그 경우
+                            # needsAction으로 폴백) 코드상 시도는 안전. sendUpdates='none' 유지.
+                            body["attendees"] = [
+                                {"email": e, "responseStatus": "accepted"}
+                                for e in deduped
+                            ]
 
                     # sendUpdates='none': 참석자에게 초대 메일 발송 X
                     # (이미 근태에서 승인 완료된 일정이므로 메일 불요)
@@ -342,7 +348,10 @@ class Syncer:
                     if e.lower() not in seen:
                         seen.add(e.lower())
                         deduped.append(e)
-                patch_body["attendees"] = [{"email": e} for e in deduped]
+                # responseStatus='accepted'로 미리 표시 (POST와 동일 의도).
+                patch_body["attendees"] = [
+                    {"email": e, "responseStatus": "accepted"} for e in deduped
+                ]
 
             if not patch_body:
                 return (
