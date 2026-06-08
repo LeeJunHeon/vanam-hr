@@ -120,6 +120,9 @@ export async function GET(request: NextRequest) {
       today_category_color: string | null;
       today_is_overridden: boolean | null;
       today_reason: string | null;
+      // 외근/출장 등 시간대 일정의 시작/종료 시각 — 시간대 기반 진행상태 판정용
+      today_corrected_in: Date | null;
+      today_corrected_out: Date | null;
     };
 
     const latestRows = await prisma.$queryRaw<LatestRow[]>`
@@ -165,7 +168,9 @@ export async function GET(request: NextRequest) {
       today_request AS (
         SELECT DISTINCT ON (employee_id)
           employee_id,
-          reason
+          reason,
+          corrected_check_in,
+          corrected_check_out
         FROM hr.attendance_requests
         WHERE employee_id = ANY(${employeeIds}::int[])
           AND request_type = 'calendar_auto'
@@ -188,7 +193,9 @@ export async function GET(request: NextRequest) {
         d.category_name AS today_category_name,
         d.category_color AS today_category_color,
         d.is_overridden AS today_is_overridden,
-        r.reason AS today_reason
+        r.reason AS today_reason,
+        r.corrected_check_in AS today_corrected_in,
+        r.corrected_check_out AS today_corrected_out
       FROM (SELECT UNNEST(${employeeIds}::int[]) AS id) e
       LEFT JOIN latest_per_emp l ON l.employee_id = e.id
       LEFT JOIN today_daily d ON d.employee_id = e.id
@@ -216,37 +223,73 @@ export async function GET(request: NextRequest) {
       }
 
       // progressStatus: 클라이언트 편의 분류
-      // Phase 6-2B: 캘린더 보정(is_overridden + category_id) 있으면 최우선 (Q-A)
-      // - category_working: 캘린더 보정 + 아직 종료(check_out) 안 함
-      // - category_completed: 캘린더 보정 + 종료됨
-      // 기존 분기:
-      // - latestStatus 없음 → 오늘 presence_raw 기록 자체가 없음 → absent_today
-      // - online → working (자리에 있음)
-      // - offline + grace 미경과 → away (잠깐 자리비움, 근무중)
-      // - offline + grace 경과 → completed (퇴근 확정, aggregator가 다음 사이클에 처리)
+      // 캘린더 보정(is_overridden + category_id) 우선. 그 안에서:
+      //  - 시간대 일정(corrected_check_in/out 둘 다 있음, 예 외근 09:00~12:00):
+      //    * now < cal_in            → 일정 시작 전: 캘린더 분기 skip, 일반 WiFi 로직으로 흐름
+      //    * cal_in <= now < cal_out → "category_working"
+      //    * now >= cal_out:
+      //        realtimeStatus='working'             → "working"  (복귀해 자리에 있음)
+      //        elif check_out > cal_out             → "completed" (복귀 후 정상 퇴근)
+      //        else                                  → "category_completed" (미복귀)
+      //  - 종일 일정(corrected 없음, 예 휴가): check_out 유무로 working/completed (기존 동작)
+      // 일반(WiFi) 분기:
+      //  - latestStatus 없음 → absent_today
+      //  - online → working
+      //  - offline + grace 미경과 → away / 경과 → completed
       let progressStatus:
         | "working"
         | "away"
         | "completed"
         | "absent_today"
         | "category_working"
-        | "category_completed";
+        | "category_completed"
+        | null = null;
 
       if (r.today_is_overridden && r.today_category_id !== null) {
-        // 캘린더 보정 우선 (presence_raw와 충돌 시 캘린더 승)
-        progressStatus = r.today_check_out
-          ? "category_completed"
-          : "category_working";
-      } else if (r.latest_status === null) {
-        progressStatus = "absent_today";
-      } else if (r.latest_status === "online") {
-        progressStatus = "working";
-      } else if (r.latest_status === "offline" && r.latest_checked_at) {
-        const elapsed = now - r.latest_checked_at.getTime();
-        progressStatus = elapsed < graceMs ? "away" : "completed";
-      } else {
-        // offline인데 checked_at이 없는 비정상 케이스 → 미출근 취급
-        progressStatus = "absent_today";
+        const calIn = r.today_corrected_in;
+        const calOut = r.today_corrected_out;
+        const isTimedCalendar = !!(calIn && calOut);
+        if (isTimedCalendar) {
+          const calInMs = calIn!.getTime();
+          const calOutMs = calOut!.getTime();
+          if (now < calInMs) {
+            // 일정 시작 전 — 캘린더 분기 skip, 아래 WiFi 로직으로 흐른다.
+            progressStatus = null;
+          } else if (now < calOutMs) {
+            progressStatus = "category_working";
+          } else {
+            // 종료 후
+            if (realtimeStatus === "working") {
+              progressStatus = "working";
+            } else if (
+              r.today_check_out &&
+              r.today_check_out.getTime() > calOutMs
+            ) {
+              progressStatus = "completed";
+            } else {
+              progressStatus = "category_completed";
+            }
+          }
+        } else {
+          // 종일 일정 — 기존 동작 유지
+          progressStatus = r.today_check_out
+            ? "category_completed"
+            : "category_working";
+        }
+      }
+
+      if (progressStatus === null) {
+        if (r.latest_status === null) {
+          progressStatus = "absent_today";
+        } else if (r.latest_status === "online") {
+          progressStatus = "working";
+        } else if (r.latest_status === "offline" && r.latest_checked_at) {
+          const elapsed = now - r.latest_checked_at.getTime();
+          progressStatus = elapsed < graceMs ? "away" : "completed";
+        } else {
+          // offline인데 checked_at이 없는 비정상 케이스 → 미출근 취급
+          progressStatus = "absent_today";
+        }
       }
 
       return {
