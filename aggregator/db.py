@@ -1,6 +1,6 @@
 """psycopg2 DB 연결/쿼리. autocommit=True 패턴으로 트랜잭션 누수 차단."""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 import psycopg2
@@ -170,8 +170,10 @@ class Database:
             if not isinstance(schedule, list) or cycle_days < 1:
                 return None
 
-            # day_offset 계산
-            day_offset = (work_date - start_date).days % cycle_days
+            # day_offset 계산 (요일 고정: start_date가 속한 주의 월요일을 기준점으로)
+            # weekday(): 월=0 … 일=6 → start_date를 그 주 월요일로 내린 뒤 사이클 계산
+            anchor = start_date - timedelta(days=start_date.weekday())
+            day_offset = (work_date - anchor).days % cycle_days
 
             # schedule에서 dayIndex == day_offset 인 point 찾기
             point = None
