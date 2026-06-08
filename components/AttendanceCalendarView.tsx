@@ -412,13 +412,16 @@ export default function AttendanceCalendarView({
               return (
                 <div
                   key={`empty-${i}`}
-                  className="bg-gray-50 rounded h-24 sm:h-28"
+                  className="bg-gray-50 rounded h-28 sm:h-32"
                 />
               );
             }
             const counts = cellAggregates.get(cell.ymd) ?? {};
-            const hasData = Object.keys(counts).length > 0;
-            const entries = Object.entries(counts).slice(0, 4);
+            const allEntries = Object.entries(counts);
+            const hasData = allEntries.length > 0;
+            // 셀이 좁아 최대 3종까지 표시, 초과분은 "+N"으로 잘림 표현
+            const entries = allEntries.slice(0, 3);
+            const overflowCount = Math.max(0, allEntries.length - entries.length);
             // Phase 6-2L+ B-4: 공휴일이면 라벨 표시 + 클릭은 데이터 있을 때만 가능
             const holidayName = holidayMap.get(cell.ymd) ?? null;
             return (
@@ -426,7 +429,7 @@ export default function AttendanceCalendarView({
                 key={cell.ymd}
                 onClick={() => hasData && setSelectedDate(cell.ymd)}
                 disabled={!hasData}
-                className={`h-24 sm:h-28 p-1.5 rounded border text-left transition-colors ${
+                className={`h-28 sm:h-32 p-1.5 rounded border text-left transition-colors ${
                   hasData
                     ? "bg-white border-gray-200 hover:border-blue-400 cursor-pointer"
                     : holidayName
@@ -457,7 +460,7 @@ export default function AttendanceCalendarView({
                     </span>
                   )}
                 </div>
-                <div className="mt-1 space-y-0.5 text-xs sm:text-sm text-gray-700">
+                <div className="mt-1 space-y-0.5 text-xs sm:text-sm text-gray-700 overflow-hidden">
                   {entries.map(([key, cnt]) => {
                     let icon = "";
                     let label = "";
@@ -485,6 +488,9 @@ export default function AttendanceCalendarView({
                       </div>
                     );
                   })}
+                  {overflowCount > 0 && (
+                    <div className="truncate text-gray-400">+{overflowCount}</div>
+                  )}
                 </div>
               </button>
             );
