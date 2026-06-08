@@ -394,7 +394,13 @@ function CreateTripModal({
             <input
               type="date"
               value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
+              onChange={(e) => {
+                // 시작일이 기존 종료일보다 늦어지면 종료일도 새 시작일로 자동 보정
+                // (RequestPage 휴가/외근 폼과 동일 패턴). YYYY-MM-DD는 사전순=날짜순.
+                const v = e.target.value;
+                setStartDate(v);
+                setEndDate((prev) => (prev && prev < v ? v : prev));
+              }}
               className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 font-mono"
             />
           </Field>
