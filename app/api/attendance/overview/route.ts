@@ -183,12 +183,19 @@ export async function GET(request: NextRequest) {
               startDate: true,
               endDate: true,
               reason: true,
+              correctedCheckIn: true,
+              correctedCheckOut: true,
             },
           })
         : [];
 
     // employeeId_YYYY-MM-DD → reason 매핑 (start~end 범위 모든 날짜에 동일 reason)
+    // 그리고 같은 키 형식으로 corrected_check_in/out 시간대도 매핑(시간대 일정만 값 존재).
     const reasonMap = new Map<string, string>();
+    const correctedMap = new Map<
+      string,
+      { in: string | null; out: string | null }
+    >();
     for (const req of requests) {
       const start = new Date(req.startDate);
       const end = new Date(req.endDate);
@@ -201,6 +208,16 @@ export async function GET(request: NextRequest) {
         const key = `${req.employeeId}_${ymd}`;
         if (!reasonMap.has(key)) {
           reasonMap.set(key, req.reason ?? "");
+        }
+        if (!correctedMap.has(key)) {
+          correctedMap.set(key, {
+            in: req.correctedCheckIn
+              ? req.correctedCheckIn.toISOString()
+              : null,
+            out: req.correctedCheckOut
+              ? req.correctedCheckOut.toISOString()
+              : null,
+          });
         }
         d.setDate(d.getDate() + 1);
       }
@@ -229,6 +246,8 @@ export async function GET(request: NextRequest) {
         categoryName: a.category?.name ?? null,
         categoryColor: a.category?.displayColor ?? null,
         reason: reasonMap.get(reasonKey) ?? null,
+        correctedCheckIn: correctedMap.get(reasonKey)?.in ?? null,
+        correctedCheckOut: correctedMap.get(reasonKey)?.out ?? null,
       };
     });
 

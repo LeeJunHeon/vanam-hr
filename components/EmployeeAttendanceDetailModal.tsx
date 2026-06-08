@@ -41,6 +41,10 @@ interface DetailRow {
   categoryName: string | null;
   categoryColor: string | null;
   reason: string | null;
+  // 외근/출장 등 시간대 일정의 시간대(예 09:00~12:00) — 출퇴근 시각과 별개로 노출.
+  // 시간대 없는 종일 일정은 둘 다 null.
+  correctedCheckIn: string | null;
+  correctedCheckOut: string | null;
 }
 
 // 휴가성(vacation) 카테고리 여부
@@ -396,12 +400,24 @@ export default function EmployeeAttendanceDetailModal({
                               {renderEval(r)}
                             </td>
                             <td
-                              className="px-4 py-2.5 text-sm text-gray-600 max-w-xs truncate"
+                              className="px-4 py-2.5 text-sm text-gray-600 max-w-xs"
                               title={r.reason ?? ""}
                             >
-                              {r.reason || (
-                                <span className="text-gray-300">-</span>
-                              )}
+                              {/* 외근/출장 등 시간대 일정 — 출퇴근 시각과 별개로 일정 시간대 표시 */}
+                              {r.isOverridden &&
+                                r.correctedCheckIn &&
+                                r.correctedCheckOut && (
+                                  <div className="text-[11px] text-purple-700 font-mono">
+                                    {(r.categoryName ?? "외근")}{" "}
+                                    {formatTime(r.correctedCheckIn)}~
+                                    {formatTime(r.correctedCheckOut)}
+                                  </div>
+                                )}
+                              <div className="truncate">
+                                {r.reason || (
+                                  <span className="text-gray-300">-</span>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -430,6 +446,16 @@ export default function EmployeeAttendanceDetailModal({
                             {formatWorkMinutes(r.workMinutes)}
                           </span>
                         </div>
+                        {/* 외근/출장 등 시간대 일정 — 출퇴근 시각과 별개로 일정 시간대 표시 */}
+                        {r.isOverridden &&
+                          r.correctedCheckIn &&
+                          r.correctedCheckOut && (
+                            <div className="text-[11px] text-purple-700 font-mono">
+                              {(r.categoryName ?? "외근")}{" "}
+                              {formatTime(r.correctedCheckIn)}~
+                              {formatTime(r.correctedCheckOut)}
+                            </div>
+                          )}
                         {r.reason && (
                           <div className="text-xs text-gray-600 truncate">
                             사유: {r.reason}
