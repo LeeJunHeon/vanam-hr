@@ -379,21 +379,24 @@ class Aggregator:
         grace_in_minutes: int,
         grace_out_minutes: int,
     ) -> Optional[str]:
-        """정책 A 기반 auto_status 판정.
+        """
+        정책 A 기반 auto_status 판정.
 
         규칙:
         1) 시프트 정보 없거나 휴무:
-          - check_in + check_out 둘 다 → 'normal'
-          - check_in만 → 'working' (근무 중)
-          - 둘 다 NULL → 'absent'
-        2) 시프트 있음 + 둘 다 NULL → 'absent'
-        3) 시프트 있음 + check_in만 → 'working' (근무 중)
-        4) 시프트 있음 + check_out만 → None (판정 보류)
-        5) 시프트 있음 + 둘 다 있음:
-          - 출근 시각이 시프트 시작 + grace_in_minutes 초과 → 'late'
-          - 근무시간 < 시프트 총 근무시간 - grace_out_minutes → 'early_leave'
-          - 그 외 → 'normal'
+           - check_in + check_out 둘 다 → normal
+           - check_in만 → working (근무 중)
+           - 둘 다 NULL → absent
+        2) 시프트 있음 + 둘 다 NULL → absent
+        3) 시프트 있음 + check_out만 → None (판정 보류, 이론상 거의 없음)
+        4) 시프트 있음 + check_in 있음 (check_out 유무 무관):
+           - 출근 시각 > 시프트 시작 + grace_in_minutes → late (퇴근 전에도 확정)
+           - check_out 없음 + 지각 아님 → working (근무 중)
+           - check_out 있음 + 근무시간 < 시프트 총 - grace_out_minutes → early_leave
+           - 그 외 → normal
         """
+        from datetime import timedelta
+
         # 시프트 없거나 휴무 → 단순 판정
         if (
             shift_info is None
@@ -414,50 +417,47 @@ class Aggregator:
         if check_in is None and check_out is None:
             return "absent"
 
-        # 시프트 있음 + check_in만 → 'working' (근무 중)
-        if check_in is not None and check_out is None:
-            return "working"
-
         # 시프트 있음 + check_out만 (이론상 거의 없음) → None (판정 보류)
         if check_in is None and check_out is not None:
             return None
 
-        # 시프트 시작/종료 시각 파싱
-        shift_start_str = shift_info["start"]  # "HH:MM"
+        # 여기 도달 = check_in은 반드시 있음 (check_out은 있을 수도/없을 수도)
+
+        # 시프트 시작/종료 시각 파싱 ("HH:MM")
+        shift_start_str = shift_info["start"]
         shift_end_str = shift_info["end"]
         try:
             sh_h, sh_m = map(int, shift_start_str.split(":"))
             eh_h, eh_m = map(int, shift_end_str.split(":"))
         except (ValueError, AttributeError):
-            # 시프트 시각 파싱 실패 — 단순 'normal'
-            return "normal"
+            # 시프트 시각 파싱 실패 → 출근만이면 근무 중, 둘 다면 정상
+            return "working" if check_out is None else "normal"
 
-        # 시프트 총 근무시간 (분) — 자정 넘김 처리
+        # 시프트 총 근무시간 (분), 자정 넘김 처리 (예: 22:00~06:00)
         shift_minutes = (eh_h * 60 + eh_m) - (sh_h * 60 + sh_m)
         if shift_minutes <= 0:
-            shift_minutes += 24 * 60  # 야간 시프트 (예: 22:00~06:00)
+            shift_minutes += 24 * 60
 
         # 시프트 시작 시각을 check_in 날짜 기준 datetime으로 변환
-        check_in_date = check_in.date()
         shift_start_dt = check_in.replace(
             hour=sh_h, minute=sh_m, second=0, microsecond=0
         )
-
-        # 만약 check_in이 시프트 시작 시각보다 너무 일찍이면 (예: 7시 출근, 9시 시프트):
-        # → 일찍 도착한 것이므로 지각 아님
-
-        # 1) 출근 지각 체크
-        from datetime import timedelta
         late_threshold = shift_start_dt + timedelta(minutes=grace_in_minutes)
-        if check_in > late_threshold:
-            return "late"
 
-        # 2) 근무시간 부족 (조퇴) 체크
+        # 1) 출근 지각 체크 — 출근 시각만으로 확정 (퇴근 전에도 지각 판정)
+        is_late = check_in > late_threshold
+
+        # 2) 아직 퇴근 전(check_out 없음): 지각이면 late, 아니면 working(근무 중)
+        if check_out is None:
+            return "late" if is_late else "working"
+
+        # 3) 퇴근까지 있음: 지각 우선 → 조퇴 → 정상
+        if is_late:
+            return "late"
         actual_minutes = int((check_out - check_in).total_seconds() / 60)
         required_minutes = shift_minutes - grace_out_minutes
         if actual_minutes < required_minutes:
             return "early_leave"
-
         return "normal"
 
     def run(self):
