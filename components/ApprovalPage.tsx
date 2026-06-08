@@ -380,26 +380,26 @@ export default function ApprovalPage() {
       </div>
 
       {/* 탭 */}
-      <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit">
+      <div className="flex items-center gap-1 border-b border-gray-200">
         <button
           onClick={() => setTab("pending")}
-          className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all ${
+          className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
             tab === "pending"
-              ? "bg-white text-blue-600 shadow-sm"
-              : "text-gray-500 hover:text-gray-700"
+              ? "border-blue-600 text-blue-600"
+              : "border-transparent text-gray-500 hover:text-gray-700"
           }`}
         >
-          <ClipboardCheck size={16} /> 결재 대기
+          결재 대기
         </button>
         <button
           onClick={() => setTab("history")}
-          className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all ${
+          className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
             tab === "history"
-              ? "bg-white text-blue-600 shadow-sm"
-              : "text-gray-500 hover:text-gray-700"
+              ? "border-blue-600 text-blue-600"
+              : "border-transparent text-gray-500 hover:text-gray-700"
           }`}
         >
-          <CheckCircle size={16} /> 처리 완료
+          처리 완료
         </button>
       </div>
 
