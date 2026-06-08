@@ -137,6 +137,26 @@ export default function FieldTripPage() {
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [openEventId, setOpenEventId] = useState<number | null>(null);
+  // 출장 목록 탭: active=진행중·예정, history=취소·지난
+  const [tab, setTab] = useState<"active" | "history">("active");
+
+  // 오늘(KST) — endDate/startDate는 YYYY-MM-DD 문자열이라 사전순=날짜순 비교 가능.
+  const today = todayYmd();
+  const activeEvents = useMemo(
+    () =>
+      (events ?? []).filter(
+        (ev) => ev.status === "active" && ev.endDate >= today
+      ),
+    [events, today]
+  );
+  const historyEvents = useMemo(
+    () =>
+      (events ?? []).filter(
+        (ev) => ev.status !== "active" || ev.endDate < today
+      ),
+    [events, today]
+  );
+  const shownEvents = tab === "active" ? activeEvents : historyEvents;
 
   const fetchEvents = useCallback(async () => {
     setLoading(true);
@@ -195,25 +215,53 @@ export default function FieldTripPage() {
           <Loader2 size={28} className="animate-spin text-blue-500" />
           <span className="ml-2 text-sm text-gray-500">로딩 중...</span>
         </div>
-      ) : events && events.length === 0 ? (
-        <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center text-sm text-gray-400 flex flex-col items-center gap-3">
-          <Plane size={28} className="text-gray-300" />
-          아직 등록된 출장 이벤트가 없습니다.
-          <br />
-          상단의 &quot;새 출장 만들기&quot; 버튼으로 첫 이벤트를 생성하세요.
-        </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
-          {(events ?? []).map((ev) => (
+        <>
+          {/* 탭: 활성/예정 vs 취소/지난 */}
+          <div className="flex items-center gap-1 border-b border-gray-200">
             <button
-              key={ev.id}
-              onClick={() => setOpenEventId(ev.id)}
-              className="text-left"
+              onClick={() => setTab("active")}
+              className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
+                tab === "active"
+                  ? "border-blue-600 text-blue-600"
+                  : "border-transparent text-gray-500 hover:text-gray-700"
+              }`}
             >
-              <TripEventCard event={ev} />
+              활성/예정 ({activeEvents.length})
             </button>
-          ))}
-        </div>
+            <button
+              onClick={() => setTab("history")}
+              className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
+                tab === "history"
+                  ? "border-blue-600 text-blue-600"
+                  : "border-transparent text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              취소/지난 ({historyEvents.length})
+            </button>
+          </div>
+
+          {shownEvents.length === 0 ? (
+            <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center text-sm text-gray-400 flex flex-col items-center gap-3">
+              <Plane size={28} className="text-gray-300" />
+              {tab === "active"
+                ? "진행 중이거나 예정된 출장이 없습니다."
+                : "취소되었거나 지난 출장이 없습니다."}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
+              {shownEvents.map((ev) => (
+                <button
+                  key={ev.id}
+                  onClick={() => setOpenEventId(ev.id)}
+                  className="text-left"
+                >
+                  <TripEventCard event={ev} today={today} />
+                </button>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {createOpen && (
@@ -239,15 +287,37 @@ export default function FieldTripPage() {
 }
 
 // ── 카드 ─────────────────────────────────────
-function TripEventCard({ event }: { event: TripEventListRow }) {
+function TripEventCard({
+  event,
+  today,
+}: {
+  event: TripEventListRow;
+  today: string; // YYYY-MM-DD (KST)
+}) {
+  // 상태 배지: closed=취소됨(회색), active이고 종료일이 오늘 이전=종료(회색),
+  //            그 외(active && endDate >= today)=진행중(파랑)
+  let badgeLabel: string;
+  let badgeCls: string;
+  if (event.status === "closed") {
+    badgeLabel = "취소됨";
+    badgeCls = "bg-gray-100 text-gray-600";
+  } else if (event.status === "active" && event.endDate < today) {
+    badgeLabel = "종료";
+    badgeCls = "bg-gray-100 text-gray-500";
+  } else {
+    badgeLabel = "진행중";
+    badgeCls = "bg-blue-100 text-blue-700";
+  }
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5 hover:shadow-md hover:border-blue-200 transition-all">
       <div className="flex items-start justify-between gap-2">
         <h3 className="text-base font-bold text-gray-900 truncate flex-1">
           {event.name}
         </h3>
-        <span className="text-[10px] font-semibold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full shrink-0">
-          {event.status === "active" ? "진행중" : event.status}
+        <span
+          className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${badgeCls}`}
+        >
+          {badgeLabel}
         </span>
       </div>
       <div className="mt-3 space-y-1.5 text-sm">

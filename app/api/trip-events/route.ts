@@ -18,15 +18,14 @@ function ymdFromDate(d: Date): string {
 }
 
 // GET /api/trip-events
-// 활성(active) 출장 이벤트 목록. 모든 로그인 사용자가 호출 가능.
-// 응답에 참석자 수(participantCount) 포함 — 이번 단계에선 항상 0이지만 다음 단계 대비.
+// 전체 출장 이벤트 목록(활성+취소). 프론트에서 활성/예정·취소/지난 탭으로 분류.
+// 모든 로그인 사용자가 호출 가능. 응답에 참석자 수(participantCount) 포함.
 export async function GET() {
   try {
     const sessionR = await requireSession();
     if (!sessionR.ok) return sessionR.response;
 
     const events = await prisma.tripEvent.findMany({
-      where: { status: "active" },
       orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
       include: {
         createdBy: {
