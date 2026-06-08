@@ -246,13 +246,18 @@ export default function ApprovalPage() {
     return approvals.filter((it) => it.categoryCode === categoryFilter);
   }, [approvals, categoryFilter]);
 
+  // request_status lookup에 cancelled가 시드돼 있지 않을 수 있어 fallback 보강.
+  // lookup이 있으면 lookup 우선(기존 동작), 없으면 "취소됨"으로 표시.
   const getStatusLabel = (code: string): string => {
     const lookup = statusLookups.find((l) => l.code === code);
-    return lookup ? lookup.label : code;
+    if (lookup) return lookup.label;
+    if (code === "cancelled") return "취소됨";
+    return code;
   };
   const getStatusColor = (code: string): string | null => {
     const lookup = statusLookups.find((l) => l.code === code);
     return lookup?.color ?? null;
+    // cancelled에 lookup 색상이 없으면 statusBadge가 기본 회색(#f3f4f6/#4b5563)을 사용 — UX와 부합.
   };
 
   function statusBadge(code: string) {

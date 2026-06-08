@@ -267,10 +267,11 @@ export async function GET(request: NextRequest) {
     } else if (status === "approved" || status === "rejected") {
       where = { status, approvedById: approverId };
     } else {
-      // 본인이 결재한 전체 이력
+      // 본인이 결재한 전체 이력 — 신청자 측 취소(approved→cancelled) 포함.
+      // pending 단계에서 취소된 건은 approvedById가 없어 자연스럽게 제외됨.
       where = {
         approvedById: approverId,
-        status: { in: ["approved", "rejected"] },
+        status: { in: ["approved", "rejected", "cancelled"] },
       };
     }
 
