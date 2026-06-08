@@ -183,6 +183,12 @@ function isVacationCategory(code: string | null): boolean {
   return ["ANNUAL", "HALF_AM", "HALF_PM", "SICK", "FAMILY_EVENT"].includes(code);
 }
 
+// "진행/완료" 접미사를 붙이지 않고 카테고리명만 표시할 카테고리.
+// = 휴가류 + 기타(ETC). ETC는 "기타중/기타완료" 어색해서 "기타"로만 노출.
+function isLabelOnlyCategory(code: string | null): boolean {
+  return isVacationCategory(code) || code === "ETC";
+}
+
 // 진행 상태 라벨. 카테고리 분기에서는 row를 통해 categoryName/CategoryCode 사용.
 function progressLabel(s: ProgressStatus, row?: RealtimeRow): string {
   switch (s) {
@@ -196,15 +202,15 @@ function progressLabel(s: ProgressStatus, row?: RealtimeRow): string {
       return "미출근";
     case "category_working":
       if (row?.todayCategoryName) {
-        return isVacationCategory(row.todayCategoryCode)
-          ? row.todayCategoryName // "연차"/"병가" 등
+        return isLabelOnlyCategory(row.todayCategoryCode)
+          ? row.todayCategoryName // "연차"/"병가"/"기타" 등 (접미사 X)
           : `${row.todayCategoryName}중`; // "외근중"
       }
       return "부재중";
     case "category_completed":
       if (row?.todayCategoryName) {
-        return isVacationCategory(row.todayCategoryCode)
-          ? row.todayCategoryName // "연차"
+        return isLabelOnlyCategory(row.todayCategoryCode)
+          ? row.todayCategoryName // "연차"/"기타" 등 (접미사 X)
           : `${row.todayCategoryName}완료`; // "외근완료"
       }
       return "부재중";
