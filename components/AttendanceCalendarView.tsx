@@ -274,12 +274,16 @@ export default function AttendanceCalendarView({
 
     const csv = "﻿" + [header, ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    // 표준 안전 패턴: a를 body에 붙여 click → remove. revokeObjectURL은 다운로드
+    // 시작 후 정리(즉시 revoke하면 일부 브라우저에서 빈 파일/실패).
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = `근태_${effectiveYm}.csv`;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   // 헤더용: "YYYY-MM" → "YYYY년 M월"
