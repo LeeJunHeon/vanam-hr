@@ -145,16 +145,25 @@ export async function PATCH(
 
     const body = await request.json().catch(() => ({}));
     const action = (body as { action?: unknown }).action;
-    if (action !== "cancel") {
+    if (action !== "cancel" && action !== "update") {
       return NextResponse.json(
-        { error: "action은 'cancel'만 지원합니다." },
+        { error: "action은 'cancel' 또는 'update'만 지원합니다." },
         { status: 400 }
       );
     }
 
     const ev = await prisma.tripEvent.findUnique({
       where: { id: eventId },
-      select: { id: true, status: true, createdById: true },
+      select: {
+        id: true,
+        status: true,
+        createdById: true,
+        startDate: true,
+        endDate: true,
+        name: true,
+        location: true,
+        description: true,
+      },
     });
     if (!ev) {
       return NextResponse.json(
@@ -163,12 +172,130 @@ export async function PATCH(
       );
     }
 
-    // 권한: 생성자 또는 admin/ceo
+    // 권한: 생성자 또는 admin/ceo (cancel·update 공통)
     if (ev.createdById !== ownId && !isAdmin) {
       return NextResponse.json(
-        { error: "이벤트를 취소할 권한이 없습니다." },
+        { error: "이벤트를 변경할 권한이 없습니다." },
         { status: 403 }
       );
+    }
+
+    // ── action: update (이름·장소·메모·기간 수정) ──
+    if (action === "update") {
+      const b = body as {
+        name?: unknown;
+        location?: unknown;
+        description?: unknown;
+        startDate?: unknown;
+        endDate?: unknown;
+      };
+
+      const name = typeof b.name === "string" ? b.name.trim() : "";
+      if (name.length === 0) {
+        return NextResponse.json(
+          { error: "출장명은 필수입니다." },
+          { status: 400 }
+        );
+      }
+      if (name.length > 200) {
+        return NextResponse.json(
+          { error: "출장명이 너무 깁니다 (최대 200자)." },
+          { status: 400 }
+        );
+      }
+
+      const location =
+        typeof b.location === "string" && b.location.trim().length > 0
+          ? b.location.trim()
+          : null;
+      const description =
+        typeof b.description === "string" && b.description.trim().length > 0
+          ? b.description.trim()
+          : null;
+
+      const sd = typeof b.startDate === "string" ? b.startDate : "";
+      const ed = typeof b.endDate === "string" ? b.endDate : "";
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(sd) || !/^\d{4}-\d{2}-\d{2}$/.test(ed)) {
+        return NextResponse.json(
+          { error: "날짜 형식이 잘못되었습니다 (YYYY-MM-DD)." },
+          { status: 400 }
+        );
+      }
+      if (sd > ed) {
+        return NextResponse.json(
+          { error: "종료일은 시작일 이후여야 합니다." },
+          { status: 400 }
+        );
+      }
+      const newStart = new Date(sd + "T00:00:00.000Z");
+      const newEnd = new Date(ed + "T00:00:00.000Z");
+
+      // 기간이 바뀌는 경우에만 충돌 검사 (이름/장소/메모만 바뀌면 skip)
+      const periodChanged =
+        sd !== ymdFromDate(ev.startDate) || ed !== ymdFromDate(ev.endDate);
+
+      if (periodChanged) {
+        // 참석자 날짜 중 새 기간을 벗어나는 것이 하나라도 있으면 차단
+        const outOfRange = await prisma.tripParticipantDate.findMany({
+          where: {
+            tripParticipant: { tripEventId: eventId },
+            OR: [
+              { attendDate: { lt: newStart } },
+              { attendDate: { gt: newEnd } },
+            ],
+          },
+          select: {
+            attendDate: true,
+            tripParticipant: {
+              select: { employee: { select: { name: true } } },
+            },
+          },
+          orderBy: { attendDate: "asc" },
+        });
+
+        if (outOfRange.length > 0) {
+          const detail = outOfRange
+            .map(
+              (d) =>
+                `${d.tripParticipant.employee?.name ?? "?"}(${ymdFromDate(
+                  d.attendDate
+                )})`
+            )
+            .join(", ");
+          return NextResponse.json(
+            {
+              error:
+                "다음 참석자 날짜가 새 기간을 벗어나 수정할 수 없습니다: " +
+                detail +
+                ". 해당 참석자의 날짜를 먼저 수정하거나 참석자를 제거한 뒤 기간을 변경하세요.",
+            },
+            { status: 409 }
+          );
+        }
+      }
+
+      await prisma.tripEvent.update({
+        where: { id: eventId },
+        data: {
+          name,
+          location,
+          description,
+          startDate: newStart,
+          endDate: newEnd,
+        },
+      });
+
+      // 캘린더 재구성 (이름/장소/메모/기간 반영). 실패는 로그만.
+      try {
+        await rebuildTripEventCalendar(eventId);
+      } catch (e) {
+        console.error(
+          `[trip-events PATCH update] rebuildTripEventCalendar(${eventId}) 실패:`,
+          e
+        );
+      }
+
+      return NextResponse.json({ ok: true });
     }
 
     if (ev.status === "closed") {

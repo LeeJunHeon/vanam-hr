@@ -434,6 +434,150 @@ function CreateTripModal({
   );
 }
 
+// ── 수정 모달 ────────────────────────────────
+// 생성 모달과 동일한 폼 레이아웃(출장명/장소/메모/시작일/종료일).
+// - 메모 자동 채움 useEffect는 사용하지 않음(기존 메모를 그대로 편집).
+// - 시작일 onChange 시 종료일 자동 보정은 동일하게 유지.
+// - PATCH 응답이 409면 j.error를 InlineError로 노출(기간 충돌 안내 그대로 표시).
+function EditTripModal({
+  event,
+  onClose,
+  onUpdated,
+}: {
+  event: TripEventDetail;
+  onClose: () => void;
+  onUpdated: () => void;
+}) {
+  const [name, setName] = useState(event.name);
+  const [location, setLocation] = useState(event.location ?? "");
+  const [description, setDescription] = useState(event.description ?? "");
+  const [startDate, setStartDate] = useState(event.startDate);
+  const [endDate, setEndDate] = useState(event.endDate);
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const canSubmit =
+    name.trim().length > 0 &&
+    /^\d{4}-\d{2}-\d{2}$/.test(startDate) &&
+    /^\d{4}-\d{2}-\d{2}$/.test(endDate) &&
+    startDate <= endDate &&
+    !submitting;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/trip-events/${event.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update",
+          name: name.trim(),
+          location: location.trim() || undefined,
+          description: description.trim() || undefined,
+          startDate,
+          endDate,
+        }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setErr(j.error || `수정 실패 (${res.status})`);
+        return;
+      }
+      onUpdated();
+    } catch (e) {
+      console.error("trip-events PATCH update error:", e);
+      setErr("출장 이벤트 수정 중 오류가 발생했습니다.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <ModalShell
+      title="출장 수정"
+      icon={<Edit3 size={18} className="text-blue-600" />}
+      onClose={onClose}
+      nested
+    >
+      <div className="space-y-3">
+        <Field label="출장명" required>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={200}
+            placeholder="예: 2026 추계 학술대회"
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400"
+          />
+        </Field>
+        <Field label="장소">
+          <input
+            type="text"
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+            maxLength={200}
+            placeholder="예: 부산 BEXCO"
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400"
+          />
+        </Field>
+        <Field label="메모(설명)">
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={3}
+            placeholder="구글 캘린더 일정 설명에 표시됩니다"
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 resize-none"
+          />
+          <p className="text-[10px] text-gray-400 mt-1">
+            * 캘린더 일정 설명에 그대로 반영됩니다.
+          </p>
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="시작일" required>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => {
+                const v = e.target.value;
+                setStartDate(v);
+                setEndDate((prev) => (prev && prev < v ? v : prev));
+              }}
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 font-mono"
+            />
+          </Field>
+          <Field label="종료일" required>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              min={startDate}
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 font-mono"
+            />
+          </Field>
+        </div>
+        {startDate > endDate && (
+          <InlineError text="종료일은 시작일 이후여야 합니다." />
+        )}
+        <p className="text-[11px] text-gray-400 leading-relaxed">
+          * 기간을 줄여 기존 참석자 날짜가 새 기간을 벗어나면 저장이 차단됩니다.
+          해당 참석자의 날짜를 먼저 조정하거나 참석자를 제거한 뒤 다시 시도하세요.
+        </p>
+      </div>
+      {err && <InlineError text={err} />}
+      <ModalActions
+        onClose={onClose}
+        submitting={submitting}
+        canSubmit={canSubmit}
+        onSubmit={submit}
+        submitLabel="수정 저장"
+        submitIcon={<Edit3 size={14} />}
+      />
+    </ModalShell>
+  );
+}
+
 // ── 상세 모달 ────────────────────────────────
 function TripDetailModal({
   eventId,
@@ -452,6 +596,7 @@ function TripDetailModal({
   const [err, setErr] = useState<string | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   // 본인 참석자 행에서 "수락" 또는 "날짜 변경" 모달 (어느 모드인지 표시)
   const [selfActionMode, setSelfActionMode] = useState<
     null | "accept" | "update"
@@ -561,6 +706,16 @@ function TripDetailModal({
                   나도 참여
                 </button>
               )}
+            {/* 이벤트 수정(이름/장소/메모/기간) — 생성자 또는 admin/ceo, active일 때만 */}
+            {detail.status === "active" && (isCreator || isAdmin) && (
+              <button
+                onClick={() => setEditOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-xl hover:bg-gray-200 ml-auto"
+              >
+                <Edit3 size={14} />
+                수정
+              </button>
+            )}
             {/* Phase 7 4단계: 이벤트 취소(생성자 or admin/ceo, active일 때만).
                 취소 시 미래 날짜의 캘린더·근태를 자동 정리(과거 보호). */}
             {detail.status === "active" && (isCreator || isAdmin) && (
@@ -586,7 +741,7 @@ function TripDetailModal({
                   }
                   refreshAll();
                 }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-rose-700 bg-rose-50 rounded-xl hover:bg-rose-100 ml-auto"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-rose-700 bg-rose-50 rounded-xl hover:bg-rose-100"
               >
                 <X size={14} />
                 이벤트 취소
@@ -736,6 +891,16 @@ function TripDetailModal({
             setSelfActionMode(null);
             refreshAll();
             return null;
+          }}
+        />
+      )}
+      {detail && editOpen && (
+        <EditTripModal
+          event={detail}
+          onClose={() => setEditOpen(false)}
+          onUpdated={() => {
+            setEditOpen(false);
+            refreshAll();
           }}
         />
       )}
