@@ -1,4 +1,4 @@
-"""ipTIME SNMP 클라이언트. easysnmp (net-snmp C 바인딩) 기반.
+"""ipTIME SNMP 클라이언트. net-snmp CLI(snmpbulkwalk) subprocess 기반.
 
 sync 호출. asyncio 의존성 없음.
 
@@ -6,27 +6,21 @@ sync 호출. asyncio 의존성 없음.
   OID: 1.3.6.1.2.1.4.22.1.2
   내용: ARP 테이블의 MAC 주소 (PhysAddress)
 
-실측 (2026-05-21):
-- 60초 간격 5회 walk 모두 52건 일관 응답
-- 평균 0.033초 (vendor OID 4초의 120배 빠름)
-- timeout 0회, 격행/cool down 없음
-- 본인 폰 매칭률 100%
-
-이전 vendor OID (1.3.6.1.4.1.12874.1.3.1.1.2)는 캐시 갱신 주기 때문에
-격행으로 빈 응답 50% 발생 → 표준 OID로 모든 문제 해결.
+이전 easysnmp(C 바인딩)는 커널 소켓 I/O에 묶이면 GIL을 잡은 채 D-state로 빠져
+파이썬 timeout/signal/예외/로그가 전부 무력화되는 장애가 있어, subprocess로
+격리. 별도 프로세스이므로 SNMP가 묶여도 파이썬 메인 루프는 묶이지 않고,
+OS `timeout`(SIGKILL)이 강제 종료를 보장.
 
 OID 구조: 1.3.6.1.2.1.4.22.1.2.{ifIndex}.{IP옥텟1}.{IP옥텟2}.{IP옥텟3}.{IP옥텟4}
-값 형식: raw bytes 6자 (MAC 주소 그대로 binary)
+값 형식: snmpbulkwalk -On 출력 Hex-STRING 6바이트 (MAC 주소)
 """
 
-from typing import Optional
-
-from easysnmp import Session
-from easysnmp.exceptions import EasySNMPTimeoutError
+import re
+import subprocess
 
 
 class SnmpClient:
-    """표준 SNMP MIB 기반 ARP 테이블 클라이언트 (sync, Session 재사용)."""
+    """표준 SNMP MIB 기반 ARP 테이블 클라이언트 (subprocess 격리)."""
 
     # 표준 ipNetToMediaPhysAddress (ARP 테이블의 MAC 주소)
     # 실측: ipTIME 펌웨어 4.4.198에서 timeout 없이 한 번에 다 응답
@@ -45,73 +39,80 @@ class SnmpClient:
         self.port = port
         self.timeout = timeout
         self.retries = retries
-        self._session: Optional[Session] = None
-
-    def _get_session(self) -> Session:
-        """Session 인스턴스 lazy 생성 + 재사용."""
-        if self._session is None:
-            self._session = Session(
-                hostname=self.host,
-                community=self.community,
-                version=2,  # SNMPv2c
-                remote_port=self.port,
-                timeout=self.timeout,
-                retries=self.retries,
-                use_numeric=True,  # OID를 숫자 그대로 (MIB 변환 X)
-            )
-        return self._session
 
     def walk_mac_table(self) -> list[dict]:
-        """표준 ARP OID walk. 한 번에 다 받음 (timeout 없음).
-
-        반환 형식: [
-            {mac: 'aabbccddeeff' (정규화된 lowercase 12자리),
-             oid_index: '{ifIndex}.{IP옥텟1}.{IP옥텟2}.{IP옥텟3}.{IP옥텟4}'},
-            ...
-        ]
         """
-        session = self._get_session()
+        표준 ARP OID를 net-snmp CLI(snmpbulkwalk)로 walk.
+
+        easysnmp(C 바인딩) 대신 subprocess로 격리:
+        - C 레벨 블로킹이 나도 별도 프로세스라 파이썬 메인 루프는 묶이지 않음
+        - OS `timeout`(SIGKILL)이 1차 강제 종료, subprocess timeout이 2차 안전장치
+
+        반환 형식: [{"mac": "aabbccddeeff", "oid_index": "ifIndex.IP1.IP2.IP3.IP4"}, ...]
+        실패 시 빈 리스트.
+        """
+        target = self.host if self.port == 161 else f"{self.host}:{self.port}"
+        cmd = [
+            "timeout", "--signal=KILL", "8",
+            "snmpbulkwalk",
+            "-v2c",
+            "-c", self.community,
+            "-t", str(self.timeout),
+            "-r", str(self.retries),
+            "-On",
+            target,
+            self.MAC_OID_PREFIX,
+        ]
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,  # OS timeout(8s)이 1차, 이건 2차 안전장치
+            )
+        except subprocess.TimeoutExpired:
+            # 메인 루프는 절대 묶이지 않음 — 이번 사이클만 빈 결과로 건너뜀
+            return []
+        except Exception:
+            return []
+
+        # returncode != 0 (timeout 124, SIGKILL 137, SNMP 오류 등)이어도
+        # stdout에 부분 결과가 있을 수 있으니 그대로 파싱
+        return self._parse_snmp_output(proc.stdout)
+
+    def _parse_snmp_output(self, stdout: str) -> list[dict]:
+        """snmpbulkwalk -On 출력을 파싱해서 [{mac, oid_index}, ...] 생성."""
         results: list[dict] = []
-        current_oid = self.MAC_OID_PREFIX
-        # 안전장치: 무한 루프 방지
-        max_iterations = 500
         seen_oids: set[str] = set()
 
-        for _ in range(max_iterations):
+        # 예: .1.3.6.1.2.1.4.22.1.2.10.192.168.0.13 = Hex-STRING: 5A 86 94 08 FB 98
+        pattern = re.compile(
+            r"^\.?" + re.escape(self.MAC_OID_PREFIX)
+            + r"\.(\S+)\s+=\s+Hex-STRING:\s+([0-9A-Fa-f ]+?)\s*$"
+        )
+
+        for line in stdout.splitlines():
+            m = pattern.match(line.strip())
+            if not m:
+                continue  # prefix 밖 / Hex-STRING 아닌 라인 / 에러 라인 무시
+
+            oid_index = m.group(1)  # ifIndex.IP1.IP2.IP3.IP4
+            if oid_index in seen_oids:
+                continue
+            seen_oids.add(oid_index)
+
+            hex_clean = m.group(2).replace(" ", "")
             try:
-                item = session.get_next(current_oid)
-            except EasySNMPTimeoutError:
-                # 표준 OID는 정상 환경에서 timeout 발생 안 함.
-                # 발생 시 라우터 진짜 장애 → 부분 결과 반환.
-                break
+                raw = bytes.fromhex(hex_clean)
+            except ValueError:
+                continue
 
-            # easysnmp가 마지막 옥텟을 oid_index로 분리하므로 둘을 조합
-            base = str(item.oid).lstrip(".")
-            idx = str(item.oid_index) if item.oid_index else ""
-            item_oid = f"{base}.{idx}" if idx else base
+            mac = self.normalize_mac(raw)  # 기존 함수 재사용 (6바이트 검증 + 소문자)
+            if not mac:
+                continue
 
-            # prefix 벗어나면 walk 종료
-            if not item_oid.startswith(self.MAC_OID_PREFIX):
-                break
-
-            # 무한 루프 안전장치: 같은 OID가 또 나오면 종료
-            if item_oid in seen_oids:
-                break
-            seen_oids.add(item_oid)
-
-            normalized = self.normalize_mac(item.value)
-            if normalized:
-                oid_index_full = item_oid[
-                    len(self.MAC_OID_PREFIX) :
-                ].lstrip(".")
-                results.append(
-                    {
-                        "mac": normalized,
-                        "oid_index": oid_index_full,
-                    }
-                )
-
-            current_oid = item_oid
+            results.append({"mac": mac, "oid_index": oid_index})
 
         return results
 

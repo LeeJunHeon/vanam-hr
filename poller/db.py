@@ -15,6 +15,7 @@ class Database:
             "dbname": dbname,
             "user": user,
             "password": password,
+            "connect_timeout": 5,
         }
         self.conn = None
         self._connect()
