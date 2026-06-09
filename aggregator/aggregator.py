@@ -515,6 +515,22 @@ class Aggregator:
 
         emp_id = emp["id"]
 
+        # 0) 오늘 승인된 부재(휴가/외근/출장/재택)가 있으면 알림 자체를 스킵.
+        #    회사 WiFi에 안 잡히는 게 정상인 날이므로 상태도 리셋.
+        try:
+            absence = self.db.get_active_absence_today(emp_id, today)
+        except Exception as e:
+            self.logger.debug(
+                f"  [disconnect] get_active_absence_today 실패 (emp={emp_id}): {e}"
+            )
+            absence = None
+        if absence:
+            self.logger.debug(
+                f"[끊김알림] {emp.get('name')} 오늘 부재({absence}) — 스킵"
+            )
+            self._disconnect_notified.pop(emp_id, None)
+            return
+
         # 1) 오늘 시프트 조회
         try:
             shift = self.db.get_employee_shift(emp_id, today)

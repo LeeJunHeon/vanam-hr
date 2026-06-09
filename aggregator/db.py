@@ -69,6 +69,37 @@ class Database:
             )
             return [dict(r) for r in c.fetchall()]
 
+    def get_active_absence_today(
+        self, employee_id: int, work_date: date
+    ) -> Optional[str]:
+        """오늘(work_date)에 걸쳐 승인된 '회사 부재' 신청이 있으면 그 카테고리 code 반환.
+
+        부재 = 휴가류(type IN 'leave','long_leave') 또는 회사 밖 근무
+              (외근/출장/재택, code IN 'EXTERNAL_WORK','BUSINESS_TRIP','REMOTE_WORK').
+        get_auto_approved_request는 external_source='google_calendar'만 잡아
+        수동 결재된 연차/반차/병가가 누락되므로, attendance_requests를 직접 조회.
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                SELECT cat.code
+                FROM hr.attendance_requests r
+                JOIN hr.attendance_categories cat ON r.category_id = cat.id
+                WHERE r.employee_id = %s
+                  AND r.status IN ('approved', 'auto_approved', 'auto_delegated')
+                  AND r.start_date <= %s
+                  AND r.end_date >= %s
+                  AND (cat.type IN ('leave', 'long_leave')
+                       OR cat.code IN ('EXTERNAL_WORK', 'BUSINESS_TRIP', 'REMOTE_WORK'))
+                ORDER BY r.requested_at DESC
+                LIMIT 1
+                """,
+                (employee_id, work_date, work_date),
+            )
+            row = c.fetchone()
+            return row[0] if row else None
+
     def get_presence_raw_by_work_date(
         self,
         employee_id: int,
