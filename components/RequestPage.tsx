@@ -116,6 +116,9 @@ const EMPTY_FORM = {
 // - 그 외(반차/병가/외근/출장/재택/기타 등): 시간 입력란 표시, 빈칸 = 종일
 const CATEGORIES_WITHOUT_TIME = new Set(["ANNUAL"]);
 
+// 휴가/근태 신청 탭에서 숨길 카테고리(출장/외근은 "출장/외근 관리" 탭에서 생성). 재택(REMOTE_WORK)은 유지.
+const HIDDEN_REQUEST_CATEGORY_CODES = new Set(["EXTERNAL_WORK", "BUSINESS_TRIP"]);
+
 // 반차 시간 기본값 (사용자 수정 가능)
 const HALF_DAY_DEFAULTS: Record<string, { in: string; out: string }> = {
   HALF_AM: { in: "09:00", out: "13:00" },
@@ -190,14 +193,19 @@ export default function RequestPage() {
         if (cRes.ok) {
           const data = await cRes.json();
           setCategories(
-            data.map((c: any) => ({
-              id: c.id,
-              code: c.code,
-              name: c.name,
-              type: c.type,
-              displayColor: c.displayColor,
-              requireApproval: c.requireApproval,
-            }))
+            data
+              .map((c: any) => ({
+                id: c.id,
+                code: c.code,
+                name: c.name,
+                type: c.type,
+                displayColor: c.displayColor,
+                requireApproval: c.requireApproval,
+              }))
+              .filter(
+                (c: { code: string }) =>
+                  !HIDDEN_REQUEST_CATEGORY_CODES.has(c.code)
+              )
           );
         }
         if (sRes.ok) setStatusLookups(await sRes.json());
