@@ -31,6 +31,17 @@ interface ScheduleResponse {
   schedules: ScheduleRow[];
 }
 
+// 사람 단위 묶음 — 같은 직원이 같은 카테고리에 여러 일정을 올린 경우 1명으로
+// 합치고, rows에 그 사람의 일정들을 누적한다.
+interface PersonGroup {
+  employeeId: number;
+  employeeNo: string;
+  employeeName: string;
+  departmentName: string | null;
+  positionName: string | null;
+  rows: ScheduleRow[];
+}
+
 // 카테고리 그룹 정의 (사용자 결정 Q3, 표시 순서)
 // FAMILY_EVENT는 아이콘 X (사용자 결정)
 const CATEGORY_GROUPS = [
@@ -190,18 +201,45 @@ export default function ScheduleOverviewPage() {
     };
   }, [fetchSchedule]);
 
-  // 그룹별로 schedules 분배 (빈 그룹도 표시 — Q2)
+  // 그룹별로 schedules 분배 — 사람 단위(employeeId)로 묶고 rows에 일정 누적.
+  // 같은 사람이 같은 카테고리에 일정을 여러 건 올려도 1명으로 카운트되고,
+  // 모달에서 일정별 상세를 보여줄 수 있도록 원본 row를 보관한다.
   const groupedSchedules = useMemo(() => {
-    const result: Record<string, ScheduleRow[]> = {};
-    for (const g of CATEGORY_GROUPS) result[g.key] = [];
+    const result: Record<string, PersonGroup[]> = {};
+    const idx: Record<string, Map<number, PersonGroup>> = {};
+    for (const g of CATEGORY_GROUPS) {
+      result[g.key] = [];
+      idx[g.key] = new Map();
+    }
     if (data) {
       for (const row of data.schedules) {
         const key = getGroupKey(row.categoryCode);
-        if (result[key]) result[key].push(row);
+        if (!result[key]) continue;
+        let pg = idx[key].get(row.employeeId);
+        if (!pg) {
+          pg = {
+            employeeId: row.employeeId,
+            employeeNo: row.employeeNo,
+            employeeName: row.employeeName,
+            departmentName: row.departmentName,
+            positionName: row.positionName,
+            rows: [],
+          };
+          idx[key].set(row.employeeId, pg);
+          result[key].push(pg);
+        }
+        pg.rows.push(row);
       }
     }
     return result;
   }, [data]);
+
+  // 상단 "오늘 총 부재/외근 인원" — data.total(=일정 건수)이 아니라 distinct 인원수
+  const totalPeople = useMemo(
+    () =>
+      data ? new Set(data.schedules.map((s) => s.employeeId)).size : 0,
+    [data]
+  );
 
   if (loading && !data) {
     return (
@@ -260,7 +298,7 @@ export default function ScheduleOverviewPage() {
           오늘 총 부재/외근 인원
         </p>
         <p className="text-2xl sm:text-3xl font-bold text-blue-700 font-mono">
-          {data.total}
+          {totalPeople}
           <span className="text-base font-medium text-blue-600">명</span>
         </p>
         <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-blue-700/80">
@@ -304,15 +342,16 @@ export default function ScheduleOverviewPage() {
               {/* 카테고리 라벨 */}
               <h3 className={`text-sm font-bold ${c.text}`}>{group.label}</h3>
 
-              {/* 미리보기 — 최대 3명 이름 */}
+              {/* 미리보기 — 최대 3명 이름 (사람당 일정이 여러 건이면 "(N건)" 표시) */}
               {hasItems ? (
                 <div className="mt-2 space-y-0.5">
-                  {items.slice(0, 3).map((row) => (
+                  {items.slice(0, 3).map((pg) => (
                     <p
-                      key={row.id}
+                      key={pg.employeeId}
                       className="text-xs text-gray-600 truncate"
                     >
-                      {row.employeeName}
+                      {pg.employeeName}
+                      {pg.rows.length > 1 ? ` (${pg.rows.length}건)` : ""}
                     </p>
                   ))}
                   {items.length > 3 && (
