@@ -1174,7 +1174,20 @@ function InviteModal({
   const [employees, setEmployees] = useState<EmployeeOption[] | null>(null);
   const [selectedEmpId, setSelectedEmpId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
-  const [datesPayload, setDatesPayload] = useState<DatePayloadRow[]>([]);
+  // 초대 모달의 날짜 기본값 = 주최자(생성자)의 참가 일정 복사.
+  // 주최자가 아직 참석자가 아니거나 dates가 없으면 빈 배열(기존과 동일).
+  // 사용자가 수정/제거 가능, 비우고도 초대 가능(requireAtLeastOne=false).
+  const [datesPayload, setDatesPayload] = useState<DatePayloadRow[]>(() => {
+    const creator = event.participants.find(
+      (p) => p.employeeId === event.createdById
+    );
+    const src = creator?.dates ?? [];
+    return src.map((d) => ({
+      attendDate: d.attendDate,
+      startTime: d.startTime ?? "",
+      endTime: d.endTime ?? "",
+    }));
+  });
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -1305,7 +1318,7 @@ function InviteModal({
           value={datesPayload}
           onChange={setDatesPayload}
           requireAtLeastOne={false}
-          helpText="초대 시 날짜는 비워두고 수락 시 본인이 입력할 수도 있습니다."
+          helpText="주최자 일정으로 기본 채워졌습니다. 날짜·시간을 수정하거나, 비우고 초대하면 참석자가 수락 시 직접 입력합니다."
         />
       </div>
       {err && <InlineError text={err} />}
