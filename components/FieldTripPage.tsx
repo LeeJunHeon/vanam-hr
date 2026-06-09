@@ -138,6 +138,9 @@ export default function FieldTripPage() {
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [openEventId, setOpenEventId] = useState<number | null>(null);
+  // 새 출장 생성 직후 "본인도 참여하시겠습니까?" → 예 → 이 state에 생성된 이벤트
+  // 저장 후 self-join DatesModal을 띄운다.
+  const [joinAfterCreate, setJoinAfterCreate] = useState<TripEventDetail | null>(null);
   // 출장 목록 탭: active=진행중·예정, history=취소·지난
   const [tab, setTab] = useState<"active" | "history">("active");
 
@@ -268,9 +271,15 @@ export default function FieldTripPage() {
       {createOpen && (
         <CreateTripModal
           onClose={() => setCreateOpen(false)}
-          onCreated={() => {
+          onCreated={(created) => {
             setCreateOpen(false);
             fetchEvents();
+            if (
+              typeof window !== "undefined" &&
+              window.confirm("본인도 이 출장에 참여하시겠습니까?")
+            ) {
+              setJoinAfterCreate(created);
+            }
           }}
         />
       )}
@@ -281,6 +290,35 @@ export default function FieldTripPage() {
           currentEmployeeId={current?.id ?? null}
           onClose={() => setOpenEventId(null)}
           onMutated={fetchEvents}
+        />
+      )}
+
+      {/* 생성 직후 self-join — TripDetailModal의 joinOpen과 동일 패턴 재사용 */}
+      {joinAfterCreate && (
+        <DatesModal
+          title="나도 참여"
+          submitLabel="참여"
+          event={joinAfterCreate}
+          initialDates={[]}
+          requireAtLeastOne
+          onClose={() => setJoinAfterCreate(null)}
+          onSubmit={async (datesPayload) => {
+            const res = await fetch(
+              `/api/trip-events/${joinAfterCreate.id}/join`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ dates: datesPayload }),
+              }
+            );
+            if (!res.ok) {
+              const j = await res.json().catch(() => ({}));
+              return j.error || `참여 실패 (${res.status})`;
+            }
+            setJoinAfterCreate(null);
+            fetchEvents();
+            return null;
+          }}
         />
       )}
     </div>
@@ -355,7 +393,10 @@ function CreateTripModal({
   onCreated,
 }: {
   onClose: () => void;
-  onCreated: () => void;
+  // 생성된 이벤트를 부모로 전달 — 생성 직후 self-join 모달에 그대로 넘기기 위함.
+  // POST /api/trip-events 응답엔 participants가 없어 빈 배열로 보강해
+  // TripEventDetail 형태로 맞춘다.
+  onCreated: (created: TripEventDetail) => void;
 }) {
   const { current } = useCurrentEmployee();
   const [name, setName] = useState("");
@@ -413,7 +454,9 @@ function CreateTripModal({
         setErr(j.error || `생성 실패 (${res.status})`);
         return;
       }
-      onCreated();
+      // POST 응답엔 participants가 없으므로 빈 배열로 보강해 TripEventDetail 형태로
+      const created = await res.json();
+      onCreated({ ...created, participants: [] });
     } catch (e) {
       console.error("trip-events POST error:", e);
       setErr("출장 이벤트 생성 중 오류가 발생했습니다.");
