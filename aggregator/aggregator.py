@@ -654,8 +654,10 @@ class Aggregator:
         subject = "[VanaM 근태관리] WIFI 연결 끊김 알림"
         body_lines = [
             f"{emp_name} 님,",
+            "",
             f"사내 WiFi 연결이 {threshold_min}분 이상 확인되지 않았습니다.",
             "현재 연결 상태를 확인해주세요.",
+            "",
             "[해당 메일은 자동 전송 되었습니다.]",
         ]
         if last_seen is not None:
@@ -664,7 +666,7 @@ class Aggregator:
                     last_seen.astimezone(KST) if last_seen.tzinfo is not None else last_seen
                 )
                 body_lines.insert(
-                    1,
+                    2,
                     f"마지막 연결 시각: {last_seen_kst.strftime('%Y-%m-%d %H:%M:%S')} (KST)",
                 )
             except Exception:
