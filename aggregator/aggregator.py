@@ -46,6 +46,10 @@ from typing import Optional
 from config import load_config
 from db import Database
 from logger import setup_logger
+from notifier import EmailNotifier
+
+# 한국 시간대 (UTC+9, DST 없음) — 끊김 알림에서 KST 비교용
+KST = timezone(timedelta(hours=9))
 
 
 class Aggregator:
@@ -60,6 +64,20 @@ class Aggregator:
             password=self.config.db_password,
         )
         self.running = True
+        # 근무중 끊김 알림 메일 발송기 (SMTP 미설정이면 발송 스킵)
+        self.notifier = EmailNotifier(
+            self.config.smtp_host,
+            self.config.smtp_port,
+            self.config.smtp_user,
+            self.config.smtp_password,
+            self.config.smtp_from,
+            self.logger,
+        )
+        # 끊김 알림 중복 발송 방지용 메모리 상태: {emp_id: "YYYY-MM-DD"}
+        # - 끊김이면 오늘 날짜 기록(이미 같은 날짜면 재발송 X)
+        # - 연결 복귀 시 해당 emp 제거 → 다시 끊기면 같은 날에도 재발송
+        # - 날짜가 바뀌면 기록값이 오늘과 달라 자동으로 재발송 허용
+        self._disconnect_notified: dict[int, str] = {}
 
     def compute_check_in_out(
         self,
@@ -221,6 +239,15 @@ class Aggregator:
                     skip_overridden += 1
                 else:
                     skip_no_data += 1
+
+            # 근무중 끊김 알림 — 오늘 work_date 에 대해서만 점검
+            try:
+                self._check_disconnect_alert(emp, today, cutoff_hour, now)
+            except Exception as e:
+                # 알림 로직 어떤 예외도 메인 루프 절대 중단시키지 않음
+                self.logger.error(
+                    f"_check_disconnect_alert 예외 (emp_id={emp.get('id')}): {e}"
+                )
 
         total = time.time() - cycle_start
         self.logger.info(
@@ -459,6 +486,182 @@ class Aggregator:
         if actual_minutes < required_minutes:
             return "early_leave"
         return "normal"
+
+    def _check_disconnect_alert(
+        self,
+        emp: dict,
+        today,
+        cutoff_hour: int,
+        now: datetime,
+    ) -> None:
+        """근무중 끊김 알림 점검 — 오늘 work_date 기준.
+
+        조건이 모두 맞으면 메일 1통 발송하고 self._disconnect_notified에 기록.
+        - 알림 안 함 조건(아래 중 하나라도 해당):
+          · 직원 이메일 없음
+          · 오늘 시프트가 휴무/미배정
+          · 현재 시각이 시프트 [start, end] 밖
+          · 현재 시각이 점심시간 [lunch_start, lunch_end] 안
+          · 오늘 presence_raw 마지막이 'online' (연결됨)
+        - 끊김 판정:
+          A) raw 마지막 'offline' + (now - 마지막.checked_at) >= 임계분
+          B) raw 비어있음 + (시프트 start + 임계분) <= now
+        - 임계분: hr.policy_settings.disconnect_alert_minutes (기본 30)
+        - 점심: lunch_start/lunch_end (기본 12:00/13:00)
+        """
+        email = emp.get("email")
+        if not email:
+            return
+
+        emp_id = emp["id"]
+
+        # 1) 오늘 시프트 조회
+        try:
+            shift = self.db.get_employee_shift(emp_id, today)
+        except Exception as e:
+            self.logger.debug(
+                f"  [disconnect] get_employee_shift 실패 (emp={emp_id}): {e}"
+            )
+            return
+        if (
+            not shift
+            or shift.get("type") == "off"
+            or not shift.get("start")
+            or not shift.get("end")
+        ):
+            # 휴무/미배정 → 상태 리셋
+            self._disconnect_notified.pop(emp_id, None)
+            return
+
+        # 2) 현재 KST 시각 — now가 timezone-aware(UTC)면 KST로 변환
+        if now.tzinfo is not None:
+            now_kst = now.astimezone(KST)
+        else:
+            # 비정상 케이스: tz 없으면 system tz 가정 (컨테이너 TZ=Asia/Seoul)
+            now_kst = now
+
+        # 3) 시프트 시각 [start, end] 밖이면 알림 안 함 (KST today 기준)
+        try:
+            sh_h, sh_m = map(int, str(shift["start"]).split(":"))
+            eh_h, eh_m = map(int, str(shift["end"]).split(":"))
+        except (ValueError, AttributeError):
+            return
+
+        # 야간 시프트(end <= start, 예: 22:00~06:00)는 끊김 알림 대상 X — 복잡해서 skip
+        if (eh_h * 60 + eh_m) <= (sh_h * 60 + sh_m):
+            self._disconnect_notified.pop(emp_id, None)
+            return
+
+        shift_start_dt = now_kst.replace(
+            hour=sh_h, minute=sh_m, second=0, microsecond=0
+        )
+        shift_end_dt = now_kst.replace(
+            hour=eh_h, minute=eh_m, second=0, microsecond=0
+        )
+        if now_kst < shift_start_dt or now_kst > shift_end_dt:
+            # 근무시간 밖 → 상태 리셋 (다음 근무시간에 깨끗하게 시작)
+            self._disconnect_notified.pop(emp_id, None)
+            return
+
+        # 4) 점심시간 안이면 알림 안 함
+        lunch_start_raw = self.db.get_policy("lunch_start") or "12:00"
+        lunch_end_raw = self.db.get_policy("lunch_end") or "13:00"
+        try:
+            ls_h, ls_m = map(int, str(lunch_start_raw).split(":"))
+            le_h, le_m = map(int, str(lunch_end_raw).split(":"))
+            lunch_start_dt = now_kst.replace(
+                hour=ls_h, minute=ls_m, second=0, microsecond=0
+            )
+            lunch_end_dt = now_kst.replace(
+                hour=le_h, minute=le_m, second=0, microsecond=0
+            )
+            if lunch_start_dt <= now_kst <= lunch_end_dt:
+                return
+        except (ValueError, AttributeError):
+            pass  # 점심 정책 파싱 실패는 무시 (점심 체크만 skip)
+
+        # 5) 임계분 정책 (기본 30)
+        try:
+            threshold_min = int(self.db.get_policy("disconnect_alert_minutes") or 30)
+        except (TypeError, ValueError):
+            threshold_min = 30
+
+        # 6) 오늘 presence_raw 조회 (오름차순)
+        try:
+            raw = self.db.get_presence_raw_by_work_date(emp_id, today, cutoff_hour)
+        except Exception as e:
+            self.logger.debug(
+                f"  [disconnect] get_presence_raw_by_work_date 실패 (emp={emp_id}): {e}"
+            )
+            return
+
+        # 7) 끊김 판정
+        disconnected = False
+        last_seen: Optional[datetime] = None  # 마지막으로 online이었던 시각
+
+        if not raw:
+            # B) 오늘 한 번도 안 잡힘 — 시프트 시작 + 임계분이 지났는지 확인
+            #     비교는 같은 timezone 기준(now_kst aware vs shift_start_dt aware → OK)
+            if shift_start_dt + timedelta(minutes=threshold_min) <= now_kst:
+                disconnected = True
+                last_seen = None
+        else:
+            last_record = raw[-1]
+            if last_record["status"] == "online":
+                # 연결됨 → 상태 리셋 후 return (재연결 후 또 끊기면 다시 발송)
+                self._disconnect_notified.pop(emp_id, None)
+                return
+            elif last_record["status"] == "offline":
+                # A) 마지막 offline 이후 임계분 경과 여부
+                last_offline_at = last_record["checked_at"]
+                # presence_raw.checked_at은 timezone-aware (DB timestamptz)
+                # now도 aware(UTC) → 차이 계산 가능
+                elapsed = (now - last_offline_at).total_seconds()
+                if elapsed >= threshold_min * 60:
+                    disconnected = True
+                    # 가장 최근 'online' 기록을 last_seen으로
+                    for r in reversed(raw):
+                        if r["status"] == "online":
+                            last_seen = r["checked_at"]
+                            break
+
+        if not disconnected:
+            return
+
+        # 8) 오늘 이미 보낸 적 있으면 스킵
+        today_str = today.isoformat()
+        if self._disconnect_notified.get(emp_id) == today_str:
+            return
+
+        # 9) 메일 발송
+        emp_name = emp.get("name", "")
+        subject = "[VanaM HR] 근태 연결 끊김 알림"
+        body_lines = [
+            f"{emp_name} 님,",
+            "",
+            f"근무 중 사내 WiFi 연결이 {threshold_min}분 이상 확인되지 않습니다.",
+            "연결 상태를 확인해주세요.",
+        ]
+        if last_seen is not None:
+            try:
+                last_seen_kst = (
+                    last_seen.astimezone(KST) if last_seen.tzinfo is not None else last_seen
+                )
+                body_lines.insert(
+                    2,
+                    f"마지막 연결 시각: {last_seen_kst.strftime('%Y-%m-%d %H:%M:%S')} (KST)",
+                )
+            except Exception:
+                pass
+        body = "\n".join(body_lines)
+
+        ok = self.notifier.send(email, subject, body)
+        if ok:
+            self._disconnect_notified[emp_id] = today_str
+            self.logger.info(
+                f"  [disconnect] 알림 발송 (emp={emp_id}, name={emp_name}, "
+                f"email={email}, threshold={threshold_min}분)"
+            )
 
     def run(self):
         """메인 루프. time.monotonic() 기반 fixed-rate scheduling.

@@ -19,6 +19,12 @@ class Config:
     interval_seconds: int
     log_level: str
     log_file: str
+    # 근무중 끊김 알림 메일 (SMTP) — 미설정이면 notifier가 발송 스킵, 본업은 정상 동작
+    smtp_host: str
+    smtp_port: int
+    smtp_user: str
+    smtp_password: str
+    smtp_from: str
 
 
 def load_config() -> Config:
@@ -57,6 +63,18 @@ def load_config() -> Config:
             f"AGGREGATOR_INTERVAL_SECONDS가 정수가 아닙니다: {interval_raw}"
         )
 
+    # SMTP는 선택값(미설정이면 notifier가 발송 스킵). missing 체크에 넣지 않는다.
+    smtp_host = os.environ.get("SMTP_HOST", "")
+    smtp_port_raw = os.environ.get("SMTP_PORT", "587")
+    try:
+        smtp_port = int(smtp_port_raw)
+    except ValueError:
+        # 값이 잘못돼도 본업은 계속 — 587 기본값으로 처리
+        smtp_port = 587
+    smtp_user = os.environ.get("SMTP_USER", "")
+    smtp_password = os.environ.get("SMTP_PASSWORD", "")
+    smtp_from = os.environ.get("SMTP_FROM", "") or smtp_user
+
     return Config(
         db_host=db_host,
         db_port=db_port,
@@ -66,4 +84,9 @@ def load_config() -> Config:
         interval_seconds=interval_seconds,
         log_level=os.environ.get("AGGREGATOR_LOG_LEVEL", "INFO"),
         log_file=os.environ.get("AGGREGATOR_LOG_FILE", "aggregator.log"),
+        smtp_host=smtp_host,
+        smtp_port=smtp_port,
+        smtp_user=smtp_user,
+        smtp_password=smtp_password,
+        smtp_from=smtp_from,
     )

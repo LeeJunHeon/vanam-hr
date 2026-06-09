@@ -52,15 +52,16 @@ class Database:
             return row[0] if row else None
 
     def get_active_employees(self) -> list[dict]:
-        """활성 직원 목록. {id, employee_no, name}.
+        """활성 직원 목록. {id, employee_no, name, email}.
 
         hr.employees 실제 컬럼명은 employee_no (code 아님).
+        email은 끊김 알림 발송에 사용(없으면 알림 스킵).
         """
         self._ensure_connected()
         with self.conn.cursor(cursor_factory=RealDictCursor) as c:
             c.execute(
                 """
-                SELECT id, employee_no, name
+                SELECT id, employee_no, name, email
                 FROM hr.employees
                 WHERE is_active = true
                 ORDER BY id
