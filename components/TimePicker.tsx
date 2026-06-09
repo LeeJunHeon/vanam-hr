@@ -1,5 +1,6 @@
 "use client";
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { Clock, X } from "lucide-react";
 
 interface TimePickerProps {
@@ -42,6 +43,9 @@ export default function TimePicker({
   const wrapRef = useRef<HTMLDivElement>(null);
   const hourScrollRef = useRef<HTMLDivElement>(null);
   const minScrollRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const dropRef = useRef<HTMLDivElement>(null);
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
 
   // 현재 값 파싱 (24:00은 특수 처리)
   const isMidnight = value === "24:00";
@@ -51,16 +55,50 @@ export default function TimePicker({
     return [isNaN(h) ? 0 : h, isNaN(m) ? 0 : m];
   }, [value]);
 
-  // 외부 클릭 감지
+  // 외부 클릭 감지 — 포털로 띄운 드롭다운 내부 클릭은 닫지 않도록 wrap/drop 둘 다 체크
   useEffect(() => {
     const h = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      const tgt = e.target as Node;
+      if (wrapRef.current?.contains(tgt)) return;
+      if (dropRef.current?.contains(tgt)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
+
+  // 드롭다운 위치 계산 — fixed portal이라 trigger의 viewport 좌표를 기준으로
+  // 잡고, 페이지/모달 스크롤·리사이즈 때마다 재계산. 페인트 후 실측 높이로
+  // 한 번 더 재계산해 위로 열릴지 결정.
+  const DROP_W = 256; // w-64
+  const recompute = useCallback(() => {
+    const t = triggerRef.current;
+    if (!t) return;
+    const r = t.getBoundingClientRect();
+    const dropH = dropRef.current?.offsetHeight ?? 320;
+    const m = 8;
+    const openUp =
+      window.innerHeight - r.bottom < dropH + m && r.top > dropH + m;
+    const left = Math.min(Math.max(m, r.left), window.innerWidth - DROP_W - m);
+    const top = openUp ? r.top - dropH - 4 : r.bottom + 4;
+    setCoords({ top, left });
+  }, []);
+  useEffect(() => {
+    if (!open) {
+      setCoords(null);
+      return;
+    }
+    recompute();
+    const raf = requestAnimationFrame(recompute);
+    const onWin = () => recompute();
+    window.addEventListener("scroll", onWin, true); // capture: 모달 내부 스크롤까지
+    window.addEventListener("resize", onWin);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", onWin, true);
+      window.removeEventListener("resize", onWin);
+    };
+  }, [open, recompute]);
 
   // 열릴 때 현재 값으로 스크롤 위치 이동
   useEffect(() => {
@@ -115,6 +153,7 @@ export default function TimePicker({
     <div ref={wrapRef} className={`relative ${className}`}>
       {/* 입력 디스플레이 */}
       <div
+        ref={triggerRef}
         onClick={() => !disabled && setOpen((o) => !o)}
         className={`flex items-center gap-2 px-3 py-2 border rounded-xl bg-white text-sm transition-all select-none ${
           disabled
@@ -152,9 +191,19 @@ export default function TimePicker({
         )}
       </div>
 
-      {/* 드롭다운 */}
-      {open && !disabled && (
-        <div className="absolute top-[calc(100%+4px)] left-0 bg-white border border-gray-200 rounded-2xl p-3 z-[200] w-64 shadow-xl">
+      {/* 드롭다운 — portal로 body에 띄워 모달 overflow/transform 클리핑 회피 */}
+      {open && !disabled && typeof document !== "undefined" &&
+        createPortal(
+        <div
+          ref={dropRef}
+          style={{
+            position: "fixed",
+            top: coords?.top ?? 0,
+            left: coords?.left ?? 0,
+            visibility: coords ? "visible" : "hidden",
+          }}
+          className="bg-white border border-gray-200 rounded-2xl p-3 z-[1000] w-64 shadow-xl"
+        >
           {/* 한글 라벨 (선택값 표시) */}
           {value && (
             <div className="text-center mb-2 pb-2 border-b border-gray-100">
@@ -284,7 +333,8 @@ export default function TimePicker({
           >
             확인
           </button>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

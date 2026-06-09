@@ -19,6 +19,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
+import TimePicker from "@/components/TimePicker";
 
 // Phase 7 2단계: 출장 관리 페이지 — 이벤트 + 참석자(초대/self-join/수락/거절/날짜수정/제거).
 // 결재 처리(approve/reject)와 캘린더/근태 반영은 3·4단계.
@@ -1561,22 +1562,22 @@ function DatesPicker({
                   {row.attendDate} ({weekdayLabel(row.attendDate)})
                 </span>
                 <div className="flex items-center gap-1 ml-auto">
-                  <input
-                    type="time"
+                  <TimePicker
                     value={row.startTime}
-                    onChange={(e) =>
-                      updateTime(row.attendDate, "startTime", e.target.value)
+                    onChange={(val) =>
+                      updateTime(row.attendDate, "startTime", val)
                     }
-                    className="px-2 py-1 text-xs border border-gray-200 rounded-lg font-mono w-[88px]"
+                    placeholder="시작"
+                    className="w-[120px]"
                   />
                   <span className="text-xs text-gray-400">~</span>
-                  <input
-                    type="time"
+                  <TimePicker
                     value={row.endTime}
-                    onChange={(e) =>
-                      updateTime(row.attendDate, "endTime", e.target.value)
+                    onChange={(val) =>
+                      updateTime(row.attendDate, "endTime", val)
                     }
-                    className="px-2 py-1 text-xs border border-gray-200 rounded-lg font-mono w-[88px]"
+                    placeholder="종료"
+                    className="w-[120px]"
                   />
                   <button
                     type="button"
