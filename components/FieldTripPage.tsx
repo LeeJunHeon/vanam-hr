@@ -38,6 +38,25 @@ interface TripEventListRow {
   creatorIsAdmin: boolean;
   createdAt: string;
   participantCount: number;
+  participantIds?: number[];
+}
+
+// 외근(EXTERNAL_WORK) attendance_request 1건 (GET /api/external-work)
+interface ExternalRow {
+  id: number;
+  employeeId: number;
+  employeeNo: string | null;
+  employeeName: string | null;
+  departmentName: string | null;
+  categoryName: string | null;
+  categoryColor: string | null;
+  startDate: string;
+  endDate: string;
+  correctedCheckIn: string | null;
+  correctedCheckOut: string | null;
+  status: string;
+  reason: string | null;
+  requestedAt: string;
 }
 
 interface ParticipantDate {
@@ -158,6 +177,13 @@ export default function FieldTripPage() {
       categoryIds: number[];
     }[]
   >([]);
+  // 외근 목록 + 직원 드롭다운 + 종류/사용자 필터
+  const [externalItems, setExternalItems] = useState<ExternalRow[] | null>(null);
+  const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
+  const [kindFilter, setKindFilter] = useState<"all" | "trip" | "external">(
+    "all"
+  );
+  const [userFilter, setUserFilter] = useState<"all" | number>("all");
 
   // 마스터 1회 로드 (실패해도 본업 동작 — 유형 선택 시 캘린더명만 미표시)
   useEffect(() => {
@@ -207,21 +233,39 @@ export default function FieldTripPage() {
 
   // 오늘(KST) — endDate/startDate는 YYYY-MM-DD 문자열이라 사전순=날짜순 비교 가능.
   const today = todayYmd();
-  const activeEvents = useMemo(
-    () =>
-      (events ?? []).filter(
-        (ev) => ev.status === "active" && ev.endDate >= today
-      ),
-    [events, today]
-  );
-  const historyEvents = useMemo(
-    () =>
-      (events ?? []).filter(
-        (ev) => ev.status !== "active" || ev.endDate < today
-      ),
-    [events, today]
-  );
-  const shownEvents = tab === "active" ? activeEvents : historyEvents;
+
+  // 종류(전체/출장/외근) + 사용자 필터 적용 후 active/history로 분류.
+  const trips = events ?? [];
+  const exts = externalItems ?? [];
+  const tripActiveAll = (ev: TripEventListRow) =>
+    ev.status === "active" && ev.endDate >= today;
+  const extActiveAll = (x: ExternalRow) =>
+    ["pending", "approved", "auto_approved"].includes(x.status) &&
+    x.endDate >= today;
+  const tripUser = (ev: TripEventListRow) =>
+    userFilter === "all" ||
+    ev.createdById === userFilter ||
+    (ev.participantIds ?? []).includes(userFilter as number);
+  const extUser = (x: ExternalRow) =>
+    userFilter === "all" || x.employeeId === userFilter;
+  const showTrips = kindFilter !== "external";
+  const showExt = kindFilter !== "trip";
+  const tripsActive = showTrips
+    ? trips.filter((ev) => tripUser(ev) && tripActiveAll(ev))
+    : [];
+  const tripsHistory = showTrips
+    ? trips.filter((ev) => tripUser(ev) && !tripActiveAll(ev))
+    : [];
+  const extsActive = showExt
+    ? exts.filter((x) => extUser(x) && extActiveAll(x))
+    : [];
+  const extsHistory = showExt
+    ? exts.filter((x) => extUser(x) && !extActiveAll(x))
+    : [];
+  const activeCount = tripsActive.length + extsActive.length;
+  const historyCount = tripsHistory.length + extsHistory.length;
+  const shownTrips = tab === "active" ? tripsActive : tripsHistory;
+  const shownExts = tab === "active" ? extsActive : extsHistory;
 
   const fetchEvents = useCallback(async () => {
     setLoading(true);
@@ -242,9 +286,41 @@ export default function FieldTripPage() {
     }
   }, []);
 
+  const fetchExternal = useCallback(async () => {
+    try {
+      const res = await fetch("/api/external-work");
+      if (res.ok) setExternalItems(await res.json());
+    } catch (e) {
+      console.error("external-work fetch error:", e);
+    }
+  }, []);
+
   useEffect(() => {
     fetchEvents();
-  }, [fetchEvents]);
+    fetchExternal();
+  }, [fetchEvents, fetchExternal]);
+
+  // 사용자 필터용 직원 목록 1회 로드 (활성만)
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch("/api/employees");
+        if (r.ok) {
+          const d = await r.json();
+          setEmployees(
+            d
+              .filter((e: { isActive: boolean }) => e.isActive)
+              .map((e: { id: number; name: string }) => ({
+                id: e.id,
+                name: e.name,
+              }))
+          );
+        }
+      } catch {
+        /* 직원 목록 실패해도 본업 동작 — 사용자 필터만 비게 됨 */
+      }
+    })();
+  }, []);
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
@@ -282,7 +358,49 @@ export default function FieldTripPage() {
         </div>
       ) : (
         <>
-          {/* 탭: 활성/예정 vs 취소/지난 */}
+          {/* 필터 바: 종류(전체/출장/외근) + 사용자 드롭다운 */}
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 justify-between">
+            <div className="inline-flex rounded-xl border border-gray-200 overflow-hidden text-sm">
+              {(
+                [
+                  ["all", "전체"],
+                  ["trip", "출장"],
+                  ["external", "외근"],
+                ] as const
+              ).map(([k, label]) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setKindFilter(k)}
+                  className={`px-3 py-1.5 ${
+                    kindFilter === k
+                      ? "bg-blue-600 text-white font-semibold"
+                      : "bg-white text-gray-600 hover:bg-gray-50"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <select
+              value={userFilter === "all" ? "all" : String(userFilter)}
+              onChange={(e) =>
+                setUserFilter(
+                  e.target.value === "all" ? "all" : Number(e.target.value)
+                )
+              }
+              className="px-3 py-1.5 text-sm border border-gray-200 rounded-xl bg-white"
+            >
+              <option value="all">전체 사용자</option>
+              {employees.map((emp) => (
+                <option key={emp.id} value={emp.id}>
+                  {emp.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 탭: 활성/예정 vs 취소/지난 (카운트는 선택된 필터 기준) */}
           <div className="flex items-center gap-1 border-b border-gray-200">
             <button
               onClick={() => setTab("active")}
@@ -292,7 +410,7 @@ export default function FieldTripPage() {
                   : "border-transparent text-gray-500 hover:text-gray-700"
               }`}
             >
-              활성/예정 ({activeEvents.length})
+              활성/예정 ({activeCount})
             </button>
             <button
               onClick={() => setTab("history")}
@@ -302,27 +420,30 @@ export default function FieldTripPage() {
                   : "border-transparent text-gray-500 hover:text-gray-700"
               }`}
             >
-              취소/지난 ({historyEvents.length})
+              취소/지난 ({historyCount})
             </button>
           </div>
 
-          {shownEvents.length === 0 ? (
+          {shownTrips.length === 0 && shownExts.length === 0 ? (
             <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center text-sm text-gray-400 flex flex-col items-center gap-3">
               <Plane size={28} className="text-gray-300" />
               {tab === "active"
-                ? "진행 중이거나 예정된 출장이 없습니다."
-                : "취소되었거나 지난 출장이 없습니다."}
+                ? "표시할 항목이 없습니다."
+                : "취소되었거나 지난 항목이 없습니다."}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
-              {shownEvents.map((ev) => (
+              {shownTrips.map((ev) => (
                 <button
-                  key={ev.id}
+                  key={`t-${ev.id}`}
                   onClick={() => setOpenEventId(ev.id)}
                   className="text-left"
                 >
                   <TripEventCard event={ev} today={today} />
                 </button>
+              ))}
+              {shownExts.map((x) => (
+                <ExternalWorkCard key={`e-${x.id}`} item={x} today={today} />
               ))}
             </div>
           )}
@@ -389,6 +510,7 @@ export default function FieldTripPage() {
           onCreated={() => {
             setExternalOpen(false);
             fetchEvents();
+            fetchExternal();
           }}
         />
       )}
@@ -506,6 +628,78 @@ function TripEventCard({
         <div className="flex items-center gap-2 text-gray-500">
           <UsersIcon size={14} className="text-gray-400 shrink-0" />
           <span className="text-xs">참석자 {event.participantCount}명</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 외근 카드 ─────────────────────────────────
+function ExternalWorkCard({
+  item,
+  today,
+}: {
+  item: ExternalRow;
+  today: string;
+}) {
+  let badgeLabel: string;
+  let badgeCls: string;
+  if (item.status === "cancelled") {
+    badgeLabel = "취소됨";
+    badgeCls = "bg-gray-100 text-gray-600";
+  } else if (item.status === "rejected") {
+    badgeLabel = "반려";
+    badgeCls = "bg-rose-50 text-rose-700";
+  } else if (item.endDate < today) {
+    badgeLabel = "종료";
+    badgeCls = "bg-gray-100 text-gray-500";
+  } else if (item.status === "pending") {
+    badgeLabel = "결재대기";
+    badgeCls = "bg-amber-50 text-amber-700";
+  } else {
+    badgeLabel = "승인";
+    badgeCls = "bg-emerald-100 text-emerald-700";
+  }
+  const hhmm = (iso: string | null) =>
+    iso ? new Date(iso).toTimeString().slice(0, 5) : null;
+  const ci = hhmm(item.correctedCheckIn);
+  const co = hhmm(item.correctedCheckOut);
+  const timeLabel = ci && co ? `${ci}~${co}` : "종일";
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
+      <div className="flex items-start justify-between gap-2">
+        <h3 className="text-base font-bold text-gray-900 truncate flex-1">
+          <span className="inline-flex items-center gap-1.5">
+            <MapPin size={15} className="text-orange-500 shrink-0" />
+            {item.employeeName ?? `#${item.employeeId}`}
+          </span>
+        </h3>
+        <span
+          className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${badgeCls}`}
+        >
+          {badgeLabel}
+        </span>
+      </div>
+      <div className="mt-3 space-y-1.5 text-sm">
+        <div className="flex items-center gap-2 text-gray-600">
+          <CalendarIcon size={14} className="text-gray-400 shrink-0" />
+          <span className="font-mono text-xs">
+            {formatDateRange(item.startDate, item.endDate)} · {timeLabel}
+          </span>
+        </div>
+        {item.departmentName && (
+          <div className="flex items-center gap-2 text-gray-500">
+            <UsersIcon size={14} className="text-gray-400 shrink-0" />
+            <span className="text-xs truncate">{item.departmentName}</span>
+          </div>
+        )}
+        <div className="flex items-center gap-2 text-gray-500">
+          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-orange-50 text-orange-600">
+            외근
+          </span>
+          {item.reason && (
+            <span className="text-xs text-gray-500 truncate">{item.reason}</span>
+          )}
         </div>
       </div>
     </div>
