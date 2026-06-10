@@ -143,6 +143,67 @@ export default function FieldTripPage() {
   const [joinAfterCreate, setJoinAfterCreate] = useState<TripEventDetail | null>(null);
   // 출장 목록 탭: active=진행중·예정, history=취소·지난
   const [tab, setTab] = useState<"active" | "history">("active");
+  // 출장/외근 유형 선택 모달 + 외근 단건 생성 모달
+  const [typeChooserOpen, setTypeChooserOpen] = useState(false);
+  const [externalOpen, setExternalOpen] = useState(false);
+  // 카테고리/캘린더 소스 마스터(저장 캘린더 표시 + 외근 생성 시 사용)
+  const [categories, setCategories] = useState<
+    { id: number; code: string; name: string }[]
+  >([]);
+  const [calendarSources, setCalendarSources] = useState<
+    {
+      id: number;
+      calendarName: string;
+      defaultCategoryId: number;
+      categoryIds: number[];
+    }[]
+  >([]);
+
+  // 마스터 1회 로드 (실패해도 본업 동작 — 유형 선택 시 캘린더명만 미표시)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [cRes, sRes] = await Promise.all([
+          fetch("/api/categories?includeInactive=false"),
+          fetch("/api/calendar-sources"),
+        ]);
+        if (cRes.ok && !cancelled) {
+          const data = await cRes.json();
+          setCategories(
+            data.map((c: { id: number; code: string; name: string }) => ({
+              id: c.id,
+              code: c.code,
+              name: c.name,
+            }))
+          );
+        }
+        if (sRes.ok && !cancelled) {
+          setCalendarSources(await sRes.json());
+        }
+      } catch (e) {
+        console.error("trip-page masters fetch error:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 카테고리 코드 → 객체 + 매칭 캘린더 소스 (RequestPage와 동일 규칙)
+  const extCat = categories.find((c) => c.code === "EXTERNAL_WORK") ?? null;
+  const tripCat = categories.find((c) => c.code === "BUSINESS_TRIP") ?? null;
+  const matchSource = (catId: number | undefined | null) =>
+    catId == null
+      ? null
+      : (calendarSources.find(
+          (cs) => Array.isArray(cs.categoryIds) && cs.categoryIds.includes(catId)
+        ) ??
+          calendarSources.find((cs) => cs.defaultCategoryId === catId) ??
+          null);
+  const tripCalName = matchSource(tripCat?.id)?.calendarName ?? null;
+  const extSource = matchSource(extCat?.id);
+  const extCalName = extSource?.calendarName ?? null;
 
   // 오늘(KST) — endDate/startDate는 YYYY-MM-DD 문자열이라 사전순=날짜순 비교 가능.
   const today = todayYmd();
@@ -199,12 +260,12 @@ export default function FieldTripPage() {
           </p>
         </div>
         <button
-          onClick={() => setCreateOpen(true)}
+          onClick={() => setTypeChooserOpen(true)}
           disabled={empLoading || !current}
           className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Plus size={16} />
-          새 출장 만들기
+          새 출장/외근 만들기
         </button>
       </div>
 
@@ -266,6 +327,70 @@ export default function FieldTripPage() {
             </div>
           )}
         </>
+      )}
+
+      {/* 유형 선택 모달: 출장 vs 외근. 저장 캘린더명을 동적으로 표시(하드코딩 X) */}
+      {typeChooserOpen && (
+        <ModalShell
+          title="새 출장/외근 만들기"
+          icon={<Plus size={18} className="text-blue-600" />}
+          onClose={() => setTypeChooserOpen(false)}
+        >
+          <p className="text-sm text-gray-500 mb-3">생성할 유형을 선택하세요.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setTypeChooserOpen(false);
+                setCreateOpen(true);
+              }}
+              className="text-left border border-gray-200 rounded-2xl p-4 hover:border-blue-300 hover:bg-blue-50/40 transition"
+            >
+              <div className="flex items-center gap-2 font-semibold text-gray-900">
+                <Plane size={16} className="text-blue-600" /> 출장
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                학회·단체 출장 등 그룹 일정(참석자 초대 가능)
+              </p>
+              {tripCalName && (
+                <p className="text-[11px] text-gray-400 mt-2">
+                  저장 캘린더: {tripCalName}
+                </p>
+              )}
+            </button>
+            <button
+              type="button"
+              disabled={!extCat}
+              onClick={() => {
+                setTypeChooserOpen(false);
+                setExternalOpen(true);
+              }}
+              className="text-left border border-gray-200 rounded-2xl p-4 hover:border-blue-300 hover:bg-blue-50/40 transition disabled:opacity-50"
+            >
+              <div className="flex items-center gap-2 font-semibold text-gray-900">
+                <MapPin size={16} className="text-orange-500" /> 외근
+              </div>
+              <p className="text-xs text-gray-500 mt-1">본인 단건 외근 신청</p>
+              {extCalName && (
+                <p className="text-[11px] text-gray-400 mt-2">
+                  저장 캘린더: {extCalName}
+                </p>
+              )}
+            </button>
+          </div>
+        </ModalShell>
+      )}
+
+      {externalOpen && extCat && (
+        <ExternalWorkModal
+          category={extCat}
+          calendarSourceId={extSource?.id ?? null}
+          onClose={() => setExternalOpen(false)}
+          onCreated={() => {
+            setExternalOpen(false);
+            fetchEvents();
+          }}
+        />
       )}
 
       {createOpen && (
@@ -543,6 +668,155 @@ function CreateTripModal({
         onSubmit={submit}
         submitLabel="생성"
         submitIcon={<Plus size={14} />}
+      />
+    </ModalShell>
+  );
+}
+
+// ── 외근 단건 생성 모달 ───────────────────────
+// 본인 명의 외근(EXTERNAL_WORK) attendance_request 1건 생성.
+// RequestPage의 캘린더 자동 매칭/제목/설명 패턴을 그대로 따른다(하드코딩 X).
+function ExternalWorkModal({
+  category,
+  calendarSourceId,
+  onClose,
+  onCreated,
+}: {
+  category: { id: number; name: string; code: string };
+  calendarSourceId: number | null;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const { current } = useCurrentEmployee();
+  const [startDate, setStartDate] = useState(todayYmd());
+  const [endDate, setEndDate] = useState(todayYmd());
+  const [startTime, setStartTime] = useState(""); // "" = 종일
+  const [endTime, setEndTime] = useState("");
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (!current) {
+      setErr("본인 정보를 불러오지 못했습니다.");
+      return;
+    }
+    if (startDate > endDate) {
+      setErr("종료일은 시작일 이후여야 합니다.");
+      return;
+    }
+    if (!!startTime !== !!endTime) {
+      setErr("시작/종료 시간은 모두 입력하거나 모두 비워주세요.");
+      return;
+    }
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const empName = current.name ?? "";
+      const dept = current.departmentName ?? undefined;
+      const desc = [
+        "[VanaM HR 자동 등록]",
+        `신청자: ${empName || "-"}` + (dept ? ` (${dept})` : ""),
+        `카테고리: ${category.name}`,
+      ].join("\n");
+      const body: Record<string, unknown> = {
+        employeeId: current.id,
+        categoryId: category.id,
+        startDate,
+        endDate,
+        reason: reason.trim() || null,
+        correctedCheckIn: startTime ? `${startDate}T${startTime}:00` : null,
+        correctedCheckOut: endTime ? `${endDate}T${endTime}:00` : null,
+        calendarSourceId: calendarSourceId,
+        calendarEventTitle: empName
+          ? `[${category.name}] ${empName}`
+          : `[${category.name}]`,
+        calendarEventDescription: desc,
+      };
+      const res = await fetch("/api/attendance-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setErr(data.error || `등록 실패 (${res.status})`);
+        return;
+      }
+      alert(
+        data.status === "pending"
+          ? "외근이 신청되었습니다 (결재 대기)."
+          : "외근이 등록되었습니다."
+      );
+      onCreated();
+    } catch {
+      setErr("등록 중 오류가 발생했습니다.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <ModalShell
+      title="새 외근"
+      icon={<MapPin size={18} className="text-orange-500" />}
+      onClose={onClose}
+    >
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="시작일" required>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => {
+                const v = e.target.value;
+                setStartDate(v);
+                setEndDate((prev) => (prev && prev < v ? v : prev));
+              }}
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 font-mono"
+            />
+          </Field>
+          <Field label="종료일" required>
+            <input
+              type="date"
+              value={endDate}
+              min={startDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 font-mono"
+            />
+          </Field>
+        </div>
+        {startDate > endDate && (
+          <InlineError text="종료일은 시작일 이후여야 합니다." />
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="시작 시간(비우면 종일)">
+            <TimePicker value={startTime} onChange={setStartTime} className="w-full" />
+          </Field>
+          <Field label="종료 시간">
+            <TimePicker value={endTime} onChange={setEndTime} className="w-full" />
+          </Field>
+        </div>
+        <Field label="메모">
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            rows={3}
+            placeholder="외근 사유/장소 등 (캘린더 일정 설명에 표시)"
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 resize-none"
+          />
+        </Field>
+        <p className="text-[11px] text-gray-400 leading-relaxed">
+          * 본인 명의 외근으로 신청됩니다. 결재 필요 항목이면 결재 후 근태·캘린더에 반영됩니다.
+        </p>
+      </div>
+      {err && <InlineError text={err} />}
+      <ModalActions
+        onClose={onClose}
+        submitting={submitting}
+        canSubmit={!submitting && !!current && startDate <= endDate}
+        onSubmit={submit}
+        submitLabel="외근 신청"
       />
     </ModalShell>
   );
