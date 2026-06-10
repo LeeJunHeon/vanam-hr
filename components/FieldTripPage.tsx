@@ -192,7 +192,7 @@ export default function FieldTripPage() {
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900 flex items-center gap-2">
             <Plane size={22} className="text-blue-600" />
-            출장 관리
+            출장/외근 관리
           </h1>
           <p className="text-sm text-gray-500 mt-0.5">
             학회/단체 출장 등 그룹 출장 이벤트를 생성하고 관리합니다.

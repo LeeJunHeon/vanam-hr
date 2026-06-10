@@ -25,7 +25,7 @@ const PAGE_TITLES: Record<PageId, string> = {
   dashboard: "대시보드",
   "my-attendance": "내 근태",
   request: "휴가/근태 신청",
-  "field-trip": "출장 관리",
+  "field-trip": "출장/외근 관리",
   approval: "결재함",
   "attendance-overview": "전체 근태 조회",
   "schedule-overview": "전체 일정 조회",
