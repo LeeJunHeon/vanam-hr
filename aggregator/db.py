@@ -275,6 +275,32 @@ class Database:
                 "reason": row[6],
             }
 
+    def get_active_requests(self, employee_id, work_date):
+        """그날 겹치는 모든 유효 근태 요청(소스 무관) 반환.
+        status IN (approved, auto_approved, auto_delegated),
+        start_date <= work_date <= end_date.
+        없으면 [].
+        """
+        self._ensure_connected()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute(
+                """
+                SELECT r.id, r.category_id,
+                       c.code AS category_code, c.type AS category_type,
+                       r.corrected_check_in, r.corrected_check_out,
+                       r.reason, r.external_source, r.requested_at
+                FROM hr.attendance_requests r
+                JOIN hr.attendance_categories c ON c.id = r.category_id
+                WHERE r.employee_id = %s
+                  AND r.status IN ('approved', 'auto_approved', 'auto_delegated')
+                  AND r.start_date <= %s
+                  AND r.end_date >= %s
+                ORDER BY r.requested_at ASC
+                """,
+                (employee_id, work_date, work_date),
+            )
+            return [dict(r) for r in c.fetchall()]
+
     def upsert_attendance_daily(
         self,
         employee_id: int,

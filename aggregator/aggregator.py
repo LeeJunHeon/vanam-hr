@@ -294,42 +294,69 @@ class Aggregator:
             check_in, check_out = None, None
 
         # 2) 캘린더 자동 등록 보정 확인 (Phase 6-2B)
-        calendar_request = self.db.get_auto_approved_request(emp_id, work_date)
+        active_requests = self.db.get_active_requests(emp_id, work_date)
 
         # 시프트 로깅에 쓰일 정보 (분기 둘 다에서 필요)
         shift_info = self.db.get_employee_shift(emp_id, work_date)
 
-        if calendar_request:
-            # 3) 캘린더에 휴가/외근 등록 → 자동 적용
-            category_id = calendar_request["category_id"]
+        if active_requests:
+            # 시간형 일정(시작/종료 둘 다) vs 종일 일정 구분
+            has_allday = any(
+                r["corrected_check_in"] is None or r["corrected_check_out"] is None
+                for r in active_requests
+            )
 
-            # Phase 6-2L: 캘린더 시간 + WiFi 시간 합치기 (min/max)
-            # - WiFi만 있으면 그대로 (cal_* 모두 None)
-            # - 캘린더 시간만 있으면 그대로 사용
-            # - 둘 다 있으면 가장 빠른 출근 + 가장 늦은 퇴근
-            # - 종일 일정(cal_* 모두 None)이면 presence_raw 기반 그대로 유지
-            #   → 휴가인데 사무실 잠깐 들렀어도 출근 기록 보존
-            cal_in = calendar_request["corrected_check_in"]
-            cal_out = calendar_request["corrected_check_out"]
+            # 정책1: 이미 시작된 부분만 합산 (미래 시작 일정 제외)
+            cal_in_candidates = []
+            cal_out_candidates = []
+            for r in active_requests:
+                ci = r["corrected_check_in"]
+                co = r["corrected_check_out"]
+                if ci is not None and co is not None:
+                    if ci <= now:
+                        cal_in_candidates.append(ci)
+                    if co <= now:
+                        cal_out_candidates.append(co)
 
-            if cal_in is not None:
-                if check_in is None:
-                    check_in = cal_in
-                else:
-                    # 가장 빠른 출근 (WiFi 새벽 출근 + 캘린더 13:00 외근 → WiFi)
-                    check_in = min(check_in, cal_in)
+            # WiFi + 캘린더 융합 (가장 빠른 시작 ~ 가장 늦은 종료)
+            if cal_in_candidates:
+                check_in = (
+                    min([check_in] + cal_in_candidates)
+                    if check_in is not None
+                    else min(cal_in_candidates)
+                )
+            if cal_out_candidates:
+                check_out = (
+                    max([check_out] + cal_out_candidates)
+                    if check_out is not None
+                    else max(cal_out_candidates)
+                )
 
-            if cal_out is not None:
-                if check_out is None:
-                    check_out = cal_out
-                else:
-                    # 가장 늦은 퇴근 (WiFi 18:00 + 캘린더 15:00 외근 종료 → WiFi)
-                    check_out = max(check_out, cal_out)
+            # 정책1: 시작된 것도 없고 종일도 없고 WiFi도 없으면 → 아직 기록 없음
+            if not has_allday and check_in is None and check_out is None:
+                return "no_data"
 
-            auto_status = "normal"  # 캘린더 자동 등록은 항상 정상 (휴가/외근은 결근 아님)
-            is_overridden = True    # 다음 사이클 보호
-            # Phase 6-2L+ C-1: 캘린더 보정 출처 마킹 → upsert WHERE 절에서 재갱신 허용
+            # 정책2: 대표 카테고리 — 현재 시각을 포함하는 일정 우선
+            category_id = self._pick_category_for_now(active_requests, now)
+            is_overridden = True
             override_source = "calendar"
+
+            # 정책3: 종일 휴가/출장이면 결근/조퇴 판정 면제(정상).
+            #        시간형만 있으면 융합 출퇴근으로 시프트 판정 그대로 적용.
+            if has_allday:
+                auto_status = "normal"
+            elif check_in is not None and check_out is not None:
+                auto_status = self._determine_auto_status(
+                    check_in=check_in,
+                    check_out=check_out,
+                    shift_info=shift_info,
+                    grace_in_minutes=grace_in_minutes,
+                    grace_out_minutes=grace_out_minutes,
+                )
+            elif check_in is not None:
+                auto_status = "working"
+            else:
+                auto_status = "normal"
         else:
             # 4) 캘린더 없음 + presence_raw 없음 → INSERT 의미 없음
             if not raw or (check_in is None and check_out is None):
@@ -387,8 +414,8 @@ class Aggregator:
                 else "shift=none"
             )
             calendar_label = (
-                f", 캘린더보정(category_id={category_id}, reason='{calendar_request['reason']}')"
-                if calendar_request else ""
+                f", 보정(category_id={category_id}, 요청 {len(active_requests)}건)"
+                if active_requests else ""
             )
             self.logger.info(
                 f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} — "
@@ -397,6 +424,32 @@ class Aggregator:
                 f"{shift_label}, id={new_id}{calendar_label}"
             )
             return "upsert"
+
+    def _pick_category_for_now(self, requests, now):
+        """현재 시각 기준 대표 카테고리.
+        1)지금 진행 중 시간형 → 2)이미 끝난 시간형 중 가장 늦게 끝난 것
+        → 3)종일 일정 → 4)첫 요청.
+        """
+        for r in requests:
+            ci, co = r["corrected_check_in"], r["corrected_check_out"]
+            if ci is not None and co is not None and ci <= now < co:
+                return r["category_id"]
+        ended = [
+            r for r in requests
+            if r["corrected_check_in"] is not None
+            and r["corrected_check_out"] is not None
+            and r["corrected_check_out"] <= now
+        ]
+        if ended:
+            ended.sort(key=lambda r: r["corrected_check_out"])
+            return ended[-1]["category_id"]
+        allday = [
+            r for r in requests
+            if r["corrected_check_in"] is None or r["corrected_check_out"] is None
+        ]
+        if allday:
+            return allday[0]["category_id"]
+        return requests[0]["category_id"]
 
     def _determine_auto_status(
         self,
