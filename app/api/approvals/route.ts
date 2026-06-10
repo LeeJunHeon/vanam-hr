@@ -622,6 +622,19 @@ export async function PUT(request: NextRequest) {
         { status: 403 }
       );
     }
+
+    // Phase 6-2J: 본인 신청 결재는 ADMIN/CEO만 허용 (일반 직원은 차단)
+    // — 부분 승인 분기보다 먼저 검사해야 일반 직원이 자기 신청을 우회 승인하지 못함.
+    if (target.employeeId === approverIdNum) {
+      const viewerRole = r.session.user.role;
+      if (viewerRole !== "admin" && viewerRole !== "ceo") {
+        return NextResponse.json(
+          { error: "본인의 신청은 결재할 수 없습니다." },
+          { status: 403 }
+        );
+      }
+    }
+
     const alreadyApproved = (target.approvedByIds ?? []).includes(approverIdNum);
     if (action === "approve" && alreadyApproved) {
       return NextResponse.json({ error: "이미 승인하셨습니다." }, { status: 409 });
@@ -650,17 +663,6 @@ export async function PUT(request: NextRequest) {
       });
     }
     // 여기 도달 = 반려 OR 최종 승인 → 아래 기존 finalize 로직 그대로 진행.
-
-    // Phase 6-2J: 본인 신청 결재는 ADMIN/CEO만 허용 (일반 직원은 차단)
-    if (target.employeeId === approverIdNum) {
-      const viewerRole = r.session.user.role;
-      if (viewerRole !== "admin" && viewerRole !== "ceo") {
-        return NextResponse.json(
-          { error: "본인의 신청은 결재할 수 없습니다." },
-          { status: 403 }
-        );
-      }
-    }
 
     const newStatus = action === "approve" ? "approved" : "rejected";
     const now = new Date();
