@@ -141,17 +141,6 @@ function renderProgress(row: DetailRow) {
 
 // 평가 컬럼. Phase 6-2B: 캘린더 보정 시 카테고리명 표시 (Q5c).
 function renderEval(row: DetailRow) {
-  // 캘린더 보정이면 카테고리명 표시 (예: "외근"/"연차")
-  if (row.isOverridden && row.categoryId && row.categoryName) {
-    return (
-      <span
-        className="text-xs font-medium"
-        style={{ color: row.categoryColor ?? "#a855f7" }}
-      >
-        {row.categoryName}
-      </span>
-    );
-  }
   const config: Record<string, { label: string; cls: string }> = {
     normal: { label: "정상", cls: "text-emerald-600" },
     late: { label: "지각", cls: "text-amber-600" },
