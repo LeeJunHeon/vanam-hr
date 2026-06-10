@@ -172,9 +172,7 @@ export async function GET(request: NextRequest) {
         ? await prisma.attendanceRequest.findMany({
             where: {
               employeeId: { in: employeeIds },
-              requestType: "calendar_auto",
-              status: "auto_approved",
-              externalSource: "google_calendar",
+              status: { in: ["approved", "auto_approved", "auto_delegated"] },
               startDate: { lte: new Date(endDate) },
               endDate: { gte: new Date(startDate) },
             },
@@ -185,18 +183,29 @@ export async function GET(request: NextRequest) {
               reason: true,
               correctedCheckIn: true,
               correctedCheckOut: true,
+              requestedAt: true,
             },
+            orderBy: { requestedAt: "asc" },
           })
         : [];
 
     // employeeId_YYYY-MM-DD → reason 매핑 (start~end 범위 모든 날짜에 동일 reason)
     // 그리고 같은 키 형식으로 corrected_check_in/out 시간대도 매핑(시간대 일정만 값 존재).
+    // employeeId_YYYY-MM-DD → 대표 요청. 같은 날 여러 건이면 시간형(시작 빠른 순) 우선,
+    // 시간형이 없으면 종일. requests는 requestedAt asc 정렬되어 있음.
     const reasonMap = new Map<string, string>();
     const correctedMap = new Map<
       string,
       { in: string | null; out: string | null }
     >();
+    // 대표 선택용: 키별로 현재 채택된 요청의 "우선순위 점수"와 시작시각 보관
+    const pickMeta = new Map<string, { timed: boolean; startMs: number }>();
+
     for (const req of requests) {
+      const isTimed = !!(req.correctedCheckIn && req.correctedCheckOut);
+      const startMs = req.correctedCheckIn
+        ? req.correctedCheckIn.getTime()
+        : Number.POSITIVE_INFINITY;
       const start = new Date(req.startDate);
       const end = new Date(req.endDate);
       const d = new Date(start);
@@ -206,10 +215,21 @@ export async function GET(request: NextRequest) {
           "0"
         )}-${String(d.getDate()).padStart(2, "0")}`;
         const key = `${req.employeeId}_${ymd}`;
-        if (!reasonMap.has(key)) {
-          reasonMap.set(key, req.reason ?? "");
+
+        const prev = pickMeta.get(key);
+        // 채택 규칙: 시간형이 종일보다 우선, 시간형끼리는 시작 빠른 것 우선.
+        let take = false;
+        if (!prev) {
+          take = true;
+        } else if (isTimed && !prev.timed) {
+          take = true; // 종일 → 시간형으로 교체
+        } else if (isTimed && prev.timed && startMs < prev.startMs) {
+          take = true; // 더 일찍 시작하는 시간형
         }
-        if (!correctedMap.has(key)) {
+
+        if (take) {
+          pickMeta.set(key, { timed: isTimed, startMs });
+          reasonMap.set(key, req.reason ?? "");
           correctedMap.set(key, {
             in: req.correctedCheckIn
               ? req.correctedCheckIn.toISOString()
