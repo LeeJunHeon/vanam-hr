@@ -173,11 +173,26 @@ export async function GET(request: NextRequest) {
           corrected_check_out
         FROM hr.attendance_requests
         WHERE employee_id = ANY(${employeeIds}::int[])
-          AND request_type = 'calendar_auto'
-          AND status = 'auto_approved'
+          AND status IN ('approved', 'auto_approved', 'auto_delegated')
           AND start_date <= (SELECT d FROM today_kst)
           AND end_date >= (SELECT d FROM today_kst)
-        ORDER BY employee_id, requested_at DESC
+        ORDER BY
+          employee_id,
+          -- 1순위: 지금 진행 중인 시간형 일정 (현재 시각 포함)
+          (
+            corrected_check_in IS NOT NULL
+            AND corrected_check_out IS NOT NULL
+            AND corrected_check_in <= NOW()
+            AND corrected_check_out > NOW()
+          ) DESC,
+          -- 2순위: 이미 시작된(과거) 시간형 일정 — 늦게 끝난 것 우선
+          (
+            corrected_check_in IS NOT NULL
+            AND corrected_check_in <= NOW()
+          ) DESC,
+          corrected_check_out DESC NULLS LAST,
+          -- 3순위: 종일 일정 / 미래 일정은 맨 뒤
+          requested_at DESC
       )
       SELECT
         e.id AS employee_id,
