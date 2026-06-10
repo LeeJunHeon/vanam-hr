@@ -11,7 +11,6 @@ import {
   AlertCircle,
   Loader2,
   User,
-  Shield,
   X,
   Plane,
   Filter,
@@ -56,6 +55,14 @@ interface ApprovalItem {
   hoursLeft: number;
   canApprove: boolean;
   isSelfRequest: boolean;
+  // 4·5-4: 다중 결재자 진행도
+  approverIds: number[];
+  approvalMode: string;
+  approvedByIds: number[];
+  approvedCount: number;
+  totalApprovers: number;
+  iApproved: boolean;
+  approvers: { id: number; name: string | null; approved: boolean }[];
   // Phase 6-2E 캘린더 등록 정보
   calendarSourceId: number | null;
   calendarEventTitle: string | null;
@@ -305,11 +312,16 @@ export default function ApprovalPage() {
         alert(data.error || "승인 실패");
         return;
       }
-      // 캘린더 등록 결과 알림 (있을 때만)
-      const calNote = data.calendarEventId
-        ? ` (캘린더 등록 완료)`
-        : "";
-      showToast("✅ 승인되었습니다" + calNote);
+      // 4·5-4: 부분 승인(전원 미달, 아직 pending)이면 진행도 안내, 최종 승인이면 기존 동작
+      if (data.finalized === false) {
+        showToast(
+          `✅ 승인 완료 (${data.approvedCount}/${data.totalApprovers}) · 나머지 결재 대기`
+        );
+      } else {
+        // 캘린더 등록 결과 알림 (있을 때만)
+        const calNote = data.calendarEventId ? ` (캘린더 등록 완료)` : "";
+        showToast("✅ 승인되었습니다" + calNote);
+      }
       // 편집 상태 초기화
       setEditedCalendar((prev) => {
         const next = { ...prev };
@@ -770,46 +782,16 @@ function ApprovalCard({
         );
       })()}
 
-      {/* 본인 역할 (pending 탭에서만 의미 있음) */}
-      {!isHistory && item.myRole && (
+      {/* 본인 신청 안내 (pending 탭) — 4·5-4: 부정확한 역할/위임 배지 제거, 본인신청 안내만 유지 */}
+      {!isHistory && item.isSelfRequest && (
         <div className="mb-2 space-y-1">
-          {item.myRole === "primary" ? (
-            <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">
-              <Shield size={11} />
-              메인 결재자
-            </span>
-          ) : (
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
-                <Shield size={11} />
-                대리 결재자
-              </span>
-              {item.delegated ? (
-                <span className="text-[10px] text-emerald-700 font-medium">
-                  <CheckCircle
-                    size={10}
-                    className="inline mr-0.5 -translate-y-px"
-                  />
-                  메인 무응답 → 위임 가능
-                </span>
-              ) : (
-                <span className="text-[10px] text-gray-500">
-                  <Clock
-                    size={10}
-                    className="inline mr-0.5 -translate-y-px"
-                  />
-                  메인 응답 대기 ({item.hoursLeft.toFixed(1)}시간 남음)
-                </span>
-              )}
-            </div>
-          )}
           {/* Phase 6-2J: ADMIN/CEO는 본인 결재 허용 → 메시지 숨김 */}
-          {item.isSelfRequest && !isAdminOrCeo && (
+          {!isAdminOrCeo && (
             <p className="text-[10px] text-gray-400">
               ⚠ 본인의 신청은 결재할 수 없습니다
             </p>
           )}
-          {item.isSelfRequest && isAdminOrCeo && (
+          {isAdminOrCeo && (
             <p className="text-[10px] text-amber-600">
               ⓘ 본인 신청 — 관리자 권한으로 결재 가능
             </p>
@@ -835,6 +817,46 @@ function ApprovalCard({
           <div>
             <p className="font-semibold">반려 사유</p>
             <p className="mt-0.5">{item.rejectReason}</p>
+          </div>
+        </div>
+      )}
+
+      {/* 4·5-4: 결재 진행도 + 결재자 목록 */}
+      {item.totalApprovers > 0 && (
+        <div className="mb-2">
+          <div className="flex items-center gap-2 text-xs mb-1.5">
+            <span className="font-semibold text-gray-600">결재 진행</span>
+            <span className="font-mono text-gray-500">
+              {item.approvedCount}/{item.totalApprovers}
+            </span>
+            <span
+              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                item.approvalMode === "any"
+                  ? "bg-violet-50 text-violet-700"
+                  : "bg-emerald-50 text-emerald-700"
+              }`}
+            >
+              {item.approvalMode === "any" ? "한 명만 승인" : "전원 승인"}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {item.approvers.map((a) => (
+              <span
+                key={a.id}
+                className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${
+                  a.approved
+                    ? "bg-emerald-50 text-emerald-700"
+                    : "bg-gray-100 text-gray-500"
+                }`}
+              >
+                {a.approved ? (
+                  <CheckCircle size={10} className="-translate-y-px" />
+                ) : (
+                  <Clock size={10} className="-translate-y-px" />
+                )}
+                {a.name ?? `#${a.id}`}
+              </span>
+            ))}
           </div>
         </div>
       )}
