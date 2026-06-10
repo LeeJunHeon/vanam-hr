@@ -205,6 +205,8 @@ model Employee {
   attendanceDailies    AttendanceDaily[]
   monthlyConfirmations MonthlyConfirmation[]
   pushSubscriptions    PushSubscription[]
+  notifications        Notification[]
+  notificationPrefs    NotificationPref[]
 
   // approval_lines — 부서 결재선 (메인/대리 별도 관계)
   approvalLinesPrimary ApprovalLine[] @relation("ApprovalLinePrimary")
@@ -571,5 +573,46 @@ model TripParticipantDate {
   @@unique([tripParticipantId, attendDate], map: "uk_trip_participant_dates")
   @@index([attendDate], map: "idx_trip_participant_dates_date")
   @@map("trip_participant_dates")
+  @@schema("hr")
+}
+
+// ============================================
+// 알림 (범용 — 1차: 결재 요청)
+// ============================================
+
+// 알림 (직원별, 읽음 관리, 클릭 이동 링크)
+model Notification {
+  id          BigInt    @id @default(autoincrement())
+  employeeId  Int       @map("employee_id")
+  type        String    @db.VarChar(40)
+  title       String    @db.VarChar(200)
+  body        String?   @db.VarChar(500)
+  linkPage    String?   @map("link_page") @db.VarChar(60)
+  linkRefId   BigInt?   @map("link_ref_id")
+  sourceType  String?   @map("source_type") @db.VarChar(40)
+  isRead      Boolean   @default(false) @map("is_read")
+  readAt      DateTime? @map("read_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  employee    Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([employeeId, isRead, createdAt(sort: Desc)], map: "idx_notifications_emp_unread")
+  @@index([employeeId, createdAt(sort: Desc)], map: "idx_notifications_emp_created")
+  @@map("notifications")
+  @@schema("hr")
+}
+
+// 알림 환경설정 (직원별 type on/off — 행 없으면 켜짐)
+model NotificationPref {
+  id          BigInt   @id @default(autoincrement())
+  employeeId  Int      @map("employee_id")
+  type        String   @db.VarChar(40)
+  enabled     Boolean  @default(true)
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee    Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([employeeId, type], map: "notification_prefs_employee_id_type_key")
+  @@map("notification_prefs")
   @@schema("hr")
 }
