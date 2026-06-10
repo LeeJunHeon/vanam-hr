@@ -190,8 +190,10 @@ export async function GET(request: NextRequest) {
             corrected_check_in IS NOT NULL
             AND corrected_check_in <= NOW()
           ) DESC,
+          -- 3순위: 종일 일정 (시간형이 진행/과거에 없을 때만)
+          (corrected_check_in IS NULL OR corrected_check_out IS NULL) DESC,
+          -- 4순위: 미래 시작 시간형은 가장 뒤로
           corrected_check_out DESC NULLS LAST,
-          -- 3순위: 종일 일정 / 미래 일정은 맨 뒤
           requested_at DESC
       )
       SELECT
