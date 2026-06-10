@@ -278,6 +278,8 @@ model ApprovalLine {
   primaryApproverId Int      @map("primary_approver_id")
   deputyApproverId  Int?     @map("deputy_approver_id")
   autoDelegateHours Int      @default(24) @map("auto_delegate_hours")
+  approverIds       Int[]    @default([]) @map("approver_ids")
+  approvalMode      String   @default("all") @map("approval_mode") @db.VarChar(10)
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
@@ -366,6 +368,9 @@ model AttendanceRequest {
   primaryApproverId Int?      @map("primary_approver_id")
   deputyApproverId  Int?      @map("deputy_approver_id")
   approvedById      Int?      @map("approved_by_id")
+  approverIds       Int[]     @default([]) @map("approver_ids")
+  approvalMode      String    @default("all") @map("approval_mode") @db.VarChar(10)
+  approvedByIds     Int[]     @default([]) @map("approved_by_ids")
   approvedAt        DateTime? @map("approved_at") @db.Timestamptz(6)
   rejectReason      String?   @map("reject_reason")
   requestedAt       DateTime  @default(now()) @map("requested_at") @db.Timestamptz(6)
