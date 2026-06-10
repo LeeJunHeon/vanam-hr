@@ -5,6 +5,7 @@ import {
   requireSession,
   isAdminSession,
 } from "@/lib/auth-helpers";
+import { createNotifications } from "@/lib/notify";
 
 function parseDate(s: string | null | undefined): Date | null {
   if (!s || typeof s !== "string") return null;
@@ -416,6 +417,25 @@ export async function POST(request: NextRequest) {
         calendarEventDescription: calendarEventDescription?.trim() || null,
       },
     });
+
+    // 결재 요청 알림 — 자동승인이 아니고 결재자가 있을 때만
+    if (!isAutoApproved && approverIds.length > 0) {
+      try {
+        const cat = category.name; // 카테고리명 (이미 위에서 조회된 category 사용)
+        const requesterName = emp.name ?? "직원"; // 위에서 조회된 emp 사용
+        await createNotifications({
+          employeeIds: approverIds,
+          type: "approval_request",
+          title: "새 결재 요청",
+          body: `${requesterName}님의 ${cat} 결재 요청`,
+          linkPage: "approval",
+          linkRefId: created.id,
+          sourceType: "attendance_request",
+        });
+      } catch (e) {
+        console.error("[notify] 결재 요청 알림 생성 실패:", e);
+      }
+    }
 
     return NextResponse.json(
       { id: created.id, status: created.status },
