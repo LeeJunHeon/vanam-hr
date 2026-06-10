@@ -34,6 +34,7 @@ export async function GET() {
         _count: {
           select: { participants: true },
         },
+        participants: { select: { employeeId: true } },
       },
     });
 
@@ -51,6 +52,7 @@ export async function GET() {
         creatorIsAdmin: e.creatorIsAdmin,
         createdAt: e.createdAt.toISOString(),
         participantCount: e._count.participants,
+        participantIds: e.participants.map((p) => p.employeeId),
       }))
     );
   } catch (error) {
