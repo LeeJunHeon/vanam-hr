@@ -858,6 +858,22 @@ function ApprovalCard({
               </span>
             ))}
           </div>
+          {/* 대리 결재자 위임 안내 */}
+          {!isHistory && isPending && item.myRole === "deputy" && (
+            <div className="mt-1.5">
+              {item.delegated ? (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
+                  <CheckCircle size={11} className="-translate-y-px" />
+                  메인 무응답 → 결재 가능
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
+                  <Clock size={11} className="-translate-y-px" />
+                  메인 응답 대기 ({(item.hoursLeft ?? 0).toFixed(1)}시간 남음)
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
 

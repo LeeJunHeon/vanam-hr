@@ -255,9 +255,18 @@ export async function GET(request: NextRequest) {
       approverId = ownEmployeeId as number;
     }
 
+    const viewerIsCeo = session.user.role === "ceo";
     let where: any = {};
     if (status === "pending") {
-      where = { status: "pending", approverIds: { has: approverId } };
+      where = viewerIsCeo
+        ? { status: "pending" }
+        : {
+            status: "pending",
+            OR: [
+              { approverIds: { has: approverId } },
+              { deputyApproverId: approverId },
+            ],
+          };
     } else if (status === "approved") {
       where = { status: "approved", approvedByIds: { has: approverId } };
     } else if (status === "rejected") {
@@ -350,7 +359,10 @@ export async function GET(request: NextRequest) {
         Array.isArray(r.approverIds) && r.approverIds.includes(approverId);
       const iApproved =
         Array.isArray(r.approvedByIds) && r.approvedByIds.includes(approverId);
-      let canApprove = isApprover && !iApproved && r.status === "pending";
+      let canApprove =
+        r.status === "pending" &&
+        !iApproved &&
+        (isApprover || viewerIsCeo || (isDeputy && delegated));
 
       // Phase 6-2J: 본인 신청은 일반 직원만 차단 (ADMIN/CEO는 본인 결재 허용)
       if (r.employeeId === approverId) {
@@ -612,55 +624,76 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    // ── 4·5-2b: 다중 결재자 권한 + 부분/최종 승인 판정 ──
-    if (
-      !Array.isArray(target.approverIds) ||
-      !target.approverIds.includes(approverIdNum)
-    ) {
+    const viewerRole = r.session.user.role;
+    const isCeoApprover = viewerRole === "ceo";
+
+    // 대리 위임 경과 판정 (autoDelegateHours = 신청자 부서 결재선 기준, 기본 24)
+    const autoDelegateHours =
+      target.employee?.department?.approvalLine?.autoDelegateHours ?? 24;
+    const delegationElapsed = isDelegationElapsed(
+      target.requestedAt,
+      autoDelegateHours
+    );
+    const isApproverIn =
+      Array.isArray(target.approverIds) &&
+      target.approverIds.includes(approverIdNum);
+    const isDeputyApprover =
+      target.deputyApproverId === approverIdNum && delegationElapsed;
+
+    // 권한: 정규 결재자 / 대리(위임 경과) / CEO(상시) 중 하나여야 함
+    if (!isApproverIn && !isDeputyApprover && !isCeoApprover) {
       return NextResponse.json(
         { error: "이 요청의 결재자로 지정되어 있지 않습니다." },
         { status: 403 }
       );
     }
 
-    // Phase 6-2J: 본인 신청 결재는 ADMIN/CEO만 허용 (일반 직원은 차단)
-    // — 부분 승인 분기보다 먼저 검사해야 일반 직원이 자기 신청을 우회 승인하지 못함.
-    if (target.employeeId === approverIdNum) {
-      const viewerRole = r.session.user.role;
-      if (viewerRole !== "admin" && viewerRole !== "ceo") {
+    // 본인 신청은 일반 직원만 차단 (ADMIN/CEO는 본인 결재 허용)
+    if (
+      target.employeeId === approverIdNum &&
+      viewerRole !== "admin" &&
+      viewerRole !== "ceo"
+    ) {
+      return NextResponse.json(
+        { error: "본인의 신청은 결재할 수 없습니다." },
+        { status: 403 }
+      );
+    }
+
+    let newApprovedBy: number[] = target.approvedByIds ?? [];
+
+    if (action === "approve") {
+      if ((target.approvedByIds ?? []).includes(approverIdNum)) {
         return NextResponse.json(
-          { error: "본인의 신청은 결재할 수 없습니다." },
-          { status: 403 }
+          { error: "이미 승인하셨습니다." },
+          { status: 409 }
         );
       }
-    }
+      newApprovedBy = [...(target.approvedByIds ?? []), approverIdNum];
 
-    const alreadyApproved = (target.approvedByIds ?? []).includes(approverIdNum);
-    if (action === "approve" && alreadyApproved) {
-      return NextResponse.json({ error: "이미 승인하셨습니다." }, { status: 409 });
-    }
-    const newApprovedBy = alreadyApproved
-      ? target.approvedByIds
-      : [...(target.approvedByIds ?? []), approverIdNum];
-    const fullyApproved =
-      action === "approve" &&
-      (target.approvalMode === "any"
+      // CEO 또는 대리(위임 경과) = 즉시 최종 확정. 정규 결재자 = 모드별 판정.
+      const decisive = isCeoApprover || isDeputyApprover;
+      const fullyApproved = decisive
         ? true
-        : target.approverIds.every((id) => newApprovedBy.includes(id)));
+        : target.approvalMode === "any"
+        ? true
+        : target.approverIds.every((id) => newApprovedBy.includes(id));
 
-    // 부분 승인(아직 전원 아님) → 승인자만 누적, pending 유지. 캘린더/근태 미반영.
-    if (action === "approve" && !fullyApproved) {
-      const partial = await prisma.attendanceRequest.update({
-        where: { id: idNum },
-        data: { approvedByIds: newApprovedBy },
-      });
-      return NextResponse.json({
-        id: partial.id,
-        status: partial.status,
-        approvedCount: newApprovedBy.length,
-        totalApprovers: target.approverIds.length,
-        finalized: false,
-      });
+      // 부분 승인(아직 전원 아님) → 승인자만 누적, pending 유지. 근태·캘린더 미반영.
+      if (!fullyApproved) {
+        const partial = await prisma.attendanceRequest.update({
+          where: { id: idNum },
+          data: { approvedByIds: newApprovedBy },
+        });
+        return NextResponse.json({
+          id: partial.id,
+          status: partial.status,
+          approvedCount: newApprovedBy.length,
+          totalApprovers: (target.approverIds ?? []).length,
+          finalized: false,
+        });
+      }
+      // 최종 승인 → 아래 finalize 진행 (newApprovedBy 반영)
     }
     // 여기 도달 = 반려 OR 최종 승인 → 아래 기존 finalize 로직 그대로 진행.
 

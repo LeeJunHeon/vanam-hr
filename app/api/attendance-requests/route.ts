@@ -342,13 +342,14 @@ export async function POST(request: NextRequest) {
 
     // 결재선 결정 (다중 결재자 + 모드 + fallback + CEO 자동승인)
     const isCeoRequester = emp.position?.code === "CEO";
+    const isAdminRequester = emp.position?.code === "ADMIN";
 
     let approverIds: number[] = [];
     let approvalMode: "all" | "any" = "all";
     let primaryApproverId: number | null = null; // 호환용 컬럼
     let deputyApproverId: number | null = null; // 호환용 컬럼
 
-    if (!isCeoRequester) {
+    if (!isCeoRequester && !isAdminRequester) {
       let line = null;
       if (emp.departmentId !== null) {
         line = await prisma.approvalLine.findUnique({
@@ -374,7 +375,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 자동승인: CEO 본인 신청 OR requireApproval=false
-    const isAutoApproved = isCeoRequester || !category.requireApproval;
+    const isAutoApproved = isCeoRequester || isAdminRequester || !category.requireApproval;
 
     // 결재 필요한데 결재자를 못 찾으면 차단
     if (!isAutoApproved && approverIds.length === 0) {

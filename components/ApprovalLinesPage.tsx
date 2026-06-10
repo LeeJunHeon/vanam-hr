@@ -19,13 +19,15 @@ interface ApprovalLine {
   autoDelegateHours: number;
 }
 interface DeptOption { id: number; code: string; name: string; }
-interface EmpOption { id: number; employeeNo: string; name: string; departmentName: string | null; }
+interface EmpOption { id: number; employeeNo: string; name: string; departmentName: string | null; positionCode: string | null; }
 interface FallbackInfo { employeeId: number | null; employeeNo: string | null; name: string | null; isActive: boolean; }
 
 const EMPTY_FORM = {
   departmentId: "" as "" | string,
   approverIds: [] as number[],
   approvalMode: "all" as "all" | "any",
+  deputyApproverId: null as number | null,
+  autoDelegateHours: 24,
 };
 
 export default function ApprovalLinesPage() {
@@ -56,7 +58,7 @@ export default function ApprovalLinesPage() {
         const res = await fetch("/api/employees?includeInactive=false");
         if (res.ok) {
           const data = await res.json();
-          setEmployees(data.map((e: any) => ({ id: e.id, employeeNo: e.employeeNo, name: e.name, departmentName: e.departmentName })));
+          setEmployees(data.map((e: any) => ({ id: e.id, employeeNo: e.employeeNo, name: e.name, departmentName: e.departmentName, positionCode: e.positionCode ?? null })));
         }
       } catch (e) { console.error("employees fetch error:", e); }
     })();
@@ -109,6 +111,8 @@ export default function ApprovalLinesPage() {
       departmentId: String(l.departmentId),
       approverIds: l.approverIds ?? [],
       approvalMode: l.approvalMode === "any" ? "any" : "all",
+      deputyApproverId: l.deputyApproverId ?? null,
+      autoDelegateHours: l.autoDelegateHours ?? 24,
     });
     setFormError("");
     setShowForm(true);
@@ -129,7 +133,12 @@ export default function ApprovalLinesPage() {
     try {
       const url = editTarget ? `/api/approval-lines?id=${editTarget.id}` : "/api/approval-lines";
       const method = editTarget ? "PUT" : "POST";
-      const payload: any = { approverIds: form.approverIds, approvalMode: form.approvalMode };
+      const payload: any = {
+        approverIds: form.approverIds,
+        approvalMode: form.approvalMode,
+        deputyApproverId: form.deputyApproverId ?? null,
+        autoDelegateHours: form.autoDelegateHours,
+      };
       if (!editTarget) payload.departmentId = Number(form.departmentId);
       const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const data = await res.json();
@@ -174,12 +183,14 @@ export default function ApprovalLinesPage() {
   const handleExportCSV = () => {
     if (!lines || lines.length === 0) return;
     exportCSV(
-      ["부서코드", "부서명", "결재자", "승인방식"],
+      ["부서코드", "부서명", "결재자", "승인방식", "대리결재자", "자동위임(h)"],
       lines.map((l) => [
         l.departmentCode,
         l.departmentName,
         (l.approvers ?? []).map((a) => a.name).join(" / "),
         l.approvalMode === "any" ? "한 명만(OR)" : "전원(AND)",
+        l.deputyApproverName ?? "",
+        String(l.autoDelegateHours ?? ""),
       ]),
       `결재선_${todayYmd()}.csv`
     );
@@ -302,6 +313,30 @@ export default function ApprovalLinesPage() {
             </p>
           </div>
 
+          <div>
+            <label className="block text-xs font-semibold text-blue-700 mb-1">대리 결재자 (선택)</label>
+            <select
+              value={form.deputyApproverId ?? ""}
+              onChange={(e) => setForm((f) => ({ ...f, deputyApproverId: e.target.value === "" ? null : Number(e.target.value) }))}
+              className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400">
+              <option value="">없음</option>
+              {employees
+                .filter((e) => e.positionCode !== "CEO" && !form.approverIds.includes(e.id))
+                .map((e) => (<option key={e.id} value={e.id}>{e.name} ({e.employeeNo})</option>))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-blue-700 mb-1">자동 위임 시간 (시간)</label>
+            <input
+              type="number"
+              min={1}
+              value={form.autoDelegateHours}
+              onChange={(e) => setForm((f) => ({ ...f, autoDelegateHours: Math.max(1, Number(e.target.value) || 1) }))}
+              className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400" />
+            <p className="text-[10px] text-gray-500 mt-1">메인이 이 시간 내 미처리 시 대리가 결재 가능합니다. (대리 결재자가 없으면 의미 없음)</p>
+          </div>
+
           {formError && <p className="text-sm text-red-500 bg-red-50 px-3 py-2 rounded-xl">{formError}</p>}
 
           <div className="flex gap-2">
@@ -354,6 +389,13 @@ export default function ApprovalLinesPage() {
                     ))
                   )}
                 </div>
+              </div>
+              <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+                <UserCog size={14} className="text-gray-400 shrink-0" />
+                <span>{l.deputyApproverName ? `대리: ${l.deputyApproverName}` : "—"}</span>
+                {l.deputyApproverName && (
+                  <span className="text-gray-400">· 자동위임 {l.autoDelegateHours ?? 24}h</span>
+                )}
               </div>
             </div>
           ))}
