@@ -257,21 +257,24 @@ export async function GET(request: NextRequest) {
 
     let where: any = {};
     if (status === "pending") {
+      where = { status: "pending", approverIds: { has: approverId } };
+    } else if (status === "approved") {
+      where = { status: "approved", approvedByIds: { has: approverId } };
+    } else if (status === "rejected") {
       where = {
-        status: "pending",
+        status: "rejected",
         OR: [
-          { primaryApproverId: approverId },
-          { deputyApproverId: approverId },
+          { approvedById: approverId },
+          { approvedByIds: { has: approverId } },
         ],
       };
-    } else if (status === "approved" || status === "rejected") {
-      where = { status, approvedById: approverId };
     } else {
-      // 본인이 결재한 전체 이력 — 신청자 측 취소(approved→cancelled) 포함.
-      // pending 단계에서 취소된 건은 approvedById가 없어 자연스럽게 제외됨.
       where = {
-        approvedById: approverId,
         status: { in: ["approved", "rejected", "cancelled"] },
+        OR: [
+          { approvedById: approverId },
+          { approvedByIds: { has: approverId } },
+        ],
       };
     }
 
@@ -310,6 +313,24 @@ export async function GET(request: NextRequest) {
       },
     });
 
+    // 결재자 이름 매핑 (approver_ids/approved_by_ids 표시용)
+    const allApproverIds = Array.from(
+      new Set(
+        requests.flatMap((r) => [
+          ...(r.approverIds ?? []),
+          ...(r.approvedByIds ?? []),
+        ])
+      )
+    );
+    const approverNameMap = new Map<number, string>();
+    if (allApproverIds.length > 0) {
+      const emps = await prisma.employee.findMany({
+        where: { id: { in: allApproverIds } },
+        select: { id: true, name: true },
+      });
+      for (const e of emps) approverNameMap.set(e.id, e.name);
+    }
+
     // 기존 attendance 항목 — Phase 7 3단계: kind:'attendance' 필드만 추가.
     // 그 외 모든 필드/형식 변경 금지.
     const attendanceItems = requests.map((r) => {
@@ -320,15 +341,16 @@ export async function GET(request: NextRequest) {
       const delegated = isDelegationElapsed(r.requestedAt, autoDelegateHours);
       const hoursLeft = hoursUntilDelegation(r.requestedAt, autoDelegateHours);
 
-      let canApprove = false;
       let myRole: "primary" | "deputy" | null = null;
-      if (isPrimary) {
-        canApprove = true;
-        myRole = "primary";
-      } else if (isDeputy) {
-        canApprove = delegated;
-        myRole = "deputy";
-      }
+      if (isPrimary) myRole = "primary";
+      else if (isDeputy) myRole = "deputy";
+
+      // 4·5-2b: 다중 결재자 — approver_ids 포함 & 미승인 & pending 이면 결재 가능
+      const isApprover =
+        Array.isArray(r.approverIds) && r.approverIds.includes(approverId);
+      const iApproved =
+        Array.isArray(r.approvedByIds) && r.approvedByIds.includes(approverId);
+      let canApprove = isApprover && !iApproved && r.status === "pending";
 
       // Phase 6-2J: 본인 신청은 일반 직원만 차단 (ADMIN/CEO는 본인 결재 허용)
       if (r.employeeId === approverId) {
@@ -375,6 +397,18 @@ export async function GET(request: NextRequest) {
         hoursLeft,
         canApprove,
         isSelfRequest: r.employeeId === approverId,
+        // 4·5-2b: 다중 결재자 진행도/표시
+        approverIds: r.approverIds,
+        approvalMode: r.approvalMode,
+        approvedByIds: r.approvedByIds,
+        approvedCount: (r.approvedByIds ?? []).length,
+        totalApprovers: (r.approverIds ?? []).length,
+        iApproved,
+        approvers: (r.approverIds ?? []).map((aid) => ({
+          id: aid,
+          name: approverNameMap.get(aid) ?? null,
+          approved: (r.approvedByIds ?? []).includes(aid),
+        })),
         // Phase 6-2E 캘린더 등록 정보
         calendarSourceId: r.calendarSourceId ?? null,
         calendarEventTitle: r.calendarEventTitle ?? null,
@@ -578,6 +612,45 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    // ── 4·5-2b: 다중 결재자 권한 + 부분/최종 승인 판정 ──
+    if (
+      !Array.isArray(target.approverIds) ||
+      !target.approverIds.includes(approverIdNum)
+    ) {
+      return NextResponse.json(
+        { error: "이 요청의 결재자로 지정되어 있지 않습니다." },
+        { status: 403 }
+      );
+    }
+    const alreadyApproved = (target.approvedByIds ?? []).includes(approverIdNum);
+    if (action === "approve" && alreadyApproved) {
+      return NextResponse.json({ error: "이미 승인하셨습니다." }, { status: 409 });
+    }
+    const newApprovedBy = alreadyApproved
+      ? target.approvedByIds
+      : [...(target.approvedByIds ?? []), approverIdNum];
+    const fullyApproved =
+      action === "approve" &&
+      (target.approvalMode === "any"
+        ? true
+        : target.approverIds.every((id) => newApprovedBy.includes(id)));
+
+    // 부분 승인(아직 전원 아님) → 승인자만 누적, pending 유지. 캘린더/근태 미반영.
+    if (action === "approve" && !fullyApproved) {
+      const partial = await prisma.attendanceRequest.update({
+        where: { id: idNum },
+        data: { approvedByIds: newApprovedBy },
+      });
+      return NextResponse.json({
+        id: partial.id,
+        status: partial.status,
+        approvedCount: newApprovedBy.length,
+        totalApprovers: target.approverIds.length,
+        finalized: false,
+      });
+    }
+    // 여기 도달 = 반려 OR 최종 승인 → 아래 기존 finalize 로직 그대로 진행.
+
     // Phase 6-2J: 본인 신청 결재는 ADMIN/CEO만 허용 (일반 직원은 차단)
     if (target.employeeId === approverIdNum) {
       const viewerRole = r.session.user.role;
@@ -744,6 +817,7 @@ export async function PUT(request: NextRequest) {
           approvedById: approverIdNum,
           approvedAt: now,
           rejectReason: action === "reject" ? rejectReason.trim() : null,
+          ...(action === "approve" ? { approvedByIds: newApprovedBy } : {}),
           ...calendarUpdateFields,
         },
       });

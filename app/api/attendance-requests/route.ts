@@ -229,6 +229,7 @@ export async function POST(request: NextRequest) {
     // 직원 활성 검증
     const emp = await prisma.employee.findUnique({
       where: { id: employeeIdNum },
+      include: { position: { select: { code: true } } },
     });
     if (!emp || !emp.isActive) {
       return NextResponse.json(
@@ -339,31 +340,53 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 결재선 lookup
-    let primaryApproverId: number | null = null;
-    let deputyApproverId: number | null = null;
-    if (emp.departmentId !== null) {
-      const line = await prisma.approvalLine.findUnique({
-        where: { departmentId: emp.departmentId },
-      });
-      if (line) {
-        primaryApproverId = line.primaryApproverId;
-        deputyApproverId = line.deputyApproverId;
+    // 결재선 결정 (다중 결재자 + 모드 + fallback + CEO 자동승인)
+    const isCeoRequester = emp.position?.code === "CEO";
+
+    let approverIds: number[] = [];
+    let approvalMode: "all" | "any" = "all";
+    let primaryApproverId: number | null = null; // 호환용 컬럼
+    let deputyApproverId: number | null = null; // 호환용 컬럼
+
+    if (!isCeoRequester) {
+      let line = null;
+      if (emp.departmentId !== null) {
+        line = await prisma.approvalLine.findUnique({
+          where: { departmentId: emp.departmentId },
+        });
       }
+      if (line && Array.isArray(line.approverIds) && line.approverIds.length > 0) {
+        approverIds = line.approverIds;
+        approvalMode = line.approvalMode === "any" ? "any" : "all";
+        deputyApproverId = line.deputyApproverId; // 호환 유지
+      } else {
+        // 부서 결재선이 없으면 fallback 결재자(policy_settings) 단독
+        const fb = await prisma.policySetting.findUnique({
+          where: { key: "fallback_approver_employee_id" },
+        });
+        const fbId = fb ? Number(fb.value) : NaN;
+        if (Number.isInteger(fbId)) {
+          approverIds = [fbId];
+          approvalMode = "any";
+        }
+      }
+      primaryApproverId = approverIds.length > 0 ? approverIds[0] : null;
     }
 
-    // requireApproval=true인데 결재선 없으면 차단
-    if (category.requireApproval && primaryApproverId === null) {
+    // 자동승인: CEO 본인 신청 OR requireApproval=false
+    const isAutoApproved = isCeoRequester || !category.requireApproval;
+
+    // 결재 필요한데 결재자를 못 찾으면 차단
+    if (!isAutoApproved && approverIds.length === 0) {
       return NextResponse.json(
         {
           error:
-            "본인 부서에 결재선이 설정되어 있지 않아 신청할 수 없습니다. 관리자에게 결재선 등록을 요청하세요.",
+            "결재자를 찾을 수 없습니다. 관리자에게 결재선 또는 대체 결재자(fallback) 설정을 요청하세요.",
         },
         { status: 400 }
       );
     }
 
-    const isAutoApproved = !category.requireApproval;
     const now = new Date();
 
     const created = await prisma.attendanceRequest.create({
@@ -377,8 +400,11 @@ export async function POST(request: NextRequest) {
         correctedCheckIn: cciDate,
         correctedCheckOut: ccoDate,
         status: isAutoApproved ? "auto_approved" : "pending",
-        primaryApproverId,
-        deputyApproverId,
+        approverIds: isAutoApproved ? [] : approverIds,
+        approvalMode,
+        approvedByIds: [],
+        primaryApproverId: isAutoApproved ? null : primaryApproverId, // 호환
+        deputyApproverId: isAutoApproved ? null : deputyApproverId, // 호환
         approvedAt: isAutoApproved ? now : null,
         // Phase 6-2E 캘린더 등록 정보 (NULL 허용)
         calendarSourceId:
