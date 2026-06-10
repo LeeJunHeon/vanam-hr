@@ -43,9 +43,7 @@ export async function GET() {
 
     const requests = await prisma.attendanceRequest.findMany({
       where: {
-        requestType: "calendar_auto",
-        status: "auto_approved",
-        externalSource: "google_calendar",
+        status: { in: ["approved", "auto_approved", "auto_delegated"] },
         startDate: { lte: today },
         endDate: { gte: today },
       },
@@ -108,6 +106,27 @@ export async function GET() {
       };
     });
 
+    // 같은 직원+카테고리 중복 제거 — 대표 1건(시간형 시작 빠른 순 > 종일).
+    // 화면 인원 카운트가 일정 건수로 부풀지 않도록.
+    const dedupeMap = new Map<string, (typeof schedules)[number]>();
+    for (const s of schedules) {
+      const key = `${s.employeeId}_${s.categoryCode ?? "NONE"}`;
+      const prev = dedupeMap.get(key);
+      if (!prev) {
+        dedupeMap.set(key, s);
+        continue;
+      }
+      const sStart = s.correctedCheckIn ? Date.parse(s.correctedCheckIn) : Number.POSITIVE_INFINITY;
+      const pStart = prev.correctedCheckIn ? Date.parse(prev.correctedCheckIn) : Number.POSITIVE_INFINITY;
+      const sTimed = !s.isAllDay;
+      const pTimed = !prev.isAllDay;
+      let take = false;
+      if (sTimed && !pTimed) take = true;            // 종일 → 시간형 우선
+      else if (sTimed && pTimed && sStart < pStart) take = true; // 더 일찍 시작
+      if (take) dedupeMap.set(key, s);
+    }
+    const dedupedSchedules = Array.from(dedupeMap.values());
+
     // Phase 6-2L+ B-4: 오늘이 공휴일이면 이름 함께 반환 (UI 라벨용)
     const holiday = await prisma.holiday.findUnique({
       where: { holidayDate: today },
@@ -116,8 +135,8 @@ export async function GET() {
 
     return NextResponse.json({
       date: todayStr,
-      total: schedules.length,
-      schedules,
+      total: dedupedSchedules.length,
+      schedules: dedupedSchedules,
       holiday: holiday ? holiday.name : null,
     });
   } catch (error) {
