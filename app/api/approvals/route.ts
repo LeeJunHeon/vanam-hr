@@ -662,31 +662,6 @@ export async function PUT(request: NextRequest) {
       }
     }
 
-    const isPrimary = target.primaryApproverId === approverIdNum;
-    const isDeputy = target.deputyApproverId === approverIdNum;
-    if (!isPrimary && !isDeputy) {
-      return NextResponse.json(
-        { error: "이 요청의 결재자가 아닙니다." },
-        { status: 403 }
-      );
-    }
-
-    // 대리인 경우 자동 위임 시간 경과 검증
-    if (!isPrimary && isDeputy) {
-      const hours =
-        target.employee.department?.approvalLine?.autoDelegateHours ?? 24;
-      const elapsed = Date.now() - target.requestedAt.getTime();
-      if (elapsed < hours * 60 * 60 * 1000) {
-        return NextResponse.json(
-          {
-            error:
-              "메인 결재자 응답 대기 중입니다. 자동 위임까지 시간이 남아 있어 대리 결재가 불가합니다.",
-          },
-          { status: 403 }
-        );
-      }
-    }
-
     const newStatus = action === "approve" ? "approved" : "rejected";
     const now = new Date();
 
