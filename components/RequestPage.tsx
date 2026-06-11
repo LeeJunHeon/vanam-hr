@@ -230,17 +230,45 @@ export default function RequestPage() {
   }, []);
 
   // Phase 6-2F: 부서 + 결재선 존재 여부 체크
+  // ADMIN/CEO는 백엔드에서 자동승인되므로 부서/결재선 없이도 신청 허용.
   useEffect(() => {
     if (!me) return;
 
-    const departmentId = me.departmentId;
-    if (!departmentId) {
-      // 부서 없음 → 즉시 차단
+    // ADMIN/CEO는 결재 불필요(자동승인) → 항상 통과
+    if (me.isAdmin || me.isCeo) {
       setApprovalLineStatus({
-        hasDepartment: false,
-        hasApprovalLine: false,
+        hasDepartment: true,
+        hasApprovalLine: true,
         loading: false,
       });
+      return;
+    }
+
+    const departmentId = me.departmentId;
+    if (!departmentId) {
+      // 일반 직원 + 부서 없음 → 부서는 없지만, fallback 결재자가 있으면 신청 가능.
+      // /api/policy/fallback-approver로 fallback 존재 여부 확인.
+      // (주의: 이 엔드포인트는 admin 전용이라 일반 직원은 403 → 보수적으로 차단됨)
+      fetch("/api/policy/fallback-approver")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          // 응답 형태: { employeeId, employeeNo, name, isActive }
+          // employeeId가 있으면 fallback 결재자 존재로 간주
+          const hasFallback = !!(data && data.employeeId);
+          setApprovalLineStatus({
+            hasDepartment: hasFallback,   // fallback 있으면 통과시키기 위해 true로 둠
+            hasApprovalLine: hasFallback,
+            loading: false,
+          });
+        })
+        .catch(() => {
+          // 조회 실패 시 기존처럼 차단(안전)
+          setApprovalLineStatus({
+            hasDepartment: false,
+            hasApprovalLine: false,
+            loading: false,
+          });
+        });
       return;
     }
 
