@@ -165,6 +165,12 @@ interface AdminCard {
   detailKey?: keyof AdminStats["details"]; // kind=detail일 때
 }
 
+const PERIOD_PREFIX: Record<PeriodType, string> = {
+  day: "오늘",
+  month: "이번달",
+  year: "올해",
+};
+
 const ADMIN_CARDS: AdminCard[] = [
   { key: "pendingRequests", title: "결재 대기", iconKey: "clipboard", color: "amber", kind: "navigate", page: "approval" },
   { key: "absent", title: "결근", iconKey: "userX", color: "rose", kind: "detail", detailKey: "absent" },
@@ -719,12 +725,13 @@ function AdminDashboard({
                 ? stats?.pendingRequests ?? 0
                 : stats?.counts?.[card.key] ?? 0;
             const value = String(raw);
+            const displayTitle = `${PERIOD_PREFIX[period]} ${card.title}`;
             const handleClick = () => {
               if (card.kind === "navigate" && card.page) {
                 onNavigate(card.page);
               } else if (card.kind === "detail" && card.detailKey) {
                 setDetailModal({
-                  title: card.title,
+                  title: displayTitle,
                   items: stats?.details?.[card.detailKey] ?? [],
                 });
               }
@@ -732,7 +739,7 @@ function AdminDashboard({
             return (
               <StatCard
                 key={card.key}
-                card={card}
+                card={{ ...card, title: displayTitle }}
                 value={value}
                 period={period}
                 onClick={handleClick}

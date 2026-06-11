@@ -26,34 +26,41 @@ export async function GET(request: NextRequest) {
     let rangeStart: Date;
     let rangeEnd: Date;
 
+    // KST 기준 "오늘"을 구하기 위한 보정 (서버가 UTC여도 한국 날짜를 쓰도록)
+    const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+    const nowKst = new Date(now.getTime() + KST_OFFSET_MS);
+    const kstY = nowKst.getUTCFullYear();
+    const kstM = nowKst.getUTCMonth();
+    const kstD = nowKst.getUTCDate();
+
     if (period === "day") {
-      const d = targetDate
-        ? new Date(targetDate + "T00:00:00.000Z")
-        : new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      rangeStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-      rangeEnd = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+      let y = kstY, m = kstM, dd = kstD;
+      if (targetDate && /^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+        const parts = targetDate.split("-");
+        y = Number(parts[0]);
+        m = Number(parts[1]) - 1;
+        dd = Number(parts[2]);
+      }
+      // work_date(DATE)는 UTC 자정으로 저장되므로 range도 UTC 자정 기준으로 생성
+      rangeStart = new Date(Date.UTC(y, m, dd));
+      rangeEnd = new Date(Date.UTC(y, m, dd + 1));
     } else if (period === "month") {
-      let y: number, m: number;
+      let y = kstY, m = kstM;
       if (targetMonth && /^\d{4}-\d{2}$/.test(targetMonth)) {
         const parts = targetMonth.split("-");
         y = Number(parts[0]);
         m = Number(parts[1]) - 1;
-      } else {
-        y = now.getFullYear();
-        m = now.getMonth();
       }
-      rangeStart = new Date(y, m, 1);
-      rangeEnd = new Date(y, m + 1, 1);
+      rangeStart = new Date(Date.UTC(y, m, 1));
+      rangeEnd = new Date(Date.UTC(y, m + 1, 1));
     } else {
       // year
-      let y: number;
+      let y = kstY;
       if (targetYear && /^\d{4}$/.test(targetYear)) {
         y = Number(targetYear);
-      } else {
-        y = now.getFullYear();
       }
-      rangeStart = new Date(y, 0, 1);
-      rangeEnd = new Date(y + 1, 0, 1);
+      rangeStart = new Date(Date.UTC(y, 0, 1));
+      rangeEnd = new Date(Date.UTC(y + 1, 0, 1));
     }
 
     const [pendingRequests, dailies] = await Promise.all([
