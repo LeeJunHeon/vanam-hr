@@ -16,6 +16,11 @@ import {
   RefreshCw,
   Wifi,
   WifiOff,
+  UserX,
+  LogOut,
+  Plane,
+  Globe,
+  X,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import type { PageId } from "@/components/Sidebar";
@@ -27,17 +32,37 @@ import { todayYmd } from "@/lib/dateUtils";
 // ============================================
 type PeriodType = "day" | "month" | "year";
 
+interface DetailItem {
+  employeeId: number;
+  name: string;
+  departmentName: string | null;
+  workDate: string;
+  checkIn?: string | null;
+  checkOut?: string | null;
+  categoryName?: string | null;
+  reason?: string | null;
+}
 interface AdminStats {
   period: PeriodType;
-  activeEmployees: number;
-  activeDepartments: number;
-  activeDevices: number;
-  pendingRequests: number;
-  shiftPatterns: number;
-  mappedSsoUsers: number;
-  attendedCount: number;
-  leaveDays: number;
+  range: { start: string; end: string };
   asOf: string;
+  pendingRequests: number;
+  counts: {
+    absent: number;
+    late: number;
+    earlyLeave: number;
+    leave: number;
+    businessTrip: number;
+    externalWork: number;
+  };
+  details: {
+    absent: DetailItem[];
+    late: DetailItem[];
+    earlyLeave: DetailItem[];
+    leave: DetailItem[];
+    businessTrip: DetailItem[];
+    externalWork: DetailItem[];
+  };
 }
 
 interface MyStats {
@@ -62,12 +87,25 @@ interface CardConfig {
     | "clock"
     | "link"
     | "fileText"
-    | "checkCircle";
-  color: "blue" | "emerald" | "amber" | "purple" | "rose" | "sky";
+    | "checkCircle"
+    | "userX"
+    | "logOut"
+    | "plane"
+    | "globe";
+  color:
+    | "blue"
+    | "emerald"
+    | "amber"
+    | "purple"
+    | "rose"
+    | "sky"
+    | "orange"
+    | "violet"
+    | "teal";
   // titleByPeriod === null 이면 period 무관 고정 제목 = title
   title?: string;
   titleByPeriod?: Record<PeriodType, string>;
-  description: string;
+  description?: string;
   // 클릭 시 이동할 페이지 (없으면 클릭 비활성)
   page?: PageId;
   format?: (v: number) => string;
@@ -84,6 +122,10 @@ const ICON_MAP = {
   link: LinkIcon,
   fileText: FileText,
   checkCircle: CheckCircle,
+  userX: UserX,
+  logOut: LogOut,
+  plane: Plane,
+  globe: Globe,
 };
 
 const COLOR_MAP: Record<
@@ -96,84 +138,41 @@ const COLOR_MAP: Record<
   purple: { bg: "bg-purple-50", text: "text-purple-600", iconBg: "bg-purple-100" },
   rose: { bg: "bg-rose-50", text: "text-rose-600", iconBg: "bg-rose-100" },
   sky: { bg: "bg-sky-50", text: "text-sky-600", iconBg: "bg-sky-100" },
+  orange: { bg: "bg-orange-50", text: "text-orange-600", iconBg: "bg-orange-100" },
+  violet: { bg: "bg-violet-50", text: "text-violet-600", iconBg: "bg-violet-100" },
+  teal: { bg: "bg-teal-50", text: "text-teal-600", iconBg: "bg-teal-100" },
 };
 
 // ============================================
 // 카드 정의
 // ============================================
-const ADMIN_CARDS: CardConfig[] = [
-  {
-    key: "activeEmployees",
-    iconKey: "users",
-    color: "blue",
-    title: "활성 직원",
-    description: "현재 재직 중",
-    page: "employees",
-  },
-  {
-    key: "activeDepartments",
-    iconKey: "building",
-    color: "purple",
-    title: "부서",
-    description: "활성 부서 수",
-    page: "org",
-  },
-  {
-    key: "activeDevices",
-    iconKey: "smartphone",
-    color: "sky",
-    title: "등록 디바이스",
-    description: "WiFi 폴링 대상",
-    page: "devices",
-  },
-  {
-    key: "pendingRequests",
-    iconKey: "clipboard",
-    color: "amber",
-    title: "결재 대기",
-    description: "승인 대기 중",
-    page: "approval",
-  },
-  {
-    key: "attendedCount",
-    iconKey: "userCheck",
-    color: "emerald",
-    titleByPeriod: {
-      day: "오늘 출근",
-      month: "이번달 출근",
-      year: "올해 출근",
-    },
-    description: "체크인 누적",
-    page: "attendance-overview",
-  },
-  {
-    key: "leaveDays",
-    iconKey: "calendar",
-    color: "rose",
-    titleByPeriod: {
-      day: "오늘 휴가",
-      month: "이번달 휴가",
-      year: "올해 휴가",
-    },
-    description: "휴가 사용 (일)",
-    format: (v) => v.toFixed(1),
-  },
-  {
-    key: "shiftPatterns",
-    iconKey: "clock",
-    color: "blue",
-    title: "시프트 패턴",
-    description: "운영 중인 패턴",
-    page: "shifts",
-  },
-  {
-    key: "mappedSsoUsers",
-    iconKey: "link",
-    color: "emerald",
-    title: "SSO 매핑",
-    description: "포털 SSO 연결됨",
-    page: "employees",
-  },
+type AdminCardKey =
+  | "pendingRequests"
+  | "absent"
+  | "late"
+  | "earlyLeave"
+  | "leave"
+  | "businessTrip"
+  | "externalWork";
+
+interface AdminCard {
+  key: AdminCardKey;
+  title: string;
+  iconKey: CardConfig["iconKey"];
+  color: CardConfig["color"];
+  kind: "navigate" | "detail"; // navigate=페이지 이동, detail=팝업
+  page?: PageId; // kind=navigate일 때
+  detailKey?: keyof AdminStats["details"]; // kind=detail일 때
+}
+
+const ADMIN_CARDS: AdminCard[] = [
+  { key: "pendingRequests", title: "결재 대기", iconKey: "clipboard", color: "amber", kind: "navigate", page: "approval" },
+  { key: "absent", title: "결근", iconKey: "userX", color: "rose", kind: "detail", detailKey: "absent" },
+  { key: "late", title: "지각", iconKey: "clock", color: "amber", kind: "detail", detailKey: "late" },
+  { key: "earlyLeave", title: "조퇴", iconKey: "logOut", color: "orange", kind: "detail", detailKey: "earlyLeave" },
+  { key: "leave", title: "휴가", iconKey: "calendar", color: "violet", kind: "detail", detailKey: "leave" },
+  { key: "businessTrip", title: "출장", iconKey: "plane", color: "sky", kind: "detail", detailKey: "businessTrip" },
+  { key: "externalWork", title: "외근", iconKey: "globe", color: "teal", kind: "detail", detailKey: "externalWork" },
 ];
 
 const MY_CARDS: CardConfig[] = [
@@ -500,11 +499,13 @@ function StatCard({
   value,
   period,
   onNavigate,
+  onClick,
 }: {
   card: CardConfig;
   value: string;
   period: PeriodType;
-  onNavigate: (page: PageId) => void;
+  onNavigate?: (page: PageId) => void;
+  onClick?: () => void;
 }) {
   const Icon = ICON_MAP[card.iconKey];
   const colors = COLOR_MAP[card.color];
@@ -512,12 +513,17 @@ function StatCard({
     ? card.titleByPeriod[period]
     : card.title ?? "";
 
-  const clickable = !!card.page;
+  // onClick(상세 팝업 등)이 있으면 우선, 없으면 card.page로 페이지 이동
+  const clickable = !!onClick || !!card.page;
 
   return (
     <button
       onClick={() => {
-        if (card.page) onNavigate(card.page);
+        if (onClick) {
+          onClick();
+          return;
+        }
+        if (card.page && onNavigate) onNavigate(card.page);
       }}
       disabled={!clickable}
       className={`text-left bg-white rounded-2xl border border-gray-100 p-4 sm:p-5 transition-shadow w-full ${
@@ -539,8 +545,64 @@ function StatCard({
       <p className="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 font-mono">
         {value}
       </p>
-      <p className="text-xs text-gray-400 mt-1">{card.description}</p>
+      {card.description && (
+        <p className="text-xs text-gray-400 mt-1">{card.description}</p>
+      )}
     </button>
+  );
+}
+
+// ============================================
+// 상세 팝업 모달 (관리자 카드 클릭 시)
+// ============================================
+function DetailModal({
+  title,
+  items,
+  onClose,
+}: {
+  title: string;
+  items: DetailItem[];
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100">
+          <h3 className="text-base font-bold text-gray-900">{title} <span className="text-sm font-normal text-gray-400">({items.length}건)</span></h3>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400"><X size={18} /></button>
+        </div>
+        <div className="overflow-y-auto">
+          {items.length === 0 ? (
+            <div className="px-5 py-10 text-center text-sm text-gray-400">해당 내역이 없습니다</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-gray-500 text-xs">
+                <tr>
+                  <th className="text-left px-4 py-2 font-medium">이름</th>
+                  <th className="text-left px-4 py-2 font-medium">부서</th>
+                  <th className="text-left px-4 py-2 font-medium">날짜</th>
+                  <th className="text-left px-4 py-2 font-medium">상세</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((it, i) => (
+                  <tr key={`${it.employeeId}-${it.workDate}-${i}`} className="border-t border-gray-50">
+                    <td className="px-4 py-2 font-medium text-gray-900">{it.name}</td>
+                    <td className="px-4 py-2 text-gray-500">{it.departmentName ?? "-"}</td>
+                    <td className="px-4 py-2 text-gray-600">{it.workDate}</td>
+                    <td className="px-4 py-2 text-gray-500">
+                      {it.categoryName ?? ""}
+                      {it.checkIn ? ` ${new Date(it.checkIn).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}` : ""}
+                      {it.checkOut ? `~${new Date(it.checkOut).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}` : ""}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -570,6 +632,10 @@ function AdminDashboard({
   const [targetDate, setTargetDate] = useState(todayYmd());
   const [targetMonth, setTargetMonth] = useState(thisMonthStr());
   const [targetYear, setTargetYear] = useState(thisYearStr());
+  const [detailModal, setDetailModal] = useState<{
+    title: string;
+    items: DetailItem[];
+  } | null>(null);
 
   const fetchStats = useCallback(
     async (showRefresh = false) => {
@@ -649,21 +715,39 @@ function AdminDashboard({
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           {ADMIN_CARDS.map((card) => {
             const raw =
-              (stats as unknown as Record<string, number>)?.[card.key] ?? 0;
-            const value = card.format
-              ? card.format(Number(raw))
-              : String(raw);
+              card.key === "pendingRequests"
+                ? stats?.pendingRequests ?? 0
+                : stats?.counts?.[card.key] ?? 0;
+            const value = String(raw);
+            const handleClick = () => {
+              if (card.kind === "navigate" && card.page) {
+                onNavigate(card.page);
+              } else if (card.kind === "detail" && card.detailKey) {
+                setDetailModal({
+                  title: card.title,
+                  items: stats?.details?.[card.detailKey] ?? [],
+                });
+              }
+            };
             return (
               <StatCard
                 key={card.key}
                 card={card}
                 value={value}
                 period={period}
-                onNavigate={onNavigate}
+                onClick={handleClick}
               />
             );
           })}
         </div>
+      )}
+
+      {detailModal && (
+        <DetailModal
+          title={detailModal.title}
+          items={detailModal.items}
+          onClose={() => setDetailModal(null)}
+        />
       )}
     </div>
   );
