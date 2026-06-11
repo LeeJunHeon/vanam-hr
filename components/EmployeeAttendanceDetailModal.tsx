@@ -86,11 +86,21 @@ function formatDateLabel(ymd: string): string {
 function renderProgress(row: DetailRow) {
   // 캘린더 보정 우선
   if (row.isOverridden && row.categoryId && row.categoryName) {
-    const label = isVacationCategory(row.categoryCode)
-      ? row.categoryName // "연차"
-      : row.checkOut
-        ? `${row.categoryName}완료` // "외근완료"
-        : `${row.categoryName}중`; // "외근중"
+    let label: string;
+    if (isVacationCategory(row.categoryCode)) {
+      label = row.categoryName; // "연차" 등 종일 휴가류는 그대로
+    } else {
+      // 출장/외근 등 시간형: 일정 종료시각(correctedCheckOut)으로 진행/완료 판정.
+      // - correctedCheckOut이 없으면(종일) → checkOut 유무로 폴백
+      // - correctedCheckOut이 미래면 "…중", 과거면 "…완료"
+      let ended: boolean;
+      if (row.correctedCheckOut) {
+        ended = new Date(row.correctedCheckOut).getTime() <= Date.now();
+      } else {
+        ended = !!row.checkOut; // 종일/시각없음 → 기존 방식 폴백
+      }
+      label = ended ? `${row.categoryName}완료` : `${row.categoryName}중`;
+    }
     return (
       <span className="inline-flex items-center gap-1 text-xs font-medium text-purple-700">
         <span
