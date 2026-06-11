@@ -225,6 +225,72 @@ class Database:
                 "type": point.get("type", "day"),
             }
 
+    def get_pending_attendance_alerts(self) -> list[dict]:
+        """직전 근무일이 비정상(absent/late/early_leave)이고 아직 알림을 안 보낸
+        활성 직원 목록. 연차/출장/외근(category 있음)·휴무(행 없음)는 직전 근무일
+        탐색에서 자동 제외된다.
+
+        반환: [{id, name, email, work_date(date), auto_status}, ...]
+        - work_date < CURRENT_DATE (오늘 이전; CURRENT_DATE는 KST 날짜)
+        - 직전 근무일 = category_id IS NULL AND auto_status IS NOT NULL 인 가장 최근 일자
+        - daily_attendance_alert_log에 (employee_id, work_date)가 이미 있으면 제외
+        """
+        self._ensure_connected()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute(
+                """
+                SELECT e.id, e.name, e.email,
+                       sub.work_date, sub.auto_status
+                FROM hr.employees e
+                JOIN LATERAL (
+                    SELECT d.work_date, d.auto_status
+                    FROM hr.attendance_daily d
+                    WHERE d.employee_id = e.id
+                      AND d.category_id IS NULL
+                      AND d.auto_status IS NOT NULL
+                      AND d.work_date < CURRENT_DATE
+                    ORDER BY d.work_date DESC
+                    LIMIT 1
+                ) sub ON true
+                WHERE e.is_active = true
+                  AND e.email IS NOT NULL
+                  AND sub.auto_status IN ('absent', 'late', 'early_leave')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM hr.daily_attendance_alert_log l
+                      WHERE l.employee_id = e.id
+                        AND l.work_date = sub.work_date
+                  )
+                ORDER BY e.id
+                """
+            )
+            return [dict(r) for r in c.fetchall()]
+
+    def try_log_attendance_alert(
+        self,
+        employee_id: int,
+        work_date: date,
+        auto_status: str,
+    ) -> bool:
+        """발송 기록 INSERT. 새로 기록되면 True(발송해도 됨),
+        이미 있으면(UNIQUE 충돌) False(이미 보냄 → 발송 금지).
+
+        '로그 먼저 → 성공 시 발송' 패턴으로 중복 발송을 원천 차단한다.
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                INSERT INTO hr.daily_attendance_alert_log
+                    (employee_id, work_date, auto_status)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (employee_id, work_date) DO NOTHING
+                RETURNING id
+                """,
+                (employee_id, work_date, auto_status),
+            )
+            row = c.fetchone()
+            return row is not None
+
     def get_auto_approved_request(
         self,
         employee_id: int,

@@ -249,6 +249,12 @@ class Aggregator:
                     f"_check_disconnect_alert 예외 (emp_id={emp.get('id')}): {e}"
                 )
 
+        # 직전 근무일 비정상 알림 — 직원 루프 밖에서 사이클당 1회 (대상은 DB가 추림)
+        try:
+            self._check_attendance_alerts(today, now)
+        except Exception as e:
+            self.logger.error(f"_check_attendance_alerts 예외: {e}")
+
         total = time.time() - cycle_start
         self.logger.info(
             f"=== 사이클 종료: {total:.3f}s "
@@ -574,6 +580,96 @@ class Aggregator:
         if actual_minutes < required_minutes:
             return "early_leave"
         return "normal"
+
+    def _check_attendance_alerts(self, today, now: datetime) -> None:
+        """직전 근무일이 비정상인 직원에게 '근태 확인 요청' 메일 발송.
+
+        - 직원 루프 밖에서 사이클당 1회 호출.
+        - 발송 대상은 get_pending_attendance_alerts()가 DB에서 추려준다(보통 0명).
+        - 각 대상에 대해 '오늘 시프트 출근시각'을 지났을 때만 발송.
+          · 시프트 없음/휴무(off)/시작시각 없음 → 발송 안 함(스킵).
+          · 아직 출근시각 전 → 스킵(다음 사이클에 재시도).
+        - 중복 방지: try_log_attendance_alert로 '로그 먼저' 성공 시에만 발송.
+        - 메일 형식은 기존 끊김 알림과 동일 톤. 날짜는 실제 직전 근무일을 표기.
+        """
+        try:
+            pending = self.db.get_pending_attendance_alerts()
+        except Exception as e:
+            self.logger.error(f"  [attn-alert] 대상 조회 실패: {e}")
+            return
+
+        if not pending:
+            return
+
+        now_kst = now.astimezone(KST)
+        status_kr = {"absent": "결근", "late": "지각", "early_leave": "조퇴"}
+        weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
+
+        for p in pending:
+            emp_id = p["id"]
+            email = p.get("email")
+            if not email:
+                continue
+
+            # 오늘 시프트 출근시각 확인 (시프트 없거나 휴무면 발송 안 함 — 결정사항 A)
+            try:
+                shift = self.db.get_employee_shift(emp_id, today)
+            except Exception as e:
+                self.logger.error(f"  [attn-alert] 시프트 조회 실패 (emp={emp_id}): {e}")
+                continue
+            if not shift or shift.get("type") == "off" or not shift.get("start"):
+                continue
+            try:
+                sh_h, sh_m = map(int, str(shift["start"]).split(":"))
+            except (ValueError, AttributeError):
+                continue
+            shift_start_dt = now_kst.replace(
+                hour=sh_h, minute=sh_m, second=0, microsecond=0
+            )
+            if now_kst < shift_start_dt:
+                # 아직 출근시각 전 → 다음 사이클에 재시도
+                continue
+
+            status = p["auto_status"]
+            work_date = p["work_date"]
+
+            # 로그 먼저 → 성공(새 기록) 시에만 발송 (중복 차단)
+            try:
+                ok_to_send = self.db.try_log_attendance_alert(emp_id, work_date, status)
+            except Exception as e:
+                self.logger.error(f"  [attn-alert] 로그 기록 실패 (emp={emp_id}): {e}")
+                continue
+            if not ok_to_send:
+                # 이미 보냄
+                continue
+
+            # 메일 작성/발송
+            name = p.get("name", "")
+            status_label = status_kr.get(status, status)
+            try:
+                dow = weekday_kr[work_date.weekday()]
+                wd_str = f"{work_date.strftime('%Y-%m-%d')}({dow})"
+            except Exception:
+                wd_str = str(work_date)
+            subject = "[VanaM 근태관리] 근태 확인 요청"
+            body = (
+                f"{name} 님,\n\n"
+                f"{wd_str} 근태가 '{status_label}'(으)로 기록되었습니다.\n"
+                f"확인이 필요하시면 근태 시스템에서 정정을 신청해주세요.\n\n"
+                f"[해당 메일은 자동 전송 되었습니다.]"
+            )
+            ok = self.notifier.send(email, subject, body)
+            if ok:
+                self.logger.info(
+                    f"  [attn-alert] 발송 (emp={emp_id}, name={name}, "
+                    f"email={email}, work_date={work_date}, status={status})"
+                )
+            else:
+                # 발송 실패 시 로그는 이미 들어갔으므로 재발송되지 않는다(누락<중복 우선 결정).
+                self.logger.warning(
+                    f"  [attn-alert] 발송 실패하였으나 로그는 기록됨 "
+                    f"(emp={emp_id}, work_date={work_date})"
+                )
 
     def _check_disconnect_alert(
         self,
