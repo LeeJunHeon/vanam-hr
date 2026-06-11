@@ -633,10 +633,22 @@ export async function PUT(request: NextRequest) {
         }
 
         // 4) attendance_requests 상태만 cancelled로 (이력 보존, 삭제 X)
-        return tx.attendanceRequest.update({
+        const cancelledReq = await tx.attendanceRequest.update({
           where: { id: idNum },
           data: { status: "cancelled" },
         });
+
+        // 5) 이 요청으로 생성된 결재 요청 알림 삭제 (결재자 종에 유령 알림 방지)
+        //    linkRefId = 요청 id, type = 'approval_request' 인 알림만 제거.
+        //    결재자가 여러 명이면 알림도 여러 개라 deleteMany. 매칭 없으면 0건(안전).
+        await tx.notification.deleteMany({
+          where: {
+            linkRefId: BigInt(idNum),
+            type: "approval_request",
+          },
+        });
+
+        return cancelledReq;
       });
 
       console.log(
