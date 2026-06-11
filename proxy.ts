@@ -24,6 +24,13 @@ export default auth((req: NextRequest & { auth: any }) => {
   // /login 은 항상 허용
   if (pathname.startsWith("/login")) return NextResponse.next();
 
+  // 포털용 알림 API — cross-origin. route 핸들러가 자체 CORS(OPTIONS/미인증 빈 응답)를
+  // 처리하므로, 미들웨어의 401(무 CORS)로 막지 않고 통과시킨다.
+  // 실제 인증은 route 내부 requireSession()이 담당(미인증이면 빈 알림 반환).
+  if (pathname === "/api/portal-notifications") {
+    return NextResponse.next();
+  }
+
   // /api/* 미인증 시 401 JSON
   if (pathname.startsWith("/api/")) {
     if (!req.auth?.user) {
