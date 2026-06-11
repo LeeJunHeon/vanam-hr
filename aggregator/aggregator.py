@@ -300,23 +300,48 @@ class Aggregator:
         shift_info = self.db.get_employee_shift(emp_id, work_date)
 
         if active_requests:
-            # 시간형 일정(시작/종료 둘 다) vs 종일 일정 구분
+            # ── work_date의 실제 시간 범위 [day_start, day_end) 계산 (cutoff 기준) ──
+            # corrected_check_in/out이 이 범위 안에 있는 시간형 일정만 융합/판정에 사용한다.
+            # (날짜를 걸친 다른 날의 일정이 이 work_date로 새는 것 방지)
+            from datetime import datetime as _dt, time as _time, timedelta as _td
+            from zoneinfo import ZoneInfo
+            _KST = ZoneInfo("Asia/Seoul")
+            day_start = _dt.combine(work_date, _time(hour=cutoff_hour), tzinfo=_KST)
+            day_end = day_start + _td(days=1)
+
+            def _in_work_date(ts):
+                """timestamptz ts가 이 work_date 범위 [day_start, day_end)에 속하는가."""
+                if ts is None:
+                    return False
+                # ts를 KST로 변환해 비교 (tz-aware 보장)
+                ts_kst = ts.astimezone(_KST) if ts.tzinfo is not None else ts.replace(tzinfo=_KST)
+                return day_start <= ts_kst < day_end
+
+            # 이 work_date 범위에 속하는 시간형 일정만 (융합·카테고리 공용)
+            in_range_timed = [
+                r for r in active_requests
+                if r["corrected_check_in"] is not None
+                and r["corrected_check_out"] is not None
+                and _in_work_date(r["corrected_check_in"])
+            ]
+
+            # 시간형 일정(범위 내) vs 종일 일정 구분
+            # 종일: corrected 둘 중 하나라도 None (날짜 범위로만 판단, 경계 필터 제외)
             has_allday = any(
                 r["corrected_check_in"] is None or r["corrected_check_out"] is None
                 for r in active_requests
             )
 
-            # 정책1: 이미 시작된 부분만 합산 (미래 시작 일정 제외)
+            # 정책1: 이미 시작된 부분만 합산 (미래 시작 제외) + work_date 범위 내 시간형만
             cal_in_candidates = []
             cal_out_candidates = []
-            for r in active_requests:
+            for r in in_range_timed:
                 ci = r["corrected_check_in"]
                 co = r["corrected_check_out"]
-                if ci is not None and co is not None:
-                    if ci <= now:
-                        cal_in_candidates.append(ci)
-                    if co <= now:
-                        cal_out_candidates.append(co)
+                if ci <= now:
+                    cal_in_candidates.append(ci)
+                if co <= now:
+                    cal_out_candidates.append(co)
 
             # WiFi + 캘린더 융합 (가장 빠른 시작 ~ 가장 늦은 종료)
             if cal_in_candidates:
@@ -336,8 +361,18 @@ class Aggregator:
             if not has_allday and check_in is None and check_out is None:
                 return "no_data"
 
-            # 정책2: 대표 카테고리 — 현재 시각을 포함하는 일정 우선
-            category_id = self._pick_category_for_now(active_requests, now)
+            # 정책2: 대표 카테고리 — work_date 범위 내 시간형 + 종일 일정만 후보.
+            #        (다른 날의 시간형이 카테고리로 새는 것도 방지)
+            allday_reqs = [
+                r for r in active_requests
+                if r["corrected_check_in"] is None or r["corrected_check_out"] is None
+            ]
+            category_candidates = in_range_timed + allday_reqs
+            if category_candidates:
+                category_id = self._pick_category_for_now(category_candidates, now)
+            else:
+                # 범위 내 시간형도 종일도 없으면(이론상 드묾) 기존 전체에서 첫 요청
+                category_id = self._pick_category_for_now(active_requests, now)
             is_overridden = True
             override_source = "calendar"
 
