@@ -165,12 +165,6 @@ interface AdminCard {
   detailKey?: keyof AdminStats["details"]; // kind=detail일 때
 }
 
-const PERIOD_PREFIX: Record<PeriodType, string> = {
-  day: "오늘",
-  month: "이번달",
-  year: "올해",
-};
-
 const ADMIN_CARDS: AdminCard[] = [
   { key: "pendingRequests", title: "결재 대기", iconKey: "clipboard", color: "amber", kind: "navigate", page: "approval" },
   { key: "absent", title: "결근", iconKey: "userX", color: "rose", kind: "detail", detailKey: "absent" },
@@ -634,7 +628,7 @@ function AdminDashboard({
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [period, setPeriod] = useState<PeriodType>("month");
+  const [period, setPeriod] = useState<PeriodType>("day");
   const [targetDate, setTargetDate] = useState(todayYmd());
   const [targetMonth, setTargetMonth] = useState(thisMonthStr());
   const [targetYear, setTargetYear] = useState(thisYearStr());
@@ -668,6 +662,20 @@ function AdminDashboard({
   useEffect(() => {
     fetchStats();
   }, [fetchStats]);
+
+  // 선택된 기간을 사람이 읽는 라벨로 (연도 바꿔도 정확히 반영)
+  const periodLabel =
+    period === "day"
+      ? targetDate // "2026-06-11"
+        ? `${Number(targetDate.split("-")[1])}/${Number(targetDate.split("-")[2])}` // "6/11"
+        : ""
+      : period === "month"
+      ? targetMonth // "2026-06"
+        ? `${targetMonth.split("-")[0]}년 ${Number(targetMonth.split("-")[1])}월` // "2026년 6월"
+        : ""
+      : targetYear // "2026"
+      ? `${targetYear}년` // "2026년"
+      : "";
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
@@ -725,7 +733,7 @@ function AdminDashboard({
                 ? stats?.pendingRequests ?? 0
                 : stats?.counts?.[card.key] ?? 0;
             const value = String(raw);
-            const displayTitle = `${PERIOD_PREFIX[period]} ${card.title}`;
+            const displayTitle = `${periodLabel} ${card.title}`;
             const handleClick = () => {
               if (card.kind === "navigate" && card.page) {
                 onNavigate(card.page);
