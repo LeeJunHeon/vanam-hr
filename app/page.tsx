@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
 import { Menu } from "lucide-react";
 import Sidebar, { PageId, isAdminOnlyPage } from "@/components/Sidebar";
+import NotificationBell from "@/components/NotificationBell";
 import DashboardPage from "@/components/DashboardPage";
 import MyAttendancePage from "@/components/MyAttendancePage";
 import RequestPage from "@/components/RequestPage";
@@ -110,16 +111,24 @@ export default function Home() {
       />
 
       <main className="flex-1 flex flex-col min-w-0">
-        <header className="h-14 bg-white border-b border-gray-100 flex items-center px-4 sm:px-5 shrink-0">
-          <button
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-          >
-            <Menu size={18} className="text-gray-500" />
-          </button>
-          <span className="text-sm font-semibold text-gray-700 lg:hidden ml-3">
-            {PAGE_TITLES[page]}
-          </span>
+        <header className="h-14 bg-white border-b border-gray-100 flex items-center justify-between px-4 sm:px-5 shrink-0">
+          <div className="flex items-center">
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+            >
+              <Menu size={18} className="text-gray-500" />
+            </button>
+            <span className="text-sm font-semibold text-gray-700 lg:hidden ml-3">
+              {PAGE_TITLES[page]}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <NotificationBell
+              apiUrl="/api/notifications"
+              onNavigate={(linkPage) => setPage(linkPage as PageId)}
+            />
+          </div>
         </header>
 
         <div className="flex-1 overflow-y-auto">
