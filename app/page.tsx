@@ -45,6 +45,25 @@ export default function Home() {
   const [page, setPage] = useState<PageId>("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
+  // 외부(포털 알림 등)에서 ?page=approval 로 진입 시 해당 탭으로 시작.
+  // 최초 1회만 적용하고, 적용 후 쿼리스트링은 제거(뒤로가기/새로고침 깔끔).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const p = params.get("page");
+    const VALID: PageId[] = [
+      "dashboard", "my-attendance", "request", "field-trip", "approval",
+      "attendance-overview", "schedule-overview", "employees", "org",
+      "devices", "shifts", "employee-shifts", "approval-lines", "system-settings",
+    ];
+    if (p && (VALID as string[]).includes(p)) {
+      setPage(p as PageId);
+      // 쿼리 제거 (히스토리 대체)
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 모바일이면 사이드바 기본 닫힘
   useEffect(() => {
     if (typeof window !== "undefined" && window.innerWidth < 1024) {
