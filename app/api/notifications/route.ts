@@ -2,6 +2,30 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
 
+// 읽은 알림 자동 정리 설정
+const NOTIFICATION_RETENTION_DAYS = 7;           // 읽고 N일 지나면 삭제
+const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 하루 1회만 정리 실행
+let lastNotificationCleanupAt = 0;               // 마지막 정리 시각(ms). 서버 재시작 시 0 → 첫 GET에 1회 정리.
+
+// 읽은 지 오래된 알림 삭제 (하루 1회, 비동기로 흘려보냄 — 조회를 막지 않음).
+// isRead=true 인 것만 대상. 안 읽은 알림은 보존.
+function cleanupOldNotifications(): void {
+  const nowMs = Date.now();
+  if (nowMs - lastNotificationCleanupAt <= CLEANUP_INTERVAL_MS) return;
+  lastNotificationCleanupAt = nowMs;
+  const cutoff = new Date(nowMs - NOTIFICATION_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  prisma.notification
+    .deleteMany({
+      where: { isRead: true, readAt: { lt: cutoff } },
+    })
+    .then((res) => {
+      if (res.count > 0) {
+        console.log(`[notify] 오래된 읽은 알림 ${res.count}건 정리 (${NOTIFICATION_RETENTION_DAYS}일 경과)`);
+      }
+    })
+    .catch((e) => console.error("[notify] 오래된 알림 정리 실패:", e));
+}
+
 // GET /api/notifications?limit=20&unreadOnly=false
 //   본인(session.user.employeeId)의 알림 최신순 + 안읽음 개수.
 // 응답: { unreadCount: number, items: [{ id, type, title, body, linkPage, linkRefId, isRead, createdAt }] }
@@ -15,6 +39,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ unreadCount: 0, items: [] });
     }
     const empId = employeeId as number;
+
+    // 읽은 지 오래된 알림 정리 (하루 1회, 비동기)
+    cleanupOldNotifications();
 
     const { searchParams } = new URL(request.url);
     const limit = Math.min(50, Math.max(1, parseInt(searchParams.get("limit") || "20", 10)));
