@@ -182,6 +182,23 @@ class Aggregator:
             )
             grace_out_minutes = 0
 
+        # 시간형 출장/외근 판정 정책 (전부 기본 OFF — 현재 동작 유지)
+        timed_trip_exempt_raw = self.db.get_policy("timed_trip_exempt")
+        timed_trip_exempt = str(timed_trip_exempt_raw).strip().lower() == "true"
+
+        lunch_deduct_raw = self.db.get_policy("lunch_deduct_enabled")
+        lunch_deduct_enabled = str(lunch_deduct_raw).strip().lower() == "true"
+
+        margin_raw = self.db.get_policy("timed_event_margin_hours")
+        try:
+            timed_event_margin_hours = float(margin_raw) if margin_raw else 0.0
+        except (ValueError, TypeError):
+            timed_event_margin_hours = 0.0
+
+        # 점심 시각 (정책 2가 켜졌을 때만 사용; 기존 lunch_start/lunch_end 정책 재사용)
+        lunch_start_str = self.db.get_policy("lunch_start") or "12:00"
+        lunch_end_str = self.db.get_policy("lunch_end") or "13:00"
+
         today = self.db.get_work_date_kst(cutoff_hour)
         yesterday = today - timedelta(days=1)
         self.logger.info(
@@ -232,6 +249,11 @@ class Aggregator:
                     grace_out_minutes,
                     now,
                     holiday_name=holiday_cache.get(work_date),
+                    timed_trip_exempt=timed_trip_exempt,
+                    lunch_deduct_enabled=lunch_deduct_enabled,
+                    timed_event_margin_hours=timed_event_margin_hours,
+                    lunch_start_str=lunch_start_str,
+                    lunch_end_str=lunch_end_str,
                 )
                 if result == "upsert":
                     upsert_count += 1
@@ -271,6 +293,11 @@ class Aggregator:
         grace_out_minutes: int,
         now: datetime,
         holiday_name: Optional[str] = None,
+        timed_trip_exempt: bool = False,
+        lunch_deduct_enabled: bool = False,
+        timed_event_margin_hours: float = 0.0,
+        lunch_start_str: str = "12:00",
+        lunch_end_str: str = "13:00",
     ) -> str:
         """단일 직원 + 단일 work_date 처리. 반환: 'upsert' | 'overridden' | 'no_data'.
 
@@ -382,17 +409,34 @@ class Aggregator:
             is_overridden = True
             override_source = "calendar"
 
-            # 정책3: 종일 휴가/출장이면 결근/조퇴 판정 면제(정상).
-            #        시간형만 있으면 융합 출퇴근으로 시프트 판정 그대로 적용.
+            # 종일 휴가/출장이면 결근/조퇴 판정 면제(정상). (기존 동작)
+            # 정책1(timed_trip_exempt): 켜지면 시간형 출장/외근이 있는 날도 면제(normal).
+            # 정책3(margin): 정책1이 꺼졌을 때만, 출장 시간 + 앞뒤 마진만큼 의무시간 차감.
+            has_timed_trip = len(in_range_timed) > 0
             if has_allday:
                 auto_status = "normal"
+            elif timed_trip_exempt and has_timed_trip:
+                # 정책1 ON + 시간형 출장/외근 존재 → 판정 면제
+                auto_status = "normal"
             elif check_in is not None and check_out is not None:
+                # 정책3용: 이 work_date 범위 내 시간형 일정 총 시간(분) 합산
+                trip_minutes = 0
+                for r in in_range_timed:
+                    ci = r["corrected_check_in"]
+                    co = r["corrected_check_out"]
+                    if ci is not None and co is not None and co > ci:
+                        trip_minutes += int((co - ci).total_seconds() // 60)
                 auto_status = self._determine_auto_status(
                     check_in=check_in,
                     check_out=check_out,
                     shift_info=shift_info,
                     grace_in_minutes=grace_in_minutes,
                     grace_out_minutes=grace_out_minutes,
+                    lunch_deduct_enabled=lunch_deduct_enabled,
+                    lunch_start_str=lunch_start_str,
+                    lunch_end_str=lunch_end_str,
+                    trip_minutes=trip_minutes,
+                    margin_hours=timed_event_margin_hours,
                 )
             elif check_in is not None:
                 auto_status = "working"
@@ -413,6 +457,9 @@ class Aggregator:
                 shift_info=shift_info,
                 grace_in_minutes=grace_in_minutes,
                 grace_out_minutes=grace_out_minutes,
+                lunch_deduct_enabled=lunch_deduct_enabled,
+                lunch_start_str=lunch_start_str,
+                lunch_end_str=lunch_end_str,
             )
 
             # Phase 6-2L+ B-3: 공휴일이면 결근(absent) 면제 → daily 행 만들지 않음.
@@ -499,6 +546,11 @@ class Aggregator:
         shift_info: Optional[dict],
         grace_in_minutes: int,
         grace_out_minutes: int,
+        lunch_deduct_enabled: bool = False,
+        lunch_start_str: str = "12:00",
+        lunch_end_str: str = "13:00",
+        trip_minutes: int = 0,
+        margin_hours: float = 0.0,
     ) -> Optional[str]:
         """
         정책 A 기반 auto_status 판정.
@@ -575,8 +627,51 @@ class Aggregator:
         # 3) 퇴근까지 있음: 지각 우선 → 조퇴 → 정상
         if is_late:
             return "late"
+
         actual_minutes = int((check_out - check_in).total_seconds() / 60)
+
+        # 정책2: 점심 차감 — check_in~check_out과 점심시간이 겹치는 만큼 근무시간에서 제외.
+        #        (켜졌을 때만; 시프트도 점심 포함이라 양쪽 일관성 위해 required에서도 동일 차감)
+        lunch_overlap = 0
+        if lunch_deduct_enabled:
+            try:
+                ls_h, ls_m = map(int, str(lunch_start_str).split(":"))
+                le_h, le_m = map(int, str(lunch_end_str).split(":"))
+                lunch_start_dt = check_in.replace(hour=ls_h, minute=ls_m, second=0, microsecond=0)
+                lunch_end_dt = check_in.replace(hour=le_h, minute=le_m, second=0, microsecond=0)
+                # 실제 근무 구간(check_in~check_out)과 점심 구간의 교집합(분)
+                ov_start = max(check_in, lunch_start_dt)
+                ov_end = min(check_out, lunch_end_dt)
+                if ov_end > ov_start:
+                    lunch_overlap = int((ov_end - ov_start).total_seconds() // 60)
+            except (ValueError, AttributeError):
+                lunch_overlap = 0
+        actual_minutes -= lunch_overlap
+
+        # required: 시프트 총시간 - grace_out
         required_minutes = shift_minutes - grace_out_minutes
+
+        # 정책2: 점심 차감 시 시프트(의무)에서도 점심만큼 차감 (양쪽 동일 기준)
+        if lunch_deduct_enabled:
+            # 시프트 전체에 점심이 포함된다고 보고 점심 길이만큼 의무 축소
+            try:
+                ls_h, ls_m = map(int, str(lunch_start_str).split(":"))
+                le_h, le_m = map(int, str(lunch_end_str).split(":"))
+                lunch_len = (le_h * 60 + le_m) - (ls_h * 60 + ls_m)
+                if lunch_len > 0:
+                    required_minutes -= lunch_len
+            except (ValueError, AttributeError):
+                pass
+
+        # 정책3: 시간형 출장 + 앞뒤 마진만큼 의무시간 차감 (margin/trip 0이면 효과 없음)
+        if trip_minutes > 0 or margin_hours > 0:
+            margin_minutes = int(margin_hours * 60)
+            required_minutes -= (trip_minutes + 2 * margin_minutes)
+
+        # 음수 방지
+        if required_minutes < 0:
+            required_minutes = 0
+
         if actual_minutes < required_minutes:
             return "early_leave"
         return "normal"
