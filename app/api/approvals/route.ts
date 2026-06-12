@@ -5,6 +5,7 @@ import {
   createTripParticipantAttendanceRequests,
   rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
+import { createNotifications } from "@/lib/notify";
 
 // Phase 7 3단계: 결재함에 출장(trip) 결재를 합치는 방식 A.
 // - 출장 카테고리 표기는 attendance 카테고리와 통일된 키로 노출(필터/표시 공유).
@@ -1008,6 +1009,31 @@ export async function PUT(request: NextRequest) {
       }
     }
 
+    // ── 결재 결과 알림 (신청자에게) ──────────────────────────
+    // - 여기 도달 = 최종 승인 또는 반려 (부분 승인은 위에서 이미 return됨)
+    // - 본인이 본인 신청을 처리한 경우(ADMIN/CEO 자기결재)는 알림 불필요 → 스킵
+    if (target.employeeId !== approverIdNum) {
+      try {
+        const catName = category?.name ?? "근태";
+        const resultLabel = newStatus === "approved" ? "승인" : "반려";
+        let resultBody = `${catName} 신청이 ${resultLabel}되었습니다.`;
+        if (newStatus === "rejected" && typeof rejectReason === "string" && rejectReason.trim()) {
+          resultBody += ` (사유: ${rejectReason.trim()})`;
+        }
+        await createNotifications({
+          employeeIds: [target.employeeId],
+          type: "approval_result",
+          title: `결재 ${resultLabel}`,
+          body: resultBody,
+          linkPage: "attendance",
+          linkRefId: idNum,
+          sourceType: "attendance_request",
+        });
+      } catch (e) {
+        console.error("[notify] 결재 결과 알림 생성 실패:", e);
+      }
+    }
+
     return NextResponse.json({
       id: result.updated.id,
       status: result.updated.status,
@@ -1174,6 +1200,37 @@ async function handleTripApproval(_request: NextRequest, body: any) {
         `[trip-approval] rebuildTripEventCalendar(${eventIdNum}) 실패:`,
         e
       );
+    }
+  }
+
+  // ── 출장 결재 결과 알림 (각 참석자에게) ──────────────────
+  if (Array.isArray(targetIds) && targetIds.length > 0) {
+    try {
+      const parts = await prisma.tripParticipant.findMany({
+        where: { id: { in: targetIds } },
+        select: { employeeId: true },
+      });
+      const empIds = parts
+        .map((p) => p.employeeId)
+        .filter((id): id is number => Number.isInteger(id));
+      if (empIds.length > 0) {
+        const resultLabel = action === "approve" ? "승인" : "반려";
+        let resultBody = `출장 신청이 ${resultLabel}되었습니다.`;
+        if (action === "reject" && trimmedReason && trimmedReason.trim()) {
+          resultBody += ` (사유: ${trimmedReason.trim()})`;
+        }
+        await createNotifications({
+          employeeIds: empIds,
+          type: "approval_result",
+          title: `출장 ${resultLabel}`,
+          body: resultBody,
+          linkPage: "field-trip",
+          linkRefId: eventIdNum,
+          sourceType: "trip",
+        });
+      }
+    } catch (e) {
+      console.error("[notify] 출장 결재 결과 알림 생성 실패:", e);
     }
   }
 
