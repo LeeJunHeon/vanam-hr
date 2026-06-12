@@ -663,8 +663,10 @@ class Aggregator:
             except (ValueError, AttributeError):
                 pass
 
-        # 정책3: 시간형 출장 + 앞뒤 마진만큼 의무시간 차감 (margin/trip 0이면 효과 없음)
-        if trip_minutes > 0 or margin_hours > 0:
+        # 정책3: 앞뒤 마진(margin_hours)이 설정됐을 때만, 출장 시간 + 앞뒤 마진만큼
+        #        의무시간 차감. margin_hours=0(기본 OFF)이면 출장이 있어도 차감하지 않아
+        #        기존 판정과 100% 동일하게 동작한다.
+        if margin_hours > 0:
             margin_minutes = int(margin_hours * 60)
             required_minutes -= (trip_minutes + 2 * margin_minutes)
 
