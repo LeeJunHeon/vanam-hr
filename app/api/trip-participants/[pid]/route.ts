@@ -8,6 +8,7 @@ import {
   createTripParticipantAttendanceRequests,
   rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
+import { resolveApprovers } from "@/lib/approval-resolver";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: 참석자 수락/거절/날짜수정 + 제거.
 // PATCH /api/trip-participants/[pid]
@@ -146,6 +147,26 @@ export async function PATCH(
       nextApprovalStatus = "pending";
     }
 
+    // accept이고 이 참여자가 결재 대상(pending)이면, 수락 시점에 부서 결재선을 계산해 저장(방법 B).
+    // (이미 approver_ids가 채워져 있으면 중복 저장 방지를 위해 비어있을 때만 계산.)
+    let acceptApproverIds: number[] | null = null;
+    let acceptApprovalMode: "all" | "any" | null = null;
+    let acceptDeputyId: number | null = null;
+    if (
+      action === "accept" &&
+      nextApprovalStatus === "pending" &&
+      (!Array.isArray(participant.approverIds) || participant.approverIds.length === 0)
+    ) {
+      const me = await prisma.employee.findUnique({
+        where: { id: participant.employeeId },
+        select: { departmentId: true },
+      });
+      const resolved = await resolveApprovers(prisma, me?.departmentId ?? null);
+      acceptApproverIds = resolved.approverIds;
+      acceptApprovalMode = resolved.approvalMode;
+      acceptDeputyId = resolved.deputyApproverId;
+    }
+
     // update_dates 시 옛 근태(attendance_request) 정리(과거 보존).
     // - approved였다가 pending으로 되돌리는 경우 (재승인 필요)
     // - not_required 유지 케이스(admin self-join 등): cleanup 후 새 dates 기준으로 재생성
@@ -205,6 +226,14 @@ export async function PATCH(
         data: {
           inviteStatus: action === "accept" ? "accepted" : participant.inviteStatus,
           approvalStatus: nextApprovalStatus,
+          // accept 시점에 계산됐으면 부서 결재선 저장(방법 B)
+          ...(acceptApproverIds !== null
+            ? {
+                approverIds: acceptApproverIds,
+                approvalMode: acceptApprovalMode ?? "all",
+                deputyApproverId: acceptDeputyId,
+              }
+            : {}),
           // approved → pending 되돌림 시 승인자 정보도 초기화
           ...(action === "update_dates" &&
           participant.approvalStatus === "approved"

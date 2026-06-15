@@ -9,6 +9,7 @@ import {
   createTripParticipantAttendanceRequests,
   rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
+import { resolveApprovers } from "@/lib/approval-resolver";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: self-join.
 // POST /api/trip-events/[id]/join
@@ -95,6 +96,22 @@ export async function POST(
 
     const approvalStatus = computeApprovalStatus(session.user.role);
 
+    // 본인이 employee라 결재가 필요(pending)하면 부서 결재선을 계산해 저장(방법 B: 본인 참여 시점).
+    // admin/ceo(not_required)는 결재 불필요 → 빈 배열 유지.
+    let resolvedApproverIds: number[] = [];
+    let resolvedApprovalMode: "all" | "any" = "all";
+    let resolvedDeputyId: number | null = null;
+    if (approvalStatus === "pending") {
+      const me = await prisma.employee.findUnique({
+        where: { id: ownId as number },
+        select: { departmentId: true },
+      });
+      const resolved = await resolveApprovers(prisma, me?.departmentId ?? null);
+      resolvedApproverIds = resolved.approverIds;
+      resolvedApprovalMode = resolved.approvalMode;
+      resolvedDeputyId = resolved.deputyApproverId;
+    }
+
     const created = await prisma.$transaction(async (tx) => {
       const p = await tx.tripParticipant.create({
         data: {
@@ -102,6 +119,9 @@ export async function POST(
           employeeId: ownId as number,
           inviteStatus: "accepted",
           approvalStatus,
+          approverIds: resolvedApproverIds,
+          approvalMode: resolvedApprovalMode,
+          deputyApproverId: resolvedDeputyId,
         },
       });
       await tx.tripParticipantDate.createMany({
