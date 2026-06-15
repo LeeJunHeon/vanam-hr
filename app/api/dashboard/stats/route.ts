@@ -94,6 +94,49 @@ export async function GET(request: NextRequest) {
     });
     const iso = (v: Date | null) => (v ? v.toISOString() : null);
 
+    // 출장/외근 시간대(corrected_check_in/out) 조회 — attendance_requests에서.
+    // details의 출장/외근 행에 "09:00~12:00" 시간을 표시하기 위함.
+    // 대상: 이번 기간 dailies 중 BUSINESS_TRIP/EXTERNAL_WORK인 (employeeId, workDate).
+    const tripDailies = dailies.filter(
+      (d) => d.category?.code === "BUSINESS_TRIP" || d.category?.code === "EXTERNAL_WORK"
+    );
+    const correctedTimeMap = new Map<string, { in: string | null; out: string | null }>();
+    if (tripDailies.length > 0) {
+      const empIds = Array.from(new Set(tripDailies.map((d) => d.employeeId)));
+      const reqs = await prisma.attendanceRequest.findMany({
+        where: {
+          employeeId: { in: empIds },
+          status: { in: ["approved", "auto_approved", "auto_delegated"] },
+          startDate: { lte: rangeEnd },
+          endDate: { gte: rangeStart },
+          category: { code: { in: ["BUSINESS_TRIP", "EXTERNAL_WORK"] } },
+        },
+        select: {
+          employeeId: true,
+          startDate: true,
+          endDate: true,
+          correctedCheckIn: true,
+          correctedCheckOut: true,
+        },
+      });
+      // 각 일자별로 펼쳐 맵에 저장 (key = employeeId_YYYY-MM-DD)
+      for (const req of reqs) {
+        const cur = new Date(req.startDate);
+        const end = new Date(req.endDate);
+        while (cur <= end) {
+          const ymd = cur.toISOString().split("T")[0];
+          const key = `${req.employeeId}_${ymd}`;
+          if (!correctedTimeMap.has(key)) {
+            correctedTimeMap.set(key, {
+              in: req.correctedCheckIn ? req.correctedCheckIn.toISOString() : null,
+              out: req.correctedCheckOut ? req.correctedCheckOut.toISOString() : null,
+            });
+          }
+          cur.setUTCDate(cur.getUTCDate() + 1);
+        }
+      }
+    }
+
     const details = {
       absent: [] as Array<ReturnType<typeof base>>,
       late: [] as Array<ReturnType<typeof base> & { checkIn: string | null }>,
@@ -102,10 +145,20 @@ export async function GET(request: NextRequest) {
       >,
       leave: [] as Array<ReturnType<typeof base> & { categoryName: string | null }>,
       businessTrip: [] as Array<
-        ReturnType<typeof base> & { categoryName: string | null; reason: string | null }
+        ReturnType<typeof base> & {
+          categoryName: string | null;
+          reason: string | null;
+          checkIn: string | null;
+          checkOut: string | null;
+        }
       >,
       externalWork: [] as Array<
-        ReturnType<typeof base> & { categoryName: string | null; reason: string | null }
+        ReturnType<typeof base> & {
+          categoryName: string | null;
+          reason: string | null;
+          checkIn: string | null;
+          checkOut: string | null;
+        }
       >,
     };
 
@@ -117,9 +170,17 @@ export async function GET(request: NextRequest) {
       // 휴가/출장/외근 (category 기준) — 이 행들은 auto_status가 normal이라
       // 결근/지각/조퇴 분류와 공존하지 않음
       if (code === "BUSINESS_TRIP") {
-        details.businessTrip.push({ ...base(d), categoryName, reason: null });
+        const t = correctedTimeMap.get(`${d.employeeId}_${d.workDate.toISOString().split("T")[0]}`);
+        details.businessTrip.push({
+          ...base(d), categoryName, reason: null,
+          checkIn: t?.in ?? null, checkOut: t?.out ?? null,
+        });
       } else if (code === "EXTERNAL_WORK") {
-        details.externalWork.push({ ...base(d), categoryName, reason: null });
+        const t = correctedTimeMap.get(`${d.employeeId}_${d.workDate.toISOString().split("T")[0]}`);
+        details.externalWork.push({
+          ...base(d), categoryName, reason: null,
+          checkIn: t?.in ?? null, checkOut: t?.out ?? null,
+        });
       } else if (isLeave) {
         details.leave.push({ ...base(d), categoryName });
       }

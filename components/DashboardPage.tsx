@@ -564,6 +564,12 @@ function DetailModal({
   items: DetailItem[];
   onClose: () => void;
 }) {
+  // HH:MM (ISO → 로컬, 24시간)
+  const fmtHM = (iso?: string | null) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
@@ -585,18 +591,31 @@ function DetailModal({
                 </tr>
               </thead>
               <tbody>
-                {items.map((it, i) => (
-                  <tr key={`${it.employeeId}-${it.workDate}-${i}`} className="border-t border-gray-50">
-                    <td className="px-4 py-2 font-medium text-gray-900">{it.name}</td>
-                    <td className="px-4 py-2 text-gray-500">{it.departmentName ?? "-"}</td>
-                    <td className="px-4 py-2 text-gray-600">{it.workDate}</td>
-                    <td className="px-4 py-2 text-gray-500">
-                      {it.categoryName ?? ""}
-                      {it.checkIn ? ` ${new Date(it.checkIn).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}` : ""}
-                      {it.checkOut ? `~${new Date(it.checkOut).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}` : ""}
-                    </td>
-                  </tr>
-                ))}
+                {items.map((it, i) => {
+                  // 출장/외근 등 카테고리 항목: "출장 09:00~12:00"(시간 있으면) / "출장"(종일)
+                  const s = fmtHM(it.checkIn);
+                  const e = fmtHM(it.checkOut);
+                  const timeText = s && e ? `${s}~${e}` : s ? `${s}~` : null;
+                  return (
+                    <tr key={`${it.employeeId}-${it.workDate}-${i}`} className="border-t border-gray-50">
+                      <td className="px-4 py-2 font-medium text-gray-900">{it.name}</td>
+                      <td className="px-4 py-2 text-gray-500">{it.departmentName ?? "-"}</td>
+                      <td className="px-4 py-2 text-gray-600">{it.workDate}</td>
+                      <td className="px-4 py-2 text-gray-500">
+                        {it.categoryName ? (
+                          // 출장/외근/휴가 등 — 카테고리명 + (있으면) 시간
+                          `${it.categoryName}${timeText ? ` ${timeText}` : ""}`
+                        ) : (
+                          // 지각/조퇴 등 — 기존 시간 표시 유지
+                          <>
+                            {it.checkIn ? `${new Date(it.checkIn).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}` : ""}
+                            {it.checkOut ? `~${new Date(it.checkOut).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}` : ""}
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

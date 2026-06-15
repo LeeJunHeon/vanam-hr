@@ -330,6 +330,20 @@ function progressFromRow(row: {
 // 직원 카드/표의 "마지막 활동" 한 줄 (아이콘 + 정보)
 // Phase 6-2B: 캘린더 보정 우선 표시 → 아이콘 + 카테고리명 + 사유 + 시간/종일
 function renderActivityInfo(r: RealtimeRow): ReactNode {
+  // 지금 회사 WiFi에 연결 중(working)이면 실제 위치(본사/공덕)를 우선 표시.
+  // (출장/외근 일정이 있어도, 복귀해 연결됐으면 위치가 더 정확하다.)
+  // 단 category_working(출장/외근 시간대 진행 중)일 때는 일정 표시를 유지한다.
+  if (r.progressStatus === "working") {
+    return (
+      <span className="inline-flex items-center gap-1 flex-wrap">
+        <Wifi size={12} className="text-emerald-500 shrink-0" />
+        {r.latestLocation ?? "위치 미상"} ·{" "}
+        {formatRelativeTime(r.latestCheckedAt)} 연결
+        {r.todayCheckIn ? ` · 첫 출근 ${formatTime(r.todayCheckIn)}` : ""}
+      </span>
+    );
+  }
+
   // 캘린더 보정 우선 (Q-A)
   if (r.todayIsOverridden && r.todayCategoryCode && r.todayCategoryName) {
     const icon = categoryIcon(r.todayCategoryCode);
@@ -363,15 +377,7 @@ function renderActivityInfo(r: RealtimeRow): ReactNode {
   }
 
   switch (r.progressStatus) {
-    case "working":
-      return (
-        <span className="inline-flex items-center gap-1 flex-wrap">
-          <Wifi size={12} className="text-emerald-500 shrink-0" />
-          {r.latestLocation ?? "위치 미상"} ·{" "}
-          {formatRelativeTime(r.latestCheckedAt)} 연결
-          {r.todayCheckIn ? ` · 첫 출근 ${formatTime(r.todayCheckIn)}` : ""}
-        </span>
-      );
+    // 'working'은 위 early-return에서 이미 처리됨.
     case "away":
       return (
         <span className="inline-flex items-center gap-1 flex-wrap">
@@ -416,6 +422,10 @@ function renderActivityInfo(r: RealtimeRow): ReactNode {
 
 // 섹션 3 "마지막 활동" 짧은 텍스트 (모바일)
 function renderActivityShort(r: RealtimeRow): string {
+  // 연결 중이면 위치/연결 우선 (renderActivityInfo와 동일 정책)
+  if (r.progressStatus === "working") {
+    return `${formatTime(r.latestCheckedAt)} 연결`;
+  }
   // 캘린더 보정 우선
   if (r.todayIsOverridden && r.todayCategoryName) {
     if (!r.todayCheckIn && !r.todayCheckOut) return "종일";
@@ -424,8 +434,7 @@ function renderActivityShort(r: RealtimeRow): string {
     return `${start} ~ ${end}`;
   }
   switch (r.progressStatus) {
-    case "working":
-      return `${formatTime(r.latestCheckedAt)} 연결`;
+    // 'working'은 위 early-return에서 이미 처리됨.
     case "away":
       return `${formatTime(r.latestCheckedAt)} 끊김`;
     case "completed":
