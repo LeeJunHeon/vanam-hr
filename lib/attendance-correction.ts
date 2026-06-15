@@ -127,10 +127,20 @@ export async function applyCorrectionToDaily(
     graceOutMinutes
   );
 
-  const shouldBackupOriginal =
-    existing &&
-    existing.originalCheckIn === null &&
-    existing.originalCheckOut === null;
+  // 실제로 정정한 항목만 original에 백업한다.
+  // - 출근 정정(correctedCheckIn 있음) + 아직 originalCheckIn 백업 전 → 출근 원본 백업
+  // - 퇴근 정정(correctedCheckOut 있음) + 아직 originalCheckOut 백업 전 → 퇴근 원본 백업
+  // 정정하지 않은 항목은 백업하지 않아, 화면에 "변경됨(취소선)"으로 보이지 않게 한다.
+  const backupFields: {
+    originalCheckIn?: Date | null;
+    originalCheckOut?: Date | null;
+  } = {};
+  if (correctedCheckIn && existing && existing.originalCheckIn === null) {
+    backupFields.originalCheckIn = existing.checkIn;
+  }
+  if (correctedCheckOut && existing && existing.originalCheckOut === null) {
+    backupFields.originalCheckOut = existing.checkOut;
+  }
 
   await tx.attendanceDaily.upsert({
     where: { employeeId_workDate: { employeeId, workDate } },
@@ -153,10 +163,7 @@ export async function applyCorrectionToDaily(
       isOverridden: true,
       overrideSource: "manual",
       note: existing?.note ?? `결재정정 #${requestId}`,
-      ...(shouldBackupOriginal && {
-        originalCheckIn: existing.checkIn,
-        originalCheckOut: existing.checkOut,
-      }),
+      ...backupFields,
     },
   });
 }
