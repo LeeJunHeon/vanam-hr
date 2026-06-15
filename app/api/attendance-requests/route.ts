@@ -598,23 +598,49 @@ export async function PUT(request: NextRequest) {
       // 3) 원자적 트랜잭션 — 원복 + status='cancelled'
       const updated = await prisma.$transaction(async (tx) => {
         if (catType === "leave" || catType === "work") {
-          // 휴가/외근/출장/재택: categoryId/isOverridden만 풀고 WiFi 기록은 유지
-          //                     (aggregator가 다음 사이클에 재계산)
+          // 휴가/외근/출장/재택 취소:
+          //  - 각 날짜의 행을 개별 확인.
+          //  - WiFi 기록(checkIn/checkOut)이 둘 다 없으면 → 빈 행이므로 삭제
+          //    (휴무일/미래날짜는 aggregator가 손대지 않아, 안 지우면 잘못된 auto_status가 남음)
+          //  - 하나라도 있으면 → categoryId 등 보정 흔적만 풀고
+          //    autoStatus/workMinutes를 null로 비워 aggregator가 WiFi/시프트로 재계산하게 함.
           for (const wd of revertDays) {
-            await tx.attendanceDaily.updateMany({
+            const existing = await tx.attendanceDaily.findUnique({
               where: {
-                employeeId: before.employeeId,
-                workDate: wd,
-              },
-              data: {
-                categoryId: null,
-                isOverridden: false,
-                // Phase 6-2L+: 보정 흔적 제거 (note, override_source도 함께 풀어줌)
-                note: null,
-                overrideSource: null,
-                // checkIn/checkOut/workMinutes/autoStatus는 그대로 — aggregator가 갱신
+                employeeId_workDate: {
+                  employeeId: before.employeeId,
+                  workDate: wd,
+                },
               },
             });
+            if (!existing) continue;
+
+            // 수동 정정(manual)으로 보호된 행은 건드리지 않는다(이 취소와 무관한 보정).
+            // (정상 흐름에선 leave/work 보정행의 override_source는 'manual'이지만,
+            //  이 취소는 그 보정을 만든 당사자이므로 푸는 게 맞다. 단 checkIn/out 유무로 분기.)
+            const hasWifi =
+              existing.checkIn !== null || existing.checkOut !== null;
+
+            if (!hasWifi) {
+              // WiFi 기록 없음 + 일정 취소 → 빈 행 → 삭제
+              await tx.attendanceDaily.delete({
+                where: { id: existing.id },
+              });
+            } else {
+              // WiFi 기록 있음 → 보정만 풀고 aggregator 재계산에 위임
+              await tx.attendanceDaily.update({
+                where: { id: existing.id },
+                data: {
+                  categoryId: null,
+                  isOverridden: false,
+                  note: null,
+                  overrideSource: null,
+                  autoStatus: null,   // aggregator 재계산 트리거
+                  workMinutes: null,  // aggregator 재계산 트리거
+                  // checkIn/checkOut은 유지 (WiFi 원본)
+                },
+              });
+            }
           }
         } else if (catType === "correction") {
           // 정정: originalCheckIn/Out이 있으면 복원, 없으면(원래 빈 자리에 정정 채운 경우)
