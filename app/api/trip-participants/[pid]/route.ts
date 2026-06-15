@@ -9,6 +9,7 @@ import {
   rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
 import { resolveApprovers } from "@/lib/approval-resolver";
+import { createNotifications } from "@/lib/notify";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: 참석자 수락/거절/날짜수정 + 제거.
 // PATCH /api/trip-participants/[pid]
@@ -291,6 +292,34 @@ export async function PATCH(
           `[trip-participants PATCH] update_dates rebuildTripEventCalendar(${participant.tripEvent.id}) 실패:`,
           e
         );
+      }
+    }
+
+    // accept으로 결재가 필요해진(pending) 참여자면, 부서 결재자에게 "새 출장 결재 요청" 알림.
+    // acceptApproverIds는 위에서 이번 accept 시 계산된 결재자(없으면 null).
+    if (
+      action === "accept" &&
+      updated.approvalStatus === "pending" &&
+      acceptApproverIds !== null &&
+      acceptApproverIds.length > 0
+    ) {
+      try {
+        const me = await prisma.employee.findUnique({
+          where: { id: participant.employeeId },
+          select: { name: true },
+        });
+        const requesterName = me?.name ?? "직원";
+        await createNotifications({
+          employeeIds: acceptApproverIds,
+          type: "approval_request",
+          title: "새 출장 결재 요청",
+          body: `${requesterName}님의 출장 참여 결재 요청`,
+          linkPage: "approval",
+          linkRefId: participant.tripEvent.id,
+          sourceType: "trip",
+        });
+      } catch (e) {
+        console.error("[notify] 출장 결재 요청 알림 생성 실패(accept):", e);
       }
     }
 
