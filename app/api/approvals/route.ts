@@ -441,16 +441,36 @@ export async function GET(request: NextRequest) {
     // 정렬은 attendance와 함께 requestedAt(ISO) 기준 desc.
     // ────────────────────────────────────────────────────
     const adminLike = isAdminSession(session);
+    const viewerIsCeoTrip = session.user.role === "ceo";
     type TripItem = ReturnType<typeof buildTripItem>;
     let tripItems: TripItem[] = [];
-    if (adminLike) {
-      // 어떤 approval_status를 가져올지 결정 + 본인 처리분 필터 여부
-      let participantWhere: {
-        approvalStatus: string | { in: string[] };
-        approvedById?: number;
-      };
+
+    // 출장 결재 조회 자격:
+    //  - 누구나 "본인이 결재자(approver_ids 포함)이거나 대리(deputy)"인 출장은 볼 수 있다.
+    //  - 관리자(adminLike)는 추가로 "approver_ids가 빈 배열인 기존 출장"도 본다(폴백).
+    //  - CEO는 상시 모든 pending 출장을 본다.
+    // approved/rejected/all 이력은 기존처럼 "본인이 처리한 것"만.
+    {
+      // pending where: 결재자 필터
+      let participantWhere: any;
       if (status === "pending") {
-        participantWhere = { approvalStatus: "pending" };
+        if (viewerIsCeoTrip) {
+          // CEO는 모든 pending
+          participantWhere = { approvalStatus: "pending" };
+        } else {
+          const pendingOr: any[] = [
+            { approverIds: { has: approverId } },
+            { deputyApproverId: approverId },
+          ];
+          // 관리자는 빈 배열(기존 출장)도 폴백으로 본다
+          if (adminLike) {
+            pendingOr.push({ approverIds: { isEmpty: true } });
+          }
+          participantWhere = {
+            approvalStatus: "pending",
+            OR: pendingOr,
+          };
+        }
       } else if (status === "approved") {
         participantWhere = {
           approvalStatus: "approved",
@@ -918,12 +938,7 @@ async function handleTripApproval(_request: NextRequest, body: any) {
   if (!sessionR.ok) return sessionR.response;
   const { session } = sessionR;
 
-  if (!isAdminSession(session)) {
-    return NextResponse.json(
-      { error: "출장 결재는 관리자(admin/ceo)만 처리할 수 있습니다." },
-      { status: 403 }
-    );
-  }
+  // 로그인 + 직원 매핑만 확인. 실제 결재 권한은 참여자별 approver_ids로 판정한다.
   const approverEmployeeId = session.user.employeeId;
   if (!Number.isInteger(approverEmployeeId)) {
     return NextResponse.json(
@@ -931,6 +946,8 @@ async function handleTripApproval(_request: NextRequest, body: any) {
       { status: 403 }
     );
   }
+  const viewerIsCeoTrip = session.user.role === "ceo";
+  const viewerIsAdminTrip = isAdminSession(session);
 
   const { tripEventId, action, rejectReason, participantIds } = body as {
     tripEventId?: unknown;
@@ -1002,14 +1019,24 @@ async function handleTripApproval(_request: NextRequest, body: any) {
     );
   }
 
-  // 대상 참석자(반드시 pending인 것만 처리)
-  const targetWhere: {
-    tripEventId: number;
-    approvalStatus: "pending";
-    id?: { in: number[] };
-  } = {
+  // 처리 대상: pending이면서, 본인이 결재 권한을 가진 참여자만.
+  //  - 본인이 approver_ids에 포함 또는 deputy
+  //  - approver_ids가 빈 배열(기존 출장)이고 본인이 관리자 → 폴백
+  //  - CEO는 모든 pending 처리 가능
+  const approverFilter: any = viewerIsCeoTrip
+    ? {} // CEO는 제한 없음
+    : {
+        OR: [
+          { approverIds: { has: approverEmployeeId as number } },
+          { deputyApproverId: approverEmployeeId as number },
+          ...(viewerIsAdminTrip ? [{ approverIds: { isEmpty: true } }] : []),
+        ],
+      };
+
+  const targetWhere: any = {
     tripEventId: eventIdNum,
     approvalStatus: "pending",
+    ...approverFilter,
   };
   if (participantIdFilter) {
     targetWhere.id = { in: participantIdFilter };
