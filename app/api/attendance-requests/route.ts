@@ -342,16 +342,24 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 결재선 결정 (다중 결재자 + 모드 + fallback + CEO 자동승인)
+    // 결재선 결정 (다중 결재자 + 모드 + fallback)
+    // 정책: CEO는 자동승인. ADMIN은 외근(EXTERNAL_WORK)만 자동승인이고, 그 외(휴가/재택/정정 등)는
+    //       EMPLOYEE와 동일하게 부서 결재선(없으면 fallback)을 거친다.
     const isCeoRequester = emp.position?.code === "CEO";
     const isAdminRequester = emp.position?.code === "ADMIN";
+
+    // 외근이면 ADMIN 자동승인 유지(예외). 그 외 카테고리는 ADMIN도 결재선을 탄다.
+    const isExternalWork = category.code === "EXTERNAL_WORK";
+    const adminAutoApprove = isAdminRequester && isExternalWork;
 
     let approverIds: number[] = [];
     let approvalMode: "all" | "any" = "all";
     let primaryApproverId: number | null = null; // 호환용 컬럼
     let deputyApproverId: number | null = null; // 호환용 컬럼
 
-    if (!isCeoRequester && !isAdminRequester) {
+    // 결재선을 타는 대상: CEO 아님 + (ADMIN이면서 외근)도 아님
+    //  → EMPLOYEE 전부, 그리고 "외근이 아닌 ADMIN"이 여기에 해당.
+    if (!isCeoRequester && !adminAutoApprove) {
       let line = null;
       if (emp.departmentId !== null) {
         line = await prisma.approvalLine.findUnique({
@@ -376,8 +384,23 @@ export async function POST(request: NextRequest) {
       primaryApproverId = approverIds.length > 0 ? approverIds[0] : null;
     }
 
-    // 자동승인: CEO 본인 신청 OR requireApproval=false
-    const isAutoApproved = isCeoRequester || isAdminRequester || !category.requireApproval;
+    // 자기결재 여부: 결재자가 본인뿐이면(자기가 자기를 결재) 자동승인 처리.
+    //  - 예: fallback이 LEE인데 신청자도 LEE면 approverIds=[LEE], 신청자=LEE → 자기결재.
+    //  - 자기결재는 형식상 의미 없으므로 자동승인하되, 신청 기록(attendance_request)은 남는다.
+    const isSelfApproval =
+      approverIds.length > 0 &&
+      approverIds.every((id) => id === employeeIdNum);
+
+    // 자동승인 조건:
+    //  - CEO 신청
+    //  - ADMIN의 외근(adminAutoApprove)
+    //  - 카테고리가 결재 불필요(requireApproval=false)
+    //  - 자기결재(isSelfApproval)
+    const isAutoApproved =
+      isCeoRequester ||
+      adminAutoApprove ||
+      !category.requireApproval ||
+      isSelfApproval;
 
     // 결재 필요한데 결재자를 못 찾으면 차단
     if (!isAutoApproved && approverIds.length === 0) {
