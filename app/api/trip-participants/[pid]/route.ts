@@ -95,6 +95,28 @@ export async function PATCH(
         where: { id: pid },
         data: { inviteStatus: "declined" },
       });
+      // 거절 알림 → 주최자(이벤트 생성자)에게. 단 본인이 주최자면 생략.
+      try {
+        const creatorId = participant.tripEvent.createdById;
+        if (Number.isInteger(creatorId) && creatorId !== ownId) {
+          const me = await prisma.employee.findUnique({
+            where: { id: participant.employeeId },
+            select: { name: true },
+          });
+          const declinerName = me?.name ?? "직원";
+          await createNotifications({
+            employeeIds: [creatorId],
+            type: "trip_decline",
+            title: "출장 초대 거절",
+            body: `${declinerName}님이 출장 초대를 거절했습니다.`,
+            linkPage: "field-trip",
+            linkRefId: participant.tripEvent.id,
+            sourceType: "trip",
+          });
+        }
+      } catch (e) {
+        console.error("[notify] 출장 거절 알림 생성 실패:", e);
+      }
       return NextResponse.json({
         id: updated.id,
         inviteStatus: updated.inviteStatus,
@@ -311,7 +333,7 @@ export async function PATCH(
         const requesterName = me?.name ?? "직원";
         await createNotifications({
           employeeIds: acceptApproverIds,
-          type: "approval_request",
+          type: "trip_request",
           title: "새 출장 결재 요청",
           body: `${requesterName}님의 출장 참여 결재 요청`,
           linkPage: "approval",
@@ -375,6 +397,11 @@ export async function DELETE(
       );
     }
 
+    // 제거 알림용: 타인(주최자/관리자)이 제거하는 경우에만 대상에게 알림.
+    const removedEmployeeId = participant.employeeId;
+    const removedByOther = removedEmployeeId !== ownId;
+    const removeTripEventId2 = participant.tripEvent.id;
+
     // 삭제 전에 미래 근태(attendance_request)부터 정리(과거 보존).
     // 캘린더는 삭제 후 이벤트 단위로 rebuild하면 자동으로 정리·재구성된다.
     const tripEventId = participant.tripEvent.id;
@@ -413,6 +440,23 @@ export async function DELETE(
         `[trip-participants DELETE] rebuildTripEventCalendar(${tripEventId}) 실패:`,
         e
       );
+    }
+
+    // 타인이 제거한 경우, 제거된 참석자에게 알림.
+    if (removedByOther) {
+      try {
+        await createNotifications({
+          employeeIds: [removedEmployeeId],
+          type: "trip_remove",
+          title: "출장 참석자에서 제외",
+          body: "출장 참석자에서 제외되었습니다.",
+          linkPage: "field-trip",
+          linkRefId: removeTripEventId2,
+          sourceType: "trip",
+        });
+      } catch (e) {
+        console.error("[notify] 출장 제거 알림 생성 실패:", e);
+      }
     }
 
     return NextResponse.json({ ok: true });
