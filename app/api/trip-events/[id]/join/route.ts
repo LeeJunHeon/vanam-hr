@@ -169,7 +169,7 @@ export async function POST(
         const requesterName = me?.name ?? "직원";
         await createNotifications({
           employeeIds: resolvedApproverIds,
-          type: "approval_request",
+          type: "trip_request",
           title: "새 출장 결재 요청",
           body: `${requesterName}님의 출장 참여 결재 요청`,
           linkPage: "approval",

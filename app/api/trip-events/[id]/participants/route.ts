@@ -5,6 +5,7 @@ import {
   parseDatesArray,
   computeApprovalStatus,
 } from "@/lib/trip-helpers";
+import { createNotifications } from "@/lib/notify";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: 타인 초대.
 // POST /api/trip-events/[id]/participants
@@ -139,6 +140,28 @@ export async function POST(
       }
       return p;
     });
+
+    // 초대 알림 → 초대받은 사람에게. (본인이 본인을 초대하는 경우는 생략)
+    if (targetEmployeeId !== ownId) {
+      try {
+        const ev2 = await prisma.tripEvent.findUnique({
+          where: { id: eventId },
+          select: { name: true },
+        });
+        const tripName = ev2?.name ?? "출장";
+        await createNotifications({
+          employeeIds: [targetEmployeeId],
+          type: "trip_invite",
+          title: "출장 초대",
+          body: `'${tripName}' 출장에 초대되었습니다.`,
+          linkPage: "field-trip",
+          linkRefId: eventId,
+          sourceType: "trip",
+        });
+      } catch (e) {
+        console.error("[notify] 출장 초대 알림 생성 실패:", e);
+      }
+    }
 
     return NextResponse.json(
       {
