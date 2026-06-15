@@ -1107,7 +1107,7 @@ async function handleTripApproval(_request: NextRequest, body: any) {
         }
         await createNotifications({
           employeeIds: empIds,
-          type: "approval_result",
+          type: "trip_result",
           title: `출장 ${resultLabel}`,
           body: resultBody,
           linkPage: "field-trip",

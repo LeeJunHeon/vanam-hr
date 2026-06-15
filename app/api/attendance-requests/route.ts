@@ -721,6 +721,45 @@ export async function PUT(request: NextRequest) {
         `[cancel] 결재 #${idNum} 취소 완료 — type=${catType}, ` +
           `원복 일수=${revertDays.length}`
       );
+
+      // 승인(approved) 상태에서 취소한 경우, 승인한 결재자에게 "취소됨" 알림.
+      // (pending 취소는 위에서 요청 알림을 삭제했고, auto_approved는 결재자가 없어 알림 불필요.)
+      if (before.status === "approved") {
+        try {
+          // 승인자 수집: approvedByIds(다중) 우선, 없으면 approvedById(단일).
+          const approverTargets: number[] = [];
+          if (Array.isArray(before.approvedByIds) && before.approvedByIds.length > 0) {
+            approverTargets.push(...before.approvedByIds);
+          } else if (Number.isInteger(before.approvedById)) {
+            approverTargets.push(before.approvedById as number);
+          }
+          if (approverTargets.length > 0) {
+            const reqEmp = await prisma.employee.findUnique({
+              where: { id: before.employeeId },
+              select: { name: true },
+            });
+            const catName2 = cat?.code
+              ? (await prisma.attendanceCategory.findUnique({
+                  where: { id: before.categoryId },
+                  select: { name: true },
+                }))?.name ?? "근태"
+              : "근태";
+            const requesterName = reqEmp?.name ?? "직원";
+            await createNotifications({
+              employeeIds: approverTargets,
+              type: "cancel",
+              title: "결재 취소",
+              body: `${requesterName}님이 승인된 '${catName2}' 신청을 취소했습니다.`,
+              linkPage: "approval",
+              linkRefId: idNum,
+              sourceType: "attendance_request",
+            });
+          }
+        } catch (e) {
+          console.error("[notify] 취소 알림 생성 실패:", e);
+        }
+      }
+
       return NextResponse.json({ id: updated.id, status: updated.status });
     }
 
