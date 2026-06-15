@@ -6,6 +6,7 @@ import {
   rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
 import { createNotifications } from "@/lib/notify";
+import { applyCorrectionToDaily } from "@/lib/attendance-correction";
 
 // Phase 7 3단계: 결재함에 출장(trip) 결재를 합치는 방식 A.
 // - 출장 카테고리 표기는 attendance 카테고리와 통일된 키로 노출(필터/표시 공유).
@@ -712,85 +713,6 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    // 정정의 경우 시프트 + grace 정책 미리 로드 (auto_status 재계산용)
-    let shiftStartHHMM: string | null = null;
-    let shiftEndHHMM: string | null = null;
-    let graceInMinutes = 10;
-    let graceOutMinutes = 0;
-
-    if (action === "approve" && category.type === "correction") {
-      // 시프트 조회 (정정 날짜 기준)
-      const workDateStr = target.startDate.toISOString().split("T")[0];
-      const shiftRows = await prisma.$queryRaw<
-        Array<{ start_time: string | null; end_time: string | null; type: string }>
-      >`
-        SELECT sp.start_time::text AS start_time, sp.end_time::text AS end_time, sp.type
-        FROM hr.employee_shifts es
-        JOIN hr.shift_patterns sp ON sp.id = es.pattern_id
-        WHERE es.employee_id = ${target.employeeId}
-          AND es.start_date <= ${workDateStr}::date
-          AND (es.end_date IS NULL OR es.end_date >= ${workDateStr}::date)
-          AND sp.is_active = true
-        LIMIT 1
-      `;
-      if (shiftRows.length > 0 && shiftRows[0].type !== "off") {
-        shiftStartHHMM = shiftRows[0].start_time;
-        shiftEndHHMM = shiftRows[0].end_time;
-      }
-
-      // 정책 조회
-      const policies = await prisma.policySetting.findMany({
-        where: { key: { in: ["grace_in_minutes", "grace_out_minutes"] } },
-      });
-      for (const p of policies) {
-        const v = parseInt(p.value, 10);
-        if (!isNaN(v)) {
-          if (p.key === "grace_in_minutes") graceInMinutes = v;
-          if (p.key === "grace_out_minutes") graceOutMinutes = v;
-        }
-      }
-    }
-
-    // auto_status 계산 헬퍼
-    function determineAutoStatus(
-      checkIn: Date | null,
-      checkOut: Date | null,
-      startHHMM: string | null,
-      endHHMM: string | null,
-      graceIn: number,
-      graceOut: number
-    ): string | null {
-      // 시프트 없음 → 단순 판정
-      if (!startHHMM || !endHHMM) {
-        if (checkIn && checkOut) return "normal";
-        if (!checkIn && !checkOut) return "absent";
-        return null;
-      }
-      // 시프트 있음 + 둘 다 NULL
-      if (!checkIn && !checkOut) return "absent";
-      // 한쪽만 NULL → 판정 보류
-      if (!checkIn || !checkOut) return null;
-      // 시프트 시각 파싱
-      const [shH, shM] = startHHMM.split(":").map(Number);
-      const [ehH, ehM] = endHHMM.split(":").map(Number);
-      if ([shH, shM, ehH, ehM].some(isNaN)) return "normal";
-      // 시프트 총 시간 (자정 넘김 처리)
-      let shiftMinutes = ehH * 60 + ehM - (shH * 60 + shM);
-      if (shiftMinutes <= 0) shiftMinutes += 24 * 60;
-      // 시프트 시작 datetime (check_in 날짜 기준)
-      const shiftStart = new Date(checkIn);
-      shiftStart.setHours(shH, shM, 0, 0);
-      const lateThreshold = new Date(shiftStart.getTime() + graceIn * 60 * 1000);
-      if (checkIn > lateThreshold) return "late";
-      // 근무시간 부족 (조퇴)
-      const actualMinutes = Math.floor(
-        (checkOut.getTime() - checkIn.getTime()) / (60 * 1000)
-      );
-      const requiredMinutes = shiftMinutes - graceOut;
-      if (actualMinutes < requiredMinutes) return "early_leave";
-      return "normal";
-    }
-
     // YYYY-MM-DD 배열 생성 (startDate ~ endDate inclusive)
     function daysBetween(start: Date, end: Date): string[] {
       const days: string[] = [];
@@ -841,75 +763,12 @@ export async function PUT(request: NextRequest) {
       let applied = 0;
 
       if (category.type === "correction") {
-        // 정정: 단일 날짜만, 기존 행이 있으면 선택적 컬럼 덮어쓰기
-        const existing = await tx.attendanceDaily.findUnique({
-          where: {
-            employeeId_workDate: {
-              employeeId: target.employeeId,
-              workDate: target.startDate,
-            },
-          },
-        });
-
-        const newCheckIn = target.correctedCheckIn ?? existing?.checkIn ?? null;
-        const newCheckOut = target.correctedCheckOut ?? existing?.checkOut ?? null;
-
-        // work_minutes 재계산
-        let newWorkMinutes: number | null = null;
-        if (newCheckIn && newCheckOut) {
-          newWorkMinutes = Math.floor(
-            (newCheckOut.getTime() - newCheckIn.getTime()) / (60 * 1000)
-          );
-        }
-
-        // auto_status 재계산
-        const newAutoStatus = determineAutoStatus(
-          newCheckIn,
-          newCheckOut,
-          shiftStartHHMM,
-          shiftEndHHMM,
-          graceInMinutes,
-          graceOutMinutes
-        );
-
-        // Phase 6-2I: 첫 정정 시 원본 시간 백업 (이후 정정은 첫 백업값 그대로 유지)
-        const shouldBackupOriginal =
-          existing &&
-          existing.originalCheckIn === null &&
-          existing.originalCheckOut === null;
-
-        await tx.attendanceDaily.upsert({
-          where: {
-            employeeId_workDate: {
-              employeeId: target.employeeId,
-              workDate: target.startDate,
-            },
-          },
-          create: {
-            employeeId: target.employeeId,
-            workDate: target.startDate,
-            checkIn: newCheckIn,
-            checkOut: newCheckOut,
-            workMinutes: newWorkMinutes,
-            autoStatus: newAutoStatus,
-            isOverridden: true,
-            overrideSource: "manual", // Phase 6-2L+ C-3: 수동정정 → 보호 대상
-            note: `결재정정 #${updated.id}`,
-          },
-          update: {
-            checkIn: newCheckIn,
-            checkOut: newCheckOut,
-            workMinutes: newWorkMinutes,
-            autoStatus: newAutoStatus,
-            isOverridden: true,
-            overrideSource: "manual", // Phase 6-2L+ C-3: 수동정정 → 보호 대상
-            note: existing?.note ?? `결재정정 #${updated.id}`,
-            // Phase 6-2I: 첫 정정이면 정정 전 값 백업 (영구 보존)
-            ...(shouldBackupOriginal && {
-              originalCheckIn: existing.checkIn,
-              originalCheckOut: existing.checkOut,
-            }),
-          },
+        await applyCorrectionToDaily(tx, {
+          employeeId: target.employeeId,
+          workDate: target.startDate,
+          correctedCheckIn: target.correctedCheckIn,
+          correctedCheckOut: target.correctedCheckOut,
+          requestId: updated.id,
         });
         applied = 1;
       } else if (category.type === "leave" || category.type === "work") {

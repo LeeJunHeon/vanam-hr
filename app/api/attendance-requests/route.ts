@@ -6,6 +6,7 @@ import {
   isAdminSession,
 } from "@/lib/auth-helpers";
 import { createNotifications } from "@/lib/notify";
+import { applyCorrectionToDaily } from "@/lib/attendance-correction";
 
 function parseDate(s: string | null | undefined): Date | null {
   if (!s || typeof s !== "string") return null;
@@ -391,31 +392,47 @@ export async function POST(request: NextRequest) {
 
     const now = new Date();
 
-    const created = await prisma.attendanceRequest.create({
-      data: {
-        employeeId: employeeIdNum,
-        categoryId: categoryIdNum,
-        requestType: reqType,
-        startDate: startD,
-        endDate: endD,
-        reason: reason?.trim() || null,
-        correctedCheckIn: cciDate,
-        correctedCheckOut: ccoDate,
-        status: isAutoApproved ? "auto_approved" : "pending",
-        approverIds: isAutoApproved ? [] : approverIds,
-        approvalMode,
-        approvedByIds: [],
-        primaryApproverId: isAutoApproved ? null : primaryApproverId, // 호환
-        deputyApproverId: isAutoApproved ? null : deputyApproverId, // 호환
-        approvedAt: isAutoApproved ? now : null,
-        // Phase 6-2E 캘린더 등록 정보 (NULL 허용)
-        calendarSourceId:
-          calendarSourceId != null && calendarSourceId !== ""
-            ? Number(calendarSourceId)
-            : null,
-        calendarEventTitle: calendarEventTitle?.trim() || null,
-        calendarEventDescription: calendarEventDescription?.trim() || null,
-      },
+    const created = await prisma.$transaction(async (tx) => {
+      const req = await tx.attendanceRequest.create({
+        data: {
+          employeeId: employeeIdNum,
+          categoryId: categoryIdNum,
+          requestType: reqType,
+          startDate: startD,
+          endDate: endD,
+          reason: reason?.trim() || null,
+          correctedCheckIn: cciDate,
+          correctedCheckOut: ccoDate,
+          status: isAutoApproved ? "auto_approved" : "pending",
+          approverIds: isAutoApproved ? [] : approverIds,
+          approvalMode,
+          approvedByIds: [],
+          primaryApproverId: isAutoApproved ? null : primaryApproverId, // 호환
+          deputyApproverId: isAutoApproved ? null : deputyApproverId, // 호환
+          approvedAt: isAutoApproved ? now : null,
+          // Phase 6-2E 캘린더 등록 정보 (NULL 허용)
+          calendarSourceId:
+            calendarSourceId != null && calendarSourceId !== ""
+              ? Number(calendarSourceId)
+              : null,
+          calendarEventTitle: calendarEventTitle?.trim() || null,
+          calendarEventDescription: calendarEventDescription?.trim() || null,
+        },
+      });
+
+      // 자동승인 + 정정(correction)이면 attendance_daily에 즉시 반영
+      // (일반 승인은 approvals에서 처리되지만, 자동승인은 여기서 처리해야 누락 안 됨)
+      if (isAutoApproved && category.type === "correction") {
+        await applyCorrectionToDaily(tx, {
+          employeeId: employeeIdNum,
+          workDate: startD,
+          correctedCheckIn: cciDate,
+          correctedCheckOut: ccoDate,
+          requestId: req.id,
+        });
+      }
+
+      return req;
     });
 
     // 결재 요청 알림 — 자동승인이 아니고 결재자가 있을 때만
