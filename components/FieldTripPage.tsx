@@ -312,8 +312,30 @@ export default function FieldTripPage() {
         </div>
       ) : (
         <>
-          {/* 필터 바: 사용자 드롭다운 (출장 그룹 + 외근 단건 항상 함께 표시) */}
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2 justify-end">
+          {/* 탭(활성/예정·취소/지난) + 사용자 필터를 한 행에 (출장 그룹 + 외근 단건 항상 함께 표시) */}
+          <div className="flex items-center justify-between gap-3 border-b border-gray-200">
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setTab("active")}
+                className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
+                  tab === "active"
+                    ? "border-blue-600 text-blue-600"
+                    : "border-transparent text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                활성/예정 ({activeCount})
+              </button>
+              <button
+                onClick={() => setTab("history")}
+                className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
+                  tab === "history"
+                    ? "border-blue-600 text-blue-600"
+                    : "border-transparent text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                취소/지난 ({historyCount})
+              </button>
+            </div>
             <select
               value={userFilter === "all" ? "all" : String(userFilter)}
               onChange={(e) =>
@@ -321,7 +343,7 @@ export default function FieldTripPage() {
                   e.target.value === "all" ? "all" : Number(e.target.value)
                 )
               }
-              className="px-3 py-1.5 text-sm border border-gray-200 rounded-xl bg-white"
+              className="mb-1 px-3 py-1.5 text-sm border border-gray-200 rounded-xl bg-white shrink-0"
             >
               <option value="all">전체 사용자</option>
               {employees.map((emp) => (
@@ -330,30 +352,6 @@ export default function FieldTripPage() {
                 </option>
               ))}
             </select>
-          </div>
-
-          {/* 탭: 활성/예정 vs 취소/지난 (카운트는 선택된 필터 기준) */}
-          <div className="flex items-center gap-1 border-b border-gray-200">
-            <button
-              onClick={() => setTab("active")}
-              className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
-                tab === "active"
-                  ? "border-blue-600 text-blue-600"
-                  : "border-transparent text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              활성/예정 ({activeCount})
-            </button>
-            <button
-              onClick={() => setTab("history")}
-              className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
-                tab === "history"
-                  ? "border-blue-600 text-blue-600"
-                  : "border-transparent text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              취소/지난 ({historyCount})
-            </button>
           </div>
 
           {shownTrips.length === 0 && shownExts.length === 0 ? (

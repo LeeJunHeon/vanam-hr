@@ -677,11 +677,16 @@ export default function RequestPage() {
     }
   };
 
+  // 출장/외근은 "출장 및 외근 관리" 탭에서 다루므로 이 목록에선 제외(신청 폼과 동일 기준).
+  const visibleRequests = requests.filter(
+    (r) => !HIDDEN_REQUEST_CATEGORY_CODES.has(r.categoryCode)
+  );
+
   const handleExportCSV = () => {
-    if (!requests || requests.length === 0) return;
+    if (visibleRequests.length === 0) return;
     exportCSV(
       ["근태항목", "유형", "시작일", "종료일", "사유", "상태", "결재자", "등록일"],
-      requests.map((r) => [
+      visibleRequests.map((r) => [
         r.categoryName,
         r.categoryType,
         r.startDate,
@@ -728,7 +733,7 @@ export default function RequestPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900">
-            휴가/근태 신청
+            휴가 및 근태 신청
           </h1>
           <p className="text-sm text-gray-500 mt-0.5">
             {current
@@ -739,7 +744,7 @@ export default function RequestPage() {
         <div className="flex items-center gap-2">
           <button
             onClick={handleExportCSV}
-            disabled={!requests || requests.length === 0}
+            disabled={visibleRequests.length === 0}
             className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             <Download size={15} />
@@ -1236,7 +1241,7 @@ export default function RequestPage() {
               <Loader2 size={24} className="animate-spin text-blue-500" />
               <span className="ml-2 text-sm text-gray-500">로딩 중...</span>
             </div>
-          ) : requests.length === 0 ? (
+          ) : visibleRequests.length === 0 ? (
             <div className="bg-white rounded-2xl border border-gray-100 px-5 py-12 text-center text-sm text-gray-400 flex flex-col items-center gap-3">
               <ClipboardList size={24} className="text-gray-300" />
               신청한 결재가 없습니다. 좌상단 '결재 신청' 버튼으로 새 결재를 만드세요.
@@ -1244,7 +1249,7 @@ export default function RequestPage() {
           ) : (
             <>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {requests.map((r) => {
+                {visibleRequests.map((r) => {
                   const isPending = r.status === "pending";
                   const isRejected = r.status === "rejected";
                   const catColor = r.categoryColor;
@@ -1404,7 +1409,7 @@ export default function RequestPage() {
               </div>
 
               <p className="text-xs text-gray-400 text-center pt-2">
-                총 {requests.length}건
+                총 {visibleRequests.length}건
               </p>
             </>
           )}
