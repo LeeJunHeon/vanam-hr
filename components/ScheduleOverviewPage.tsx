@@ -54,18 +54,11 @@ const CATEGORY_GROUPS = [
   },
   { key: "sick", label: "병가", icon: "🏥", codes: ["SICK"], color: "rose" },
   {
-    key: "business_trip",
-    label: "출장",
-    icon: "✈️",
-    codes: ["BUSINESS_TRIP"],
-    color: "amber",
-  },
-  {
-    key: "external_work",
-    label: "외근",
+    key: "trip_external",
+    label: "출장 및 외근",
     icon: "🌐",
-    codes: ["EXTERNAL_WORK"],
-    color: "orange",
+    codes: ["BUSINESS_TRIP", "EXTERNAL_WORK"],
+    color: "amber",
   },
   {
     key: "remote_work",

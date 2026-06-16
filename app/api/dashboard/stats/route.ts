@@ -144,15 +144,7 @@ export async function GET(request: NextRequest) {
         ReturnType<typeof base> & { checkIn: string | null; checkOut: string | null }
       >,
       leave: [] as Array<ReturnType<typeof base> & { categoryName: string | null }>,
-      businessTrip: [] as Array<
-        ReturnType<typeof base> & {
-          categoryName: string | null;
-          reason: string | null;
-          checkIn: string | null;
-          checkOut: string | null;
-        }
-      >,
-      externalWork: [] as Array<
+      tripExternal: [] as Array<
         ReturnType<typeof base> & {
           categoryName: string | null;
           reason: string | null;
@@ -169,15 +161,9 @@ export async function GET(request: NextRequest) {
 
       // 휴가/출장/외근 (category 기준) — 이 행들은 auto_status가 normal이라
       // 결근/지각/조퇴 분류와 공존하지 않음
-      if (code === "BUSINESS_TRIP") {
+      if (code === "BUSINESS_TRIP" || code === "EXTERNAL_WORK") {
         const t = correctedTimeMap.get(`${d.employeeId}_${d.workDate.toISOString().split("T")[0]}`);
-        details.businessTrip.push({
-          ...base(d), categoryName, reason: null,
-          checkIn: t?.in ?? null, checkOut: t?.out ?? null,
-        });
-      } else if (code === "EXTERNAL_WORK") {
-        const t = correctedTimeMap.get(`${d.employeeId}_${d.workDate.toISOString().split("T")[0]}`);
-        details.externalWork.push({
+        details.tripExternal.push({
           ...base(d), categoryName, reason: null,
           checkIn: t?.in ?? null, checkOut: t?.out ?? null,
         });
@@ -208,8 +194,7 @@ export async function GET(request: NextRequest) {
       late: details.late.length,
       earlyLeave: details.earlyLeave.length,
       leave: details.leave.length,
-      businessTrip: details.businessTrip.length,
-      externalWork: details.externalWork.length,
+      tripExternal: details.tripExternal.length,
     };
 
     return NextResponse.json({

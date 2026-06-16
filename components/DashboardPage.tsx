@@ -52,16 +52,14 @@ interface AdminStats {
     late: number;
     earlyLeave: number;
     leave: number;
-    businessTrip: number;
-    externalWork: number;
+    tripExternal: number;
   };
   details: {
     absent: DetailItem[];
     late: DetailItem[];
     earlyLeave: DetailItem[];
     leave: DetailItem[];
-    businessTrip: DetailItem[];
-    externalWork: DetailItem[];
+    tripExternal: DetailItem[];
   };
 }
 
@@ -152,8 +150,7 @@ type AdminCardKey =
   | "late"
   | "earlyLeave"
   | "leave"
-  | "businessTrip"
-  | "externalWork";
+  | "tripExternal";
 
 interface AdminCard {
   key: AdminCardKey;
@@ -171,8 +168,7 @@ const ADMIN_CARDS: AdminCard[] = [
   { key: "late", title: "지각", iconKey: "clock", color: "amber", kind: "detail", detailKey: "late" },
   { key: "earlyLeave", title: "조퇴", iconKey: "logOut", color: "orange", kind: "detail", detailKey: "earlyLeave" },
   { key: "leave", title: "휴가", iconKey: "calendar", color: "violet", kind: "detail", detailKey: "leave" },
-  { key: "businessTrip", title: "출장", iconKey: "plane", color: "sky", kind: "detail", detailKey: "businessTrip" },
-  { key: "externalWork", title: "외근", iconKey: "globe", color: "teal", kind: "detail", detailKey: "externalWork" },
+  { key: "tripExternal", title: "출장 및 외근", iconKey: "globe", color: "teal", kind: "detail", detailKey: "tripExternal" },
 ];
 
 const MY_CARDS: CardConfig[] = [
