@@ -86,12 +86,13 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json().catch(() => ({}));
-    const { name, location, description, startDate, endDate } = body as {
+    const { name, location, description, startDate, endDate, calendarSourceId } = body as {
       name?: unknown;
       location?: unknown;
       description?: unknown;
       startDate?: unknown;
       endDate?: unknown;
+      calendarSourceId?: unknown;
     };
 
     // 검증
@@ -140,6 +141,29 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // calendarSourceId 검증: 정수이고 calendar_sources에 존재해야 함. 없으면 null(폴백).
+    let validCalendarSourceId: number | null = null;
+    if (calendarSourceId !== undefined && calendarSourceId !== null) {
+      const csId = Number(calendarSourceId);
+      if (!Number.isInteger(csId)) {
+        return NextResponse.json(
+          { error: "calendarSourceId는 정수여야 합니다." },
+          { status: 400 }
+        );
+      }
+      const cs = await prisma.calendarSource.findUnique({
+        where: { id: csId },
+        select: { id: true },
+      });
+      if (!cs) {
+        return NextResponse.json(
+          { error: "존재하지 않는 calendarSourceId입니다." },
+          { status: 400 }
+        );
+      }
+      validCalendarSourceId = csId;
+    }
+
     // creator_is_admin = 생성 시점 스냅샷
     const creatorIsAdmin = isAdminSession(session);
 
@@ -159,6 +183,7 @@ export async function POST(request: NextRequest) {
         createdById: ownId as number,
         creatorIsAdmin,
         status: "active",
+        calendarSourceId: validCalendarSourceId,
       },
       include: {
         createdBy: { select: { id: true, name: true, employeeNo: true } },
@@ -177,6 +202,7 @@ export async function POST(request: NextRequest) {
         createdById: created.createdById,
         createdByName: created.createdBy?.name ?? null,
         creatorIsAdmin: created.creatorIsAdmin,
+        calendarSourceId: created.calendarSourceId,
         createdAt: created.createdAt.toISOString(),
         participantCount: 0,
       },
