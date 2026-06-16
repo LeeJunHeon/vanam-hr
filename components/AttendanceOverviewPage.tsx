@@ -163,9 +163,8 @@ function categoryIcon(code: string | null): string {
     case "SICK":
       return "🏥";
     case "EXTERNAL_WORK":
-      return "🌐";
     case "BUSINESS_TRIP":
-      return "✈️";
+      return "🌐";
     case "REMOTE_WORK":
       return "🏠";
     case "ETC":

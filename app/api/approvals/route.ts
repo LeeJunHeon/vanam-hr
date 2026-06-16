@@ -13,7 +13,7 @@ import { applyCorrectionToDaily } from "@/lib/attendance-correction";
 // - 색상은 AttendanceCalendarView의 BUSINESS_TRIP 색(#f97316)과 동일.
 const TRIP_CATEGORY = {
   code: "BUSINESS_TRIP",
-  name: "출장",
+  name: "출장 및 외근",
   type: "work",
   color: "#f97316",
 } as const;

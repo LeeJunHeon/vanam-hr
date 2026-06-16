@@ -25,8 +25,8 @@ const CATEGORY_ICONS: Record<
   HALF_PM: { icon: "🏖️", color: "#60a5fa", label: "오후반차" },
   SICK: { icon: "🏥", color: "#ef4444", label: "병가" },
   FAMILY_EVENT: { icon: "", color: "#a855f7", label: "경조사" },
-  EXTERNAL_WORK: { icon: "🌐", color: "#f59e0b", label: "외근" },
-  BUSINESS_TRIP: { icon: "✈️", color: "#f97316", label: "출장" },
+  EXTERNAL_WORK: { icon: "🌐", color: "#f97316", label: "출장 및 외근" },
+  BUSINESS_TRIP: { icon: "🌐", color: "#f97316", label: "출장 및 외근" },
   REMOTE_WORK: { icon: "🏠", color: "#10b981", label: "재택" },
   ETC: { icon: "📋", color: "#9ca3af", label: "기타" },
 };
