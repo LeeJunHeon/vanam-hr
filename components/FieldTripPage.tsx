@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Plane,
+  Globe,
   Plus,
   Loader2,
   AlertCircle,
@@ -174,9 +175,6 @@ export default function FieldTripPage() {
   // 외근 목록 + 직원 드롭다운 + 종류/사용자 필터
   const [externalItems, setExternalItems] = useState<ExternalRow[] | null>(null);
   const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
-  const [kindFilter, setKindFilter] = useState<"all" | "trip" | "external">(
-    "all"
-  );
   const [userFilter, setUserFilter] = useState<"all" | number>("all");
 
   // 캘린더 소스 1회 로드 (실패해도 본업 동작 — 생성 모달 선택지만 비게 됨)
@@ -200,7 +198,7 @@ export default function FieldTripPage() {
   // 오늘(KST) — endDate/startDate는 YYYY-MM-DD 문자열이라 사전순=날짜순 비교 가능.
   const today = todayYmd();
 
-  // 종류(전체/출장/외근) + 사용자 필터 적용 후 active/history로 분류.
+  // 사용자 필터 적용 후 active/history로 분류 (출장 그룹 + 외근 단건 항상 함께).
   const trips = events ?? [];
   const exts = externalItems ?? [];
   const tripActiveAll = (ev: TripEventListRow) =>
@@ -214,20 +212,10 @@ export default function FieldTripPage() {
     (ev.participantIds ?? []).includes(userFilter as number);
   const extUser = (x: ExternalRow) =>
     userFilter === "all" || x.employeeId === userFilter;
-  const showTrips = kindFilter !== "external";
-  const showExt = kindFilter !== "trip";
-  const tripsActive = showTrips
-    ? trips.filter((ev) => tripUser(ev) && tripActiveAll(ev))
-    : [];
-  const tripsHistory = showTrips
-    ? trips.filter((ev) => tripUser(ev) && !tripActiveAll(ev))
-    : [];
-  const extsActive = showExt
-    ? exts.filter((x) => extUser(x) && extActiveAll(x))
-    : [];
-  const extsHistory = showExt
-    ? exts.filter((x) => extUser(x) && !extActiveAll(x))
-    : [];
+  const tripsActive = trips.filter((ev) => tripUser(ev) && tripActiveAll(ev));
+  const tripsHistory = trips.filter((ev) => tripUser(ev) && !tripActiveAll(ev));
+  const extsActive = exts.filter((x) => extUser(x) && extActiveAll(x));
+  const extsHistory = exts.filter((x) => extUser(x) && !extActiveAll(x));
   const activeCount = tripsActive.length + extsActive.length;
   const historyCount = tripsHistory.length + extsHistory.length;
   const shownTrips = tab === "active" ? tripsActive : tripsHistory;
@@ -294,11 +282,11 @@ export default function FieldTripPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <Plane size={22} className="text-blue-600" />
-            출장/외근 관리
+            <Globe size={22} className="text-blue-600" />
+            출장 및 외근 관리
           </h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            학회/단체 출장 등 그룹 출장 이벤트를 생성하고 관리합니다.
+            학회·단체 출장, 외근 등 외부 일정을 생성하고 관리합니다.
           </p>
         </div>
         <button
@@ -307,7 +295,7 @@ export default function FieldTripPage() {
           className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Plus size={16} />
-          새 출장/외근 만들기
+          새 외근 만들기
         </button>
       </div>
 
@@ -324,30 +312,8 @@ export default function FieldTripPage() {
         </div>
       ) : (
         <>
-          {/* 필터 바: 종류(전체/출장/외근) + 사용자 드롭다운 */}
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2 justify-between">
-            <div className="inline-flex rounded-xl border border-gray-200 overflow-hidden text-sm">
-              {(
-                [
-                  ["all", "전체"],
-                  ["trip", "출장"],
-                  ["external", "외근"],
-                ] as const
-              ).map(([k, label]) => (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => setKindFilter(k)}
-                  className={`px-3 py-1.5 ${
-                    kindFilter === k
-                      ? "bg-blue-600 text-white font-semibold"
-                      : "bg-white text-gray-600 hover:bg-gray-50"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+          {/* 필터 바: 사용자 드롭다운 (출장 그룹 + 외근 단건 항상 함께 표시) */}
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 justify-end">
             <select
               value={userFilter === "all" ? "all" : String(userFilter)}
               onChange={(e) =>
@@ -392,7 +358,7 @@ export default function FieldTripPage() {
 
           {shownTrips.length === 0 && shownExts.length === 0 ? (
             <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center text-sm text-gray-400 flex flex-col items-center gap-3">
-              <Plane size={28} className="text-gray-300" />
+              <Globe size={28} className="text-gray-300" />
               {tab === "active"
                 ? "표시할 항목이 없습니다."
                 : "취소되었거나 지난 항목이 없습니다."}
