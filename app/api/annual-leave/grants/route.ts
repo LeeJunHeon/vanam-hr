@@ -11,6 +11,7 @@ export async function GET(request: NextRequest) {
   }
   const { searchParams } = new URL(request.url);
   const year = Number(searchParams.get("year")) || new Date().getFullYear();
+  const asOf = new Date(); // 자동계산 기준일 = 오늘
 
   const policy = await getPolicy();
   const employees = await prisma.employee.findMany({
@@ -25,9 +26,8 @@ export async function GET(request: NextRequest) {
   const result = [];
   for (const e of employees) {
     const grant = grantMap.get(e.id);
-    const hiredYear = e.hiredAt ? e.hiredAt.getUTCFullYear() : null;
-    const autoGranted = hiredYear != null
-      ? computeGrantedDays(hiredYear, year, policy)
+    const autoGranted = e.hiredAt
+      ? computeGrantedDays(e.hiredAt, asOf, policy)
       : 0;
     const grantedDays = grant ? Number(grant.grantedDays) : autoGranted;
     const initialUsedDays = grant ? Number(grant.initialUsedDays) : 0;

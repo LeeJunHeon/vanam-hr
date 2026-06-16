@@ -1,33 +1,57 @@
 import { prisma } from "@/lib/prisma";
 
-// 정책 기반 부여량 계산.
-// 근속연수 = year - 입사연도. increment_start_year 미만이면 base_days,
-// 이상이면 base_days + (증가횟수 × increment_days), max_days 상한.
+export interface AnnualLeavePolicyValues {
+  baseDays: number;
+  incrementStartYear: number;
+  incrementCycleYears: number;
+  incrementDays: number;
+  maxDays: number;
+  firstYearMonthly: boolean;
+  firstYearMax: number;
+  monthlyBasis: string; // 'month' | 'hire_day'
+}
+
+// 기준일(asOf, 보통 오늘) 시점에 입사일(hiredAt)로부터 자동 부여량 계산.
+// - 1년 미만: 월차. monthlyBasis='month'면 (연*12+월) 차이, 'hire_day'면 일자까지 고려.
+//   월차 = min(경과개월, firstYearMax). firstYearMonthly=false면 0.
+// - 1년 이상: 연차 공식. 근속연수 = floor(경과개월/12).
 export function computeGrantedDays(
-  hiredYear: number,
-  targetYear: number,
-  policy: {
-    baseDays: number;
-    incrementStartYear: number;
-    incrementCycleYears: number;
-    incrementDays: number;
-    maxDays: number;
-  }
+  hiredAt: Date,
+  asOf: Date,
+  policy: AnnualLeavePolicyValues
 ): number {
-  const years = targetYear - hiredYear; // 근속연수(해당 연도 기준)
+  // 경과 개월 수
+  const hy = hiredAt.getUTCFullYear();
+  const hm = hiredAt.getUTCMonth(); // 0-based
+  const hd = hiredAt.getUTCDate();
+  const ay = asOf.getUTCFullYear();
+  const am = asOf.getUTCMonth();
+  const ad = asOf.getUTCDate();
+
+  let monthsElapsed = (ay - hy) * 12 + (am - hm);
+  if (policy.monthlyBasis === "hire_day") {
+    // 입사일(일자)이 아직 안 지났으면 한 달 덜 친다.
+    if (ad < hd) monthsElapsed -= 1;
+  }
+  if (monthsElapsed < 0) monthsElapsed = 0;
+
+  if (monthsElapsed < 12) {
+    // 1년 미만 → 월차
+    if (!policy.firstYearMonthly) return 0;
+    return Math.min(monthsElapsed, policy.firstYearMax);
+  }
+
+  // 1년 이상 → 연차
+  const years = Math.floor(monthsElapsed / 12); // 근속연수
   if (years < policy.incrementStartYear) {
     return policy.baseDays;
   }
   const cycles =
     Math.floor((years - policy.incrementStartYear) / policy.incrementCycleYears) + 1;
-  const granted = policy.baseDays + cycles * policy.incrementDays;
-  return Math.min(granted, policy.maxDays);
+  return Math.min(policy.baseDays + cycles * policy.incrementDays, policy.maxDays);
 }
 
 // 해당 연도(역년) 시스템 사용 연차 합계.
-// 승인된(approved/auto_approved/auto_delegated) 신청 중 카테고리 annual_leave_deduct>0인 것만,
-// 일수(startDate~endDate, 양끝 포함) × annual_leave_deduct 합산.
-// 반차(0.5)는 보통 하루짜리이므로 1일 × 0.5 = 0.5로 계산됨.
 export async function computeSystemUsedDays(
   employeeId: number,
   year: number
@@ -53,26 +77,20 @@ export async function computeSystemUsedDays(
       ? Number(r.category.annualLeaveDeduct)
       : 0;
     if (deduct <= 0) continue;
-    // 일수 계산 (양끝 포함). 반차도 카테고리에서 0.5로 처리되므로 일수는 1.
-    const start = r.startDate.getTime();
-    const end = r.endDate.getTime();
     const days =
-      Math.floor((end - start) / (24 * 60 * 60 * 1000)) + 1;
+      Math.floor((r.endDate.getTime() - r.startDate.getTime()) / 86400000) + 1;
     total += days * deduct;
   }
   return total;
 }
 
-// 정책 1행 로드(없으면 기본값 객체). Decimal→number 변환.
-export async function getPolicy() {
+export async function getPolicy(): Promise<AnnualLeavePolicyValues> {
   const p = await prisma.annualLeavePolicy.findFirst();
   if (!p) {
     return {
-      baseDays: 15,
-      incrementStartYear: 3,
-      incrementCycleYears: 2,
-      incrementDays: 1,
-      maxDays: 25,
+      baseDays: 15, incrementStartYear: 3, incrementCycleYears: 2,
+      incrementDays: 1, maxDays: 25,
+      firstYearMonthly: true, firstYearMax: 11, monthlyBasis: "month",
     };
   }
   return {
@@ -81,5 +99,8 @@ export async function getPolicy() {
     incrementCycleYears: p.incrementCycleYears,
     incrementDays: Number(p.incrementDays),
     maxDays: Number(p.maxDays),
+    firstYearMonthly: p.firstYearMonthly,
+    firstYearMax: Number(p.firstYearMax),
+    monthlyBasis: p.monthlyBasis,
   };
 }

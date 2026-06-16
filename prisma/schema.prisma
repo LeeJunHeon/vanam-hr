@@ -632,6 +632,9 @@ model AnnualLeavePolicy {
   incrementCycleYears  Int      @default(2) @map("increment_cycle_years")
   incrementDays        Decimal  @default(1) @map("increment_days") @db.Decimal(4, 1)
   maxDays              Decimal  @default(25) @map("max_days") @db.Decimal(4, 1)
+  firstYearMonthly     Boolean  @default(true) @map("first_year_monthly")
+  firstYearMax         Decimal  @default(11) @map("first_year_max") @db.Decimal(4, 1)
+  monthlyBasis         String   @default("month") @map("monthly_basis") @db.VarChar(20)
   updatedAt            DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
   @@map("annual_leave_policy")
