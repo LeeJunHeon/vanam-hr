@@ -223,6 +223,9 @@ model Employee {
   tripParticipations  TripParticipant[] @relation("TripParticipantEmployee")
   tripApprovals       TripParticipant[] @relation("TripParticipantApprovedBy")
 
+  // 연차 부여 기록
+  annualLeaveGrants   AnnualLeaveGrant[] @relation("EmployeeAnnualLeaveGrant")
+
   @@index([isActive], map: "idx_employees_active")
   @@index([departmentId], map: "idx_employees_department")
   @@index([positionId], map: "idx_employees_position")
@@ -618,5 +621,38 @@ model NotificationPref {
 
   @@unique([employeeId, type], map: "notification_prefs_employee_id_type_key")
   @@map("notification_prefs")
+  @@schema("hr")
+}
+
+// 연차 정책 (회사 전역 1행) — 입사연차 기반 자동 부여 규칙
+model AnnualLeavePolicy {
+  id                   Int      @id @default(autoincrement())
+  baseDays             Decimal  @default(15) @map("base_days") @db.Decimal(4, 1)
+  incrementStartYear   Int      @default(3) @map("increment_start_year")
+  incrementCycleYears  Int      @default(2) @map("increment_cycle_years")
+  incrementDays        Decimal  @default(1) @map("increment_days") @db.Decimal(4, 1)
+  maxDays              Decimal  @default(25) @map("max_days") @db.Decimal(4, 1)
+  updatedAt            DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("annual_leave_policy")
+  @@schema("hr")
+}
+
+// 연차 부여 기록 (직원 × 연도)
+model AnnualLeaveGrant {
+  id              Int       @id @default(autoincrement())
+  employeeId      Int       @map("employee_id")
+  year            Int
+  grantedDays     Decimal   @map("granted_days") @db.Decimal(4, 1)
+  initialUsedDays Decimal   @default(0) @map("initial_used_days") @db.Decimal(4, 1)
+  isManual        Boolean?  @default(false) @map("is_manual")
+  note            String?
+  createdAt       DateTime? @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  employee Employee @relation("EmployeeAnnualLeaveGrant", fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([employeeId, year], map: "uk_annual_leave_grant")
+  @@index([year], map: "idx_annual_leave_grant_year")
+  @@map("annual_leave_grant")
   @@schema("hr")
 }
