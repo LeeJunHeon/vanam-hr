@@ -46,6 +46,23 @@ export async function getFieldTripCalendarId(): Promise<string | null> {
   return _cachedFieldTripCalendarId;
 }
 
+// 이벤트의 calendar_source_id로 캘린더 정보 조회.
+// 반환: { calendarId, categoryId } — calendar_sources에서.
+// source_id가 null이거나 조회 실패면 null 반환(호출자가 폴백 처리).
+async function getCalendarSourceInfo(
+  calendarSourceId: number | null
+): Promise<{ calendarId: string; categoryId: number } | null> {
+  if (calendarSourceId == null) return null;
+  const row = await prisma.calendarSource.findUnique({
+    where: { id: calendarSourceId },
+    select: { calendarId: true, defaultCategoryId: true },
+  });
+  if (!row) return null;
+  const calId = (row.calendarId ?? "").trim();
+  if (calId.length === 0) return null;
+  return { calendarId: calId, categoryId: row.defaultCategoryId };
+}
+
 // ── 캘린더 syncer HTTP 클라이언트 ────────────────
 interface CreateEventArgs {
   calendarId: string;
@@ -231,7 +248,7 @@ export async function createTripParticipantAttendanceRequests(
     where: { id: participantId },
     include: {
       tripEvent: {
-        select: { id: true, name: true, status: true },
+        select: { id: true, name: true, status: true, calendarSourceId: true },
       },
       dates: {
         orderBy: [{ attendDate: "asc" }],
@@ -254,9 +271,10 @@ export async function createTripParticipantAttendanceRequests(
   if (participant.tripEvent.status !== "active") return;
   if (participant.dates.length === 0) return;
 
-  const categoryId = await getBusinessTripCategoryId();
+  const srcInfo = await getCalendarSourceInfo(participant.tripEvent.calendarSourceId);
+  const categoryId = srcInfo?.categoryId ?? (await getBusinessTripCategoryId());
   if (categoryId == null) {
-    console.warn("[trip-calendar] BUSINESS_TRIP 카테고리 미존재 — 근태 생성 skip");
+    console.warn("[trip-calendar] 카테고리 미확정 — 근태 생성 skip");
     return;
   }
 
@@ -296,7 +314,7 @@ export async function createTripParticipantAttendanceRequests(
             requestType: "calendar_auto",
             startDate: group.startDate,
             endDate: group.endDate,
-            reason: `[출장] ${ev.name}`,
+            reason: `[출장 및 외근] ${ev.name}`,
             correctedCheckIn,
             correctedCheckOut,
             externalSource: "trip",
@@ -440,15 +458,17 @@ export async function rebuildTripEventCalendar(
       location: true,
       description: true,
       status: true,
+      calendarSourceId: true,
     },
   });
   if (!event) return;
 
-  const fieldTripCalendarId = await getFieldTripCalendarId();
-  if (!fieldTripCalendarId) {
-    // 캘린더 미설정: 근태는 별도 흐름에서 처리되므로 여기선 그냥 종료
+  const srcInfo = await getCalendarSourceInfo(event.calendarSourceId);
+  const targetCalendarId =
+    srcInfo?.calendarId ?? (await getFieldTripCalendarId());
+  if (!targetCalendarId) {
     console.warn(
-      "[trip-calendar] field_trip_calendar_id 미설정 — 캘린더 재구성 skip"
+      "[trip-calendar] 대상 캘린더 미확정 — 캘린더 재구성 skip"
     );
     return;
   }
@@ -477,7 +497,7 @@ export async function rebuildTripEventCalendar(
   }
   for (const eid of existingEventIds) {
     try {
-      await callDeleteCalendarEvent(fieldTripCalendarId, eid);
+      await callDeleteCalendarEvent(targetCalendarId, eid);
     } catch (e) {
       console.error(`[trip-calendar] rebuild delete 실패 (eventId=${eid}):`, e);
     }
@@ -645,7 +665,7 @@ export async function rebuildTripEventCalendar(
     let eventId: string | null = null;
     try {
       eventId = await callCreateCalendarEvent({
-        calendarId: fieldTripCalendarId,
+        calendarId: targetCalendarId,
         summary: event.name,
         description,
         location: event.location,

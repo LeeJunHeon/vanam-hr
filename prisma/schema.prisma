@@ -518,6 +518,7 @@ model TripEvent {
   createdById      Int      @map("created_by_id")
   creatorIsAdmin   Boolean  @default(false) @map("creator_is_admin")
   status           String   @default("active") @db.VarChar(20)
+  calendarSourceId Int?     @map("calendar_source_id")
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
