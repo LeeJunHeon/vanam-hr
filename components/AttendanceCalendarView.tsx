@@ -367,7 +367,7 @@ export default function AttendanceCalendarView({
           </span>
         ))}
         {Object.entries(CATEGORY_ICONS)
-          .filter(([k]) => k !== "HALF_AM" && k !== "HALF_PM")
+          .filter(([k]) => k !== "HALF_AM" && k !== "HALF_PM" && k !== "BUSINESS_TRIP")
           .map(([k, v]) => (
             <span key={k} className="inline-flex items-center gap-0.5">
               {v.icon && <span>{v.icon}</span>}
