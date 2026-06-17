@@ -14,6 +14,9 @@ import {
   XCircle,
   Download,
   FileText,
+  CalendarDays,
+  CheckCircle2,
+  Wallet,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import { exportCSV } from "@/lib/csvUtils";
@@ -137,6 +140,27 @@ export default function RequestPage() {
   const [requests, setRequests] = useState<AttendanceRequest[]>([]);
   const [loading, setLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string>("");
+
+  // 본인 연차 현황 (전체/사용/잔여)
+  const [leaveInfo, setLeaveInfo] = useState<{
+    granted: number; used: number; remaining: number; mapped: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/annual-leave/my");
+        if (res.ok) {
+          const d = await res.json();
+          if (!cancelled) setLeaveInfo(d);
+        }
+      } catch (e) {
+        console.error("my leave fetch error:", e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [currentId]);
 
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [statusLookups, setStatusLookups] = useState<StatusLookup[]>([]);
@@ -769,6 +793,45 @@ export default function RequestPage() {
           </button>
         </div>
       </div>
+
+      {/* 본인 연차 현황 */}
+      {leaveInfo && leaveInfo.mapped && (
+        <div className="grid grid-cols-3 gap-3 sm:gap-4">
+          {/* 전체 연차 */}
+          <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
+            <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center mb-3">
+              <CalendarDays size={18} className="text-blue-600" />
+            </div>
+            <p className="text-xs text-gray-500">올해 전체 연차</p>
+            <p className="text-2xl font-bold text-gray-900 mt-0.5">
+              {leaveInfo.granted.toFixed(leaveInfo.granted % 1 === 0 ? 0 : 1)}
+              <span className="text-sm font-medium text-gray-400 ml-1">일</span>
+            </p>
+          </div>
+          {/* 사용 연차 */}
+          <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
+            <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center mb-3">
+              <CheckCircle2 size={18} className="text-amber-600" />
+            </div>
+            <p className="text-xs text-gray-500">사용한 연차</p>
+            <p className="text-2xl font-bold text-gray-900 mt-0.5">
+              {leaveInfo.used.toFixed(leaveInfo.used % 1 === 0 ? 0 : 1)}
+              <span className="text-sm font-medium text-gray-400 ml-1">일</span>
+            </p>
+          </div>
+          {/* 잔여 연차 */}
+          <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
+            <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center mb-3">
+              <Wallet size={18} className="text-emerald-600" />
+            </div>
+            <p className="text-xs text-gray-500">잔여 연차</p>
+            <p className="text-2xl font-bold text-emerald-700 mt-0.5">
+              {leaveInfo.remaining.toFixed(leaveInfo.remaining % 1 === 0 ? 0 : 1)}
+              <span className="text-sm font-medium text-emerald-400 ml-1">일</span>
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Phase 6-2F: 부서/결재선 없음 안내 (본인이 매핑된 경우만 표시) */}
       {currentId !== null && blockedByApprovalLine && (
