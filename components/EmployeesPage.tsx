@@ -12,10 +12,12 @@ import {
   User,
   Link as LinkIcon,
   Info,
+  CalendarDays,
 } from "lucide-react";
 import { exportCSV } from "@/lib/csvUtils";
 import DatePicker from "@/components/DatePicker";
 import { todayYmd } from "@/lib/dateUtils";
+import EmployeeAnnualLeaveModal from "@/components/EmployeeAnnualLeaveModal";
 
 interface Employee {
   id: number;
@@ -86,6 +88,10 @@ export default function EmployeesPage() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const [toast, setToast] = useState("");
+
+  // 연차 모달
+  const [annualTarget, setAnnualTarget] = useState<{ id: number; name: string } | null>(null);
+  const annualYear = new Date().getFullYear();
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -816,6 +822,13 @@ export default function EmployeesPage() {
                         <td className="px-5 py-3">
                           <div className="flex justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button
+                              onClick={() => setAnnualTarget({ id: e.id, name: e.name })}
+                              className="p-1.5 rounded-lg hover:bg-blue-100 text-gray-400 hover:text-blue-600"
+                              title="연차 관리"
+                            >
+                              <CalendarDays size={15} />
+                            </button>
+                            <button
                               onClick={() => openEdit(e)}
                               className="p-1.5 rounded-lg hover:bg-blue-100 text-gray-400 hover:text-blue-600"
                             >
@@ -863,6 +876,13 @@ export default function EmployeesPage() {
                     </div>
                     <div className="flex gap-1 shrink-0">
                       <button
+                        onClick={() => setAnnualTarget({ id: e.id, name: e.name })}
+                        className="p-1.5 rounded-lg hover:bg-blue-50 text-gray-400 hover:text-blue-600"
+                        title="연차 관리"
+                      >
+                        <CalendarDays size={14} />
+                      </button>
+                      <button
                         onClick={() => openEdit(e)}
                         className="p-1.5 rounded-lg hover:bg-blue-50 text-gray-400 hover:text-blue-600"
                       >
@@ -904,6 +924,17 @@ export default function EmployeesPage() {
             </div>
           )}
         </div>
+      )}
+
+      {/* 연차 현황 모달 */}
+      {annualTarget && (
+        <EmployeeAnnualLeaveModal
+          employeeId={annualTarget.id}
+          employeeName={annualTarget.name}
+          year={annualYear}
+          onClose={() => setAnnualTarget(null)}
+          onSaved={() => { /* 목록 갱신 불필요(연차는 별도) */ }}
+        />
       )}
     </div>
   );
