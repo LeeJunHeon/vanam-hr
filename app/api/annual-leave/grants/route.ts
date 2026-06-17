@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
   for (const e of employees) {
     const grant = grantMap.get(e.id);
     const autoGranted = e.hiredAt
-      ? computeGrantedDays(e.hiredAt, asOf, policy)
+      ? computeGrantedDays(e.hiredAt, year, asOf, policy)
       : 0;
     const grantedDays = grant ? Number(grant.grantedDays) : autoGranted;
     const initialUsedDays = grant ? Number(grant.initialUsedDays) : 0;

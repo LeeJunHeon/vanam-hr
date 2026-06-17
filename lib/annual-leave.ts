@@ -9,40 +9,57 @@ export interface AnnualLeavePolicyValues {
   firstYearMonthly: boolean;
   firstYearMax: number;
   monthlyBasis: string; // 'month' | 'hire_day'
+  grantBasis: string;       // 'fiscal_year' | 'hire_date'
+  firstYearFixedDays: number;
 }
 
-// 기준일(asOf, 보통 오늘) 시점에 입사일(hiredAt)로부터 자동 부여량 계산.
-// - 1년 미만: 월차. monthlyBasis='month'면 (연*12+월) 차이, 'hire_day'면 일자까지 고려.
-//   월차 = min(경과개월, firstYearMax). firstYearMonthly=false면 0.
-// - 1년 이상: 연차 공식. 근속연수 = floor(경과개월/12).
+// targetYear의 부여량 계산.
+// - grant_basis='fiscal_year': 기준일 = targetYear-01-01. 그 시점 만 근속으로 계산(매년 1/1 초기화).
+// - grant_basis='hire_date': 기준일 = asOf(오늘). 기존 로직.
+// - 1년 미만: firstYearMonthly면 월차(min(경과개월, firstYearMax)),
+//   아니면 firstYearFixedDays>0이면 고정일수, 둘 다 아니면 0.
+// - 1년 이상: 연차 공식(만 근속연수 기준).
 export function computeGrantedDays(
   hiredAt: Date,
+  targetYear: number,
   asOf: Date,
   policy: AnnualLeavePolicyValues
 ): number {
-  // 경과 개월 수
+  // 기준일 결정: 회계연도면 targetYear-01-01, 입사일 기준이면 오늘(asOf).
+  const basisDate =
+    policy.grantBasis === "hire_date"
+      ? asOf
+      : new Date(Date.UTC(targetYear, 0, 1)); // 1월 1일
+
   const hy = hiredAt.getUTCFullYear();
   const hm = hiredAt.getUTCMonth(); // 0-based
   const hd = hiredAt.getUTCDate();
-  const ay = asOf.getUTCFullYear();
-  const am = asOf.getUTCMonth();
-  const ad = asOf.getUTCDate();
+  const by = basisDate.getUTCFullYear();
+  const bm = basisDate.getUTCMonth();
+  const bd = basisDate.getUTCDate();
 
-  let monthsElapsed = (ay - hy) * 12 + (am - hm);
-  if (policy.monthlyBasis === "hire_day") {
-    // 입사일(일자)이 아직 안 지났으면 한 달 덜 친다.
-    if (ad < hd) monthsElapsed -= 1;
-  }
+  // 경과 개월 (기준일 - 입사일)
+  let monthsElapsed = (by - hy) * 12 + (bm - hm);
+  // 일자 보정: 기준일의 '일'이 입사일의 '일'보다 빠르면 아직 그 달 안 채움 → 1개월 차감.
+  // (fiscal_year든 hire_date든 동일하게 만 개월 계산)
+  if (bd < hd) monthsElapsed -= 1;
   if (monthsElapsed < 0) monthsElapsed = 0;
 
   if (monthsElapsed < 12) {
-    // 1년 미만 → 월차
-    if (!policy.firstYearMonthly) return 0;
-    return Math.min(monthsElapsed, policy.firstYearMax);
+    // 1년 미만 처리
+    if (policy.firstYearMonthly) {
+      // 월차: 경과 개월수(최대 firstYearMax)
+      return Math.min(monthsElapsed, policy.firstYearMax);
+    }
+    if (policy.firstYearFixedDays > 0) {
+      // 고정 일수 (예: 신입 첫해 12일)
+      return policy.firstYearFixedDays;
+    }
+    return 0;
   }
 
-  // 1년 이상 → 연차
-  const years = Math.floor(monthsElapsed / 12); // 근속연수
+  // 1년 이상 → 연차 공식 (만 근속연수 기준)
+  const years = Math.floor(monthsElapsed / 12);
   if (years < policy.incrementStartYear) {
     return policy.baseDays;
   }
@@ -100,7 +117,7 @@ export async function getGrantedDaysForEmployee(
   });
   if (!emp?.hiredAt) return 0;
   const policy = await getPolicy();
-  return computeGrantedDays(emp.hiredAt, new Date(), policy);
+  return computeGrantedDays(emp.hiredAt, year, new Date(), policy);
 }
 
 // 특정 직원·연도의 잔여 연차 계산.
@@ -130,6 +147,7 @@ export async function getPolicy(): Promise<AnnualLeavePolicyValues> {
       baseDays: 15, incrementStartYear: 3, incrementCycleYears: 2,
       incrementDays: 1, maxDays: 25,
       firstYearMonthly: true, firstYearMax: 11, monthlyBasis: "month",
+      grantBasis: "fiscal_year", firstYearFixedDays: 0,
     };
   }
   return {
@@ -141,5 +159,7 @@ export async function getPolicy(): Promise<AnnualLeavePolicyValues> {
     firstYearMonthly: p.firstYearMonthly,
     firstYearMax: Number(p.firstYearMax),
     monthlyBasis: p.monthlyBasis,
+    grantBasis: p.grantBasis,
+    firstYearFixedDays: Number(p.firstYearFixedDays),
   };
 }

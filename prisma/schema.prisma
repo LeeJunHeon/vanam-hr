@@ -638,6 +638,8 @@ model AnnualLeavePolicy {
   firstYearMonthly     Boolean  @default(true) @map("first_year_monthly")
   firstYearMax         Decimal  @default(11) @map("first_year_max") @db.Decimal(4, 1)
   monthlyBasis         String   @default("month") @map("monthly_basis") @db.VarChar(20)
+  grantBasis           String   @default("fiscal_year") @map("grant_basis") @db.VarChar(20)
+  firstYearFixedDays   Decimal  @default(0) @map("first_year_fixed_days") @db.Decimal(4, 1)
   updatedAt            DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
   @@map("annual_leave_policy")

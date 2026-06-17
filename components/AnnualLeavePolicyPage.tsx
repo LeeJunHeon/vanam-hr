@@ -12,12 +12,15 @@ interface PolicyForm {
   firstYearMonthly: boolean;
   firstYearMax: number;
   monthlyBasis: string; // 'month' | 'hire_day'
+  grantBasis: string;   // 'fiscal_year' | 'hire_date'
+  firstYearFixedDays: number;
 }
 
 const DEFAULTS: PolicyForm = {
   baseDays: 15, incrementStartYear: 3, incrementCycleYears: 2,
   incrementDays: 1, maxDays: 25,
   firstYearMonthly: true, firstYearMax: 11, monthlyBasis: "month",
+  grantBasis: "fiscal_year", firstYearFixedDays: 0,
 };
 
 export default function AnnualLeavePolicyPage() {
@@ -46,6 +49,8 @@ export default function AnnualLeavePolicyPage() {
           firstYearMonthly: Boolean(d.firstYearMonthly),
           firstYearMax: Number(d.firstYearMax),
           monthlyBasis: d.monthlyBasis === "hire_day" ? "hire_day" : "month",
+          grantBasis: d.grantBasis === "hire_date" ? "hire_date" : "fiscal_year",
+          firstYearFixedDays: Number(d.firstYearFixedDays ?? 0),
         });
       }
     } catch (e) {
@@ -99,13 +104,15 @@ export default function AnnualLeavePolicyPage() {
   // 미리보기: 현재 설정으로 1~N년차 부여량 계산 (UI 참고용, 로컬 계산)
   const preview = (() => {
     const rows: { label: string; days: number }[] = [];
-    // 월차 미리보기 (1~12개월)
+    // 1년 미만
     if (form.firstYearMonthly) {
       rows.push({ label: "입사 후 1개월", days: Math.min(1, form.firstYearMax) });
       rows.push({ label: "입사 후 6개월", days: Math.min(6, form.firstYearMax) });
       rows.push({ label: "입사 후 11개월", days: Math.min(11, form.firstYearMax) });
+    } else {
+      rows.push({ label: "1년 미만 (고정)", days: form.firstYearFixedDays });
     }
-    // 연차 미리보기 (1,3,5,10년차)
+    // 1년 이상 연차
     const calcYear = (years: number) => {
       if (years < form.incrementStartYear) return form.baseDays;
       const cycles = Math.floor((years - form.incrementStartYear) / form.incrementCycleYears) + 1;
@@ -153,7 +160,7 @@ export default function AnnualLeavePolicyPage() {
           연차 정책
         </h1>
         <p className="text-sm text-gray-500 mt-0.5">
-          입사일 기준 연차 자동 부여 규칙을 설정합니다 (전체 공통)
+          연차 자동 부여 규칙을 설정합니다 (부여 기준 선택 가능)
         </p>
       </div>
 
@@ -163,6 +170,25 @@ export default function AnnualLeavePolicyPage() {
         </div>
       ) : (
         <>
+          {/* 부여 기준 */}
+          <div className="bg-white rounded-2xl border border-gray-100 p-5 space-y-4">
+            <h2 className="text-sm font-bold text-gray-800">부여 기준</h2>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">연차 초기화 기준</label>
+              <select
+                value={form.grantBasis}
+                onChange={(e) => setForm((p) => ({ ...p, grantBasis: e.target.value }))}
+                className="w-full sm:w-80 border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+              >
+                <option value="fiscal_year">회계연도 기준 (매년 1월 1일 초기화)</option>
+                <option value="hire_date">입사일 기준 (입사 기념일에 갱신)</option>
+              </select>
+              <p className="text-xs text-gray-400 mt-1">
+                회계연도: 모든 직원이 매년 1/1에 그 해 근속연수로 갱신. 입사일: 각자 입사 기념일 기준.
+              </p>
+            </div>
+          </div>
+
           {/* 1년 이후 연차 */}
           <div className="bg-white rounded-2xl border border-gray-100 p-5 space-y-4">
             <h2 className="text-sm font-bold text-gray-800">1년 이후 — 연차</h2>
@@ -175,9 +201,9 @@ export default function AnnualLeavePolicyPage() {
             </div>
           </div>
 
-          {/* 1년 미만 월차 */}
+          {/* 1년 미만 (신입 첫 해) */}
           <div className="bg-white rounded-2xl border border-gray-100 p-5 space-y-4">
-            <h2 className="text-sm font-bold text-gray-800">1년 미만 — 월차</h2>
+            <h2 className="text-sm font-bold text-gray-800">1년 미만 (신입 첫 해)</h2>
             <div className="flex items-center gap-3">
               <button
                 onClick={() => setForm((p) => ({ ...p, firstYearMonthly: !p.firstYearMonthly }))}
@@ -191,10 +217,11 @@ export default function AnnualLeavePolicyPage() {
                 }`} />
               </button>
               <span className="text-sm text-gray-700">
-                월차 적용 {form.firstYearMonthly ? "(켜짐)" : "(꺼짐)"}
+                월차 방식 {form.firstYearMonthly ? "(켜짐 — 매월 1개씩)" : "(꺼짐 — 고정일수)"}
               </span>
             </div>
-            {form.firstYearMonthly && (
+
+            {form.firstYearMonthly ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {numberField("월차 최대", "firstYearMax", "개", "1년 미만 최대 (보통 11)")}
                 <div>
@@ -207,10 +234,11 @@ export default function AnnualLeavePolicyPage() {
                     <option value="month">월 단위 (다음 달 되면 +1)</option>
                     <option value="hire_day">입사일 기준 (입사일 지나면 +1)</option>
                   </select>
-                  <p className="text-xs text-gray-400 mt-1">
-                    월 단위: 6/16 입사 → 7월에 1개. 입사일 기준: 7/16부터 1개.
-                  </p>
                 </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {numberField("고정 부여일수", "firstYearFixedDays", "일", "신입 첫 해 고정 연차 (예: 12)")}
               </div>
             )}
           </div>

@@ -13,6 +13,7 @@ export async function GET() {
       baseDays: 15, incrementStartYear: 3, incrementCycleYears: 2,
       incrementDays: 1, maxDays: 25,
       firstYearMonthly: true, firstYearMax: 11, monthlyBasis: "month",
+      grantBasis: "fiscal_year", firstYearFixedDays: 0,
     });
   }
   return NextResponse.json({
@@ -25,6 +26,8 @@ export async function GET() {
     firstYearMonthly: p.firstYearMonthly,
     firstYearMax: Number(p.firstYearMax),
     monthlyBasis: p.monthlyBasis,
+    grantBasis: p.grantBasis,
+    firstYearFixedDays: Number(p.firstYearFixedDays),
   });
 }
 
@@ -41,16 +44,18 @@ export async function PUT(request: NextRequest) {
     incrementDays: Number(body.incrementDays),
     maxDays: Number(body.maxDays),
     firstYearMax: Number(body.firstYearMax),
+    firstYearFixedDays: Number(body.firstYearFixedDays),
   };
   const firstYearMonthly = Boolean(body.firstYearMonthly);
   const monthlyBasis = body.monthlyBasis === "hire_day" ? "hire_day" : "month";
+  const grantBasis = body.grantBasis === "hire_date" ? "hire_date" : "fiscal_year";
   if (Object.values(num).some((v) => !Number.isFinite(v) || v < 0)) {
     return NextResponse.json({ error: "모든 값은 0 이상의 숫자여야 합니다." }, { status: 400 });
   }
   if (num.incrementCycleYears < 1) {
     return NextResponse.json({ error: "증가 주기는 1 이상이어야 합니다." }, { status: 400 });
   }
-  const data = { ...num, firstYearMonthly, monthlyBasis };
+  const data = { ...num, firstYearMonthly, monthlyBasis, grantBasis };
   const existing = await prisma.annualLeavePolicy.findFirst();
   const saved = existing
     ? await prisma.annualLeavePolicy.update({ where: { id: existing.id }, data })
@@ -65,5 +70,7 @@ export async function PUT(request: NextRequest) {
     firstYearMonthly: saved.firstYearMonthly,
     firstYearMax: Number(saved.firstYearMax),
     monthlyBasis: saved.monthlyBasis,
+    grantBasis: saved.grantBasis,
+    firstYearFixedDays: Number(saved.firstYearFixedDays),
   });
 }
