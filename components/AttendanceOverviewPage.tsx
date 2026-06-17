@@ -304,19 +304,31 @@ function progressFromRow(row: {
   categoryCode?: string | null;
   categoryName?: string | null;
   isOverridden?: boolean;
+  correctedCheckIn?: string | null;
   correctedCheckOut?: string | null;
 }): string {
-  // 캘린더 보정 우선 (Q-A)
+  // 캘린더 보정 우선 (Q-A) — 단, 시간형이 아직 시작 전이면 일반 판정으로 흐른다.
   if (row.isOverridden && row.categoryId && row.categoryName) {
     if (isVacationCategory(row.categoryCode ?? null)) return row.categoryName;
-    // 출장/외근 등 시간형: 일정 종료시각(correctedCheckOut)으로 진행/완료 판정.
-    let ended: boolean;
-    if (row.correctedCheckOut) {
-      ended = new Date(row.correctedCheckOut).getTime() <= Date.now();
-    } else {
-      ended = !!row.checkOut;
+    const isTimed = !!(row.correctedCheckIn && row.correctedCheckOut);
+    const now = Date.now();
+    const calIn = row.correctedCheckIn
+      ? new Date(row.correctedCheckIn).getTime()
+      : null;
+    const calOut = row.correctedCheckOut
+      ? new Date(row.correctedCheckOut).getTime()
+      : null;
+    const notStartedYet = isTimed && calIn !== null && now < calIn;
+    if (!notStartedYet) {
+      let ended: boolean;
+      if (isTimed && calOut !== null) {
+        ended = now >= calOut;
+      } else {
+        ended = !!row.checkOut;
+      }
+      return ended ? `${row.categoryName}완료` : `${row.categoryName}중`;
     }
-    return ended ? `${row.categoryName}완료` : `${row.categoryName}중`;
+    // notStartedYet이면 아래 일반 로직으로 흐른다.
   }
   // 기존 로직
   if (row.autoStatus === "working") return "근무중";
