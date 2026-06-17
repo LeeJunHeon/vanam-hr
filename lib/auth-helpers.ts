@@ -132,6 +132,45 @@ export function canViewEmployee(
 }
 
 /**
+ * 개인정보 카드(민감정보) 접근 권한.
+ * - CEO (role='ceo')
+ * - LEE Donghak (employeeId=5) — 인사 담당 지정
+ * 그 외 전부 false. (ADMIN 전체가 아니라 특정 인물만)
+ */
+const PERSONAL_INFO_EMPLOYEE_IDS = [5]; // LEE Donghak
+
+export function canAccessPersonalInfo(session: Session | null | undefined): boolean {
+  if (!session?.user) return false;
+  if (session.user.role === "ceo") return true;
+  const eid = session.user.employeeId;
+  if (Number.isInteger(eid) && PERSONAL_INFO_EMPLOYEE_IDS.includes(eid as number)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 개인정보 접근 권한을 요구한다. 미로그인 401, 권한 없으면 403.
+ */
+export async function requirePersonalInfoAccess(): Promise<
+  | { ok: true; session: Session }
+  | { ok: false; response: NextResponse }
+> {
+  const r = await requireSession();
+  if (!r.ok) return r;
+  if (!canAccessPersonalInfo(r.session)) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "개인정보 접근 권한이 없습니다." },
+        { status: 403 }
+      ),
+    };
+  }
+  return r;
+}
+
+/**
  * 관리자 권한을 요구한다. 미로그인은 401, 비관리자는 403.
  */
 export async function requireAdmin(): Promise<
