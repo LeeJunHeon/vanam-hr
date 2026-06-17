@@ -328,16 +328,13 @@ export default function PersonalInfoPage() {
               {!editing ? (
                 // ── 조회 모드 ──
                 <div className="space-y-5">
-                  {/* 기본 정보 (인사 기준 우선 + employees 공유) */}
+                  {/* 회사 */}
                   <section>
-                    <h3 className="text-xs font-bold text-gray-700 mb-2">기본 정보</h3>
+                    <h3 className="text-xs font-bold text-gray-700 mb-2">회사</h3>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                      {field("성명(한글)", detail.hrName)}
-                      {field("직급", detail.hrPosition)}
-                      {field("부서/소속", detail.hrDepartment)}
-                      {field("연락처", detail.hrPhone)}
                       {field("사번", detail.employeeNo)}
-                      {field("이메일", detail.email)}
+                      {field("직책", detail.hrPosition)}
+                      {field("소속", detail.hrDepartment)}
                       {field("입사일", detail.hiredAt)}
                       {field("국가연구자 번호", detail.researcherNumber)}
                     </div>
@@ -346,7 +343,7 @@ export default function PersonalInfoPage() {
                     </p>
                   </section>
 
-                  {/* 학력 */}
+                  {/* 졸업 대학 정보 */}
                   <section>
                     <h3 className="text-xs font-bold text-gray-700 mb-2">졸업 대학 정보</h3>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -358,16 +355,18 @@ export default function PersonalInfoPage() {
                     </div>
                   </section>
 
-                  {/* 개인정보 (주민번호 마스킹) */}
+                  {/* 개인 정보 */}
                   <section>
                     <h3 className="text-xs font-bold text-gray-700 mb-2">개인 정보</h3>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                       {maskedField("주민번호", detail.residentNumber, showResident, setShowResident)}
+                      {field("연락처", detail.hrPhone)}
                       {field("주소", detail.address)}
+                      {field("이메일", detail.email)}
                     </div>
                   </section>
 
-                  {/* 급여 통장 (계좌 마스킹) */}
+                  {/* 급여 통장 */}
                   <section>
                     <h3 className="text-xs font-bold text-gray-700 mb-2">급여 통장</h3>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -381,26 +380,29 @@ export default function PersonalInfoPage() {
                 // ── 수정 모드 ──
                 <div className="space-y-5">
                   <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2 text-xs text-amber-800">
-                    사번·이메일·입사일은 직원 관리와 공유됩니다(여기서 수정하면 직원 관리에도 반영). 성명/직급/부서/연락처는 인사정보 카드 전용입니다.
+                    사번·이메일·입사일은 직원 관리와 공유됩니다(여기서 수정하면 직원 관리에도 반영). 성명/직책/소속/연락처는 인사정보 카드 전용입니다.
                   </div>
+
+                  {/* 성명 (맨 위) */}
                   <section>
-                    <h3 className="text-xs font-bold text-gray-700 mb-2">기본 정보</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {inputField("성명(한글)", "hrName")}
-                      {inputField("직급", "hrPosition")}
-                      {inputField("부서/소속", "hrDepartment")}
-                      {inputField("연락처", "hrPhone")}
-                      {inputField("사번", "employeeNo")}
-                      {inputField("이메일", "email")}
-                      {inputField("입사일", "hiredAt", "예: 2024-01-15")}
                     </div>
                   </section>
+
+                  {/* 회사 */}
                   <section>
-                    <h3 className="text-xs font-bold text-gray-700 mb-2">국가연구자</h3>
+                    <h3 className="text-xs font-bold text-gray-700 mb-2">회사</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {inputField("사번", "employeeNo")}
+                      {inputField("직책", "hrPosition")}
+                      {inputField("소속", "hrDepartment")}
+                      {inputField("입사일", "hiredAt", "예: 2024-01-15")}
                       {inputField("국가연구자 번호", "researcherNumber")}
                     </div>
                   </section>
+
+                  {/* 졸업 대학 정보 */}
                   <section>
                     <h3 className="text-xs font-bold text-gray-700 mb-2">졸업 대학 정보</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -411,13 +413,19 @@ export default function PersonalInfoPage() {
                       {inputField("학위등록번호", "degreeNumber")}
                     </div>
                   </section>
+
+                  {/* 개인 정보 */}
                   <section>
                     <h3 className="text-xs font-bold text-gray-700 mb-2">개인 정보</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {inputField("주민번호", "residentNumber", "예: 000000-0000000")}
+                      {inputField("연락처", "hrPhone")}
                       {inputField("주소", "address")}
+                      {inputField("이메일", "email")}
                     </div>
                   </section>
+
+                  {/* 급여 통장 */}
                   <section>
                     <h3 className="text-xs font-bold text-gray-700 mb-2">급여 통장</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
