@@ -6,7 +6,7 @@ import {
   Home, Calendar, FileText, CheckSquare,
   Users, Building2, Smartphone, Clock,
   Settings, CalendarDays, Plane,
-  LogOut, X, ArrowLeft, BarChart3,
+  LogOut, X, ArrowLeft, BarChart3, IdCard,
 } from "lucide-react";
 
 export type PageId =
@@ -16,7 +16,8 @@ export type PageId =
   | "schedule-overview"
   | "employees" | "org" | "devices" | "shifts" | "employee-shifts"
   | "approval-lines"
-  | "system-settings";
+  | "system-settings"
+  | "personal-info";
 
 interface NavItem {
   id: PageId;
@@ -25,6 +26,8 @@ interface NavItem {
   group?: string;
   /** true면 admin role 사용자에게만 보임 + 라우팅 허용 */
   adminOnly?: boolean;
+  /** true면 개인정보 접근 권한자(CEO 또는 특정 직원)에게만 보임 */
+  personalInfoOnly?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -44,6 +47,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "employee-shifts", label: "직원별 시프트",  icon: Clock,       group: "관리자", adminOnly: true },
   { id: "approval-lines", label: "결재라인 설정",  icon: Users,       group: "관리자", adminOnly: true },
   { id: "system-settings", label: "시스템 설정",   icon: Settings,    group: "관리자", adminOnly: true },
+  { id: "personal-info",  label: "개인정보 카드",  icon: IdCard,      group: "관리자", personalInfoOnly: true },
 ];
 
 /**
@@ -65,11 +69,12 @@ interface SidebarProps {
   onClose: () => void;
   userName?: string;
   userRole?: string;
+  canAccessPersonalInfo?: boolean;
 }
 
 export default function Sidebar({
   currentPage, onNavigate, isOpen, onClose,
-  userName = "-", userRole = "-",
+  userName = "-", userRole = "-", canAccessPersonalInfo = false,
 }: SidebarProps) {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
@@ -80,7 +85,11 @@ export default function Sidebar({
 
   // CEO와 ADMIN 둘 다 관리자 메뉴 접근 가능
   const isAdmin = userRole === "admin" || userRole === "ceo";
-  const visibleItems = NAV_ITEMS.filter((i) => isAdmin || !i.adminOnly);
+  const visibleItems = NAV_ITEMS.filter((i) => {
+    if (i.personalInfoOnly) return canAccessPersonalInfo;
+    if (i.adminOnly) return isAdmin;
+    return true;
+  });
 
   const renderNavItems = () => {
     let prevGroup: string | undefined = undefined;
