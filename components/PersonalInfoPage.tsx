@@ -66,6 +66,8 @@ export default function PersonalInfoPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [addName, setAddName] = useState("");
   const [adding, setAdding] = useState(false);
+  // 드래그 순서 변경
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -185,6 +187,30 @@ export default function PersonalInfoPage() {
     }
   };
 
+  const persistOrder = async (newList: EmpListItem[]) => {
+    try {
+      await fetch("/api/personal-info/order", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order: newList.map((e) => e.employeeId) }),
+      });
+    } catch (e) {
+      console.error("order save error:", e);
+      showToast("순서 저장 실패");
+    }
+  };
+
+  const handleDrop = (dropIndex: number) => {
+    if (search) return; // 검색 중엔 순서 변경 금지
+    if (dragIndex === null || dragIndex === dropIndex) { setDragIndex(null); return; }
+    const next = [...list];
+    const [moved] = next.splice(dragIndex, 1);
+    next.splice(dropIndex, 0, moved);
+    setList(next);
+    setDragIndex(null);
+    persistOrder(next); // 자동 저장
+  };
+
   const filteredList = list.filter((e) =>
     !search || e.name.includes(search) || (e.employeeNo ?? "").includes(search)
   );
@@ -283,13 +309,17 @@ export default function PersonalInfoPage() {
                 <Loader2 className="animate-spin text-gray-400" size={24} />
               </div>
             ) : (
-              filteredList.map((e) => (
+              (search ? filteredList : list).map((e, index) => (
                 <button
                   key={e.employeeId}
+                  draggable={!search}
+                  onDragStart={() => setDragIndex(index)}
+                  onDragOver={(ev) => ev.preventDefault()}
+                  onDrop={() => handleDrop(index)}
                   onClick={() => selectEmployee(e.employeeId)}
                   className={`w-full text-left px-4 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors ${
                     selectedId === e.employeeId ? "bg-blue-50" : ""
-                  }`}
+                  } ${!search ? "cursor-move" : ""}`}
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium text-gray-900">{e.name}</span>

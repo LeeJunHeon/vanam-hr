@@ -16,7 +16,10 @@ export async function GET() {
       position: { select: { name: true } },
       personalInfo: { select: { id: true, hrName: true, hrPosition: true, hrDepartment: true } },
     },
-    orderBy: { id: "asc" },
+    orderBy: [
+      { hrSortOrder: { sort: "asc", nulls: "last" } },
+      { id: "asc" },
+    ],
   });
 
   return NextResponse.json(
