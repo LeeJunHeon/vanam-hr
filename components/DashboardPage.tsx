@@ -331,14 +331,12 @@ function formatDateTime(iso: string | null): string {
   )}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
-function PresenceCard() {
+function PresenceCard({ refreshKey }: { refreshKey: number }) {
   const [info, setInfo] = useState<PresenceInfo | null>(null);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
 
-  const fetchPresence = useCallback(async (showRefresh = false) => {
-    if (showRefresh) setRefreshing(true);
-    else setLoading(true);
+  const fetchPresence = useCallback(async () => {
+    setLoading(true);
     try {
       const res = await fetch("/api/presence");
       if (res.ok) {
@@ -354,13 +352,12 @@ function PresenceCard() {
       console.error(e);
     } finally {
       setLoading(false);
-      setRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
     fetchPresence();
-  }, [fetchPresence]);
+  }, [fetchPresence, refreshKey]);
 
   const isOnline = info?.currentStatus === "online";
   const isOffline = info?.currentStatus === "offline";
@@ -372,14 +369,6 @@ function PresenceCard() {
         <h3 className="text-sm font-semibold text-gray-900">
           오늘 나의 연결 상태
         </h3>
-        <button
-          onClick={() => fetchPresence(true)}
-          disabled={refreshing || loading}
-          className="text-xs font-medium text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-50 disabled:opacity-40 transition-colors flex items-center gap-1"
-        >
-          <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
-          새로고침
-        </button>
       </div>
 
       {loading ? (
@@ -643,6 +632,7 @@ function AdminDashboard({
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [period, setPeriod] = useState<PeriodType>("day");
   const [targetDate, setTargetDate] = useState(todayYmd());
   const [targetMonth, setTargetMonth] = useState(thisMonthStr());
@@ -720,7 +710,7 @@ function AdminDashboard({
             onChangeYear={setTargetYear}
           />
           <button
-            onClick={() => fetchStats(true)}
+            onClick={() => { fetchStats(true); setRefreshKey((k) => k + 1); }}
             disabled={refreshing}
             className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40"
           >
@@ -733,7 +723,7 @@ function AdminDashboard({
         </div>
       </div>
 
-      <PresenceCard />
+      <PresenceCard refreshKey={refreshKey} />
 
       {loading ? (
         <div className="flex items-center justify-center h-64">
@@ -794,6 +784,7 @@ function MyDashboard({
   const [stats, setStats] = useState<MyStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [period, setPeriod] = useState<PeriodType>("month");
   const [targetDate, setTargetDate] = useState(todayYmd());
   const [targetMonth, setTargetMonth] = useState(thisMonthStr());
@@ -853,7 +844,7 @@ function MyDashboard({
             onChangeYear={setTargetYear}
           />
           <button
-            onClick={() => fetchStats(true)}
+            onClick={() => { fetchStats(true); setRefreshKey((k) => k + 1); }}
             disabled={refreshing}
             className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40"
           >
@@ -866,7 +857,7 @@ function MyDashboard({
         </div>
       </div>
 
-      <PresenceCard />
+      <PresenceCard refreshKey={refreshKey} />
 
       {loading ? (
         <div className="flex items-center justify-center h-64">
