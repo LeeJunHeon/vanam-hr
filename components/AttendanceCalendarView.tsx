@@ -506,6 +506,7 @@ export default function AttendanceCalendarView({
           daily={data.daily}
           requests={data.requests}
           holidayName={holidayMap.get(selectedDate) ?? null}
+          editableEmployeeId={employeeId}
           onClose={() => setSelectedDate(null)}
         />
       )}

@@ -141,6 +141,7 @@ export async function GET(request: NextRequest) {
         isOverridden: true,
         workMinutes: true,
         note: true,
+        statusReason: true,
         category: {
           select: {
             id: true,
@@ -209,6 +210,7 @@ export async function GET(request: NextRequest) {
         isOverridden: d.isOverridden,
         workMinutes: d.workMinutes,
         note: d.note,
+        statusReason: d.statusReason ?? null,
       })),
       requests: requests.map((req) => ({
         id: req.id,

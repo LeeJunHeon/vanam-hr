@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { X, Download } from "lucide-react";
 
 // 응답 row 타입 (AttendanceCalendarView와 공유)
@@ -26,6 +27,7 @@ export interface CalendarDaily {
   isOverridden: boolean;
   workMinutes: number | null;
   note: string | null;
+  statusReason?: string | null;
 }
 
 export interface CalendarRequest {
@@ -46,6 +48,7 @@ interface ModalProps {
   daily: CalendarDaily[];
   requests: CalendarRequest[];
   holidayName?: string | null; // Phase 6-2L+ B-4: 공휴일이면 이름
+  editableEmployeeId?: number; // 이 직원 행이면 본인 사유 입력 가능 (내 근태에서 전달)
   onClose: () => void;
 }
 
@@ -125,8 +128,89 @@ export default function AttendanceCalendarDayModal({
   daily,
   requests,
   holidayName,
+  editableEmployeeId,
   onClose,
 }: ModalProps) {
+  const [reasonEdits, setReasonEdits] = useState<Record<number, string>>({});
+  const [savingId, setSavingId] = useState<number | null>(null);
+  const [savedToast, setSavedToast] = useState("");
+  // 저장 후 즉시 반영용 로컬 사유 오버라이드 (dailyId → reason)
+  const [localReasons, setLocalReasons] = useState<Record<number, string | null>>({});
+
+  // 사유 저장 함수
+  const saveReason = async (dailyId: number, value: string) => {
+    setSavingId(dailyId);
+    try {
+      const res = await fetch(`/api/attendance-daily/${dailyId}/reason`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: value }),
+      });
+      if (res.ok) {
+        setLocalReasons((p) => ({ ...p, [dailyId]: value.trim() || null }));
+        setSavedToast("사유가 저장되었습니다.");
+        setTimeout(() => setSavedToast(""), 2000);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setSavedToast(err.error ?? "저장 실패");
+        setTimeout(() => setSavedToast(""), 2500);
+      }
+    } catch {
+      setSavedToast("네트워크 오류");
+      setTimeout(() => setSavedToast(""), 2500);
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  // 지각/조퇴 사유 영역 렌더 (데스크탑/모바일 공용)
+  const renderReason = (d: CalendarDaily | undefined, empId: number) => {
+    const isLateOrEarly =
+      d?.autoStatus === "late" || d?.autoStatus === "early_leave";
+    if (!isLateOrEarly || d == null) return null;
+    const canEdit = editableEmployeeId != null && empId === editableEmployeeId;
+    const currentReason =
+      d.id in localReasons ? localReasons[d.id] ?? "" : d.statusReason ?? "";
+    const label = d.autoStatus === "late" ? "지각" : "조퇴";
+
+    if (canEdit) {
+      return (
+        <div className="mt-1.5">
+          <label className="block text-[11px] font-medium text-gray-500 mb-0.5">
+            {label} 사유
+          </label>
+          <div className="flex items-center gap-1.5">
+            <input
+              type="text"
+              defaultValue={currentReason}
+              onChange={(e) =>
+                setReasonEdits((p) => ({ ...p, [d.id]: e.target.value }))
+              }
+              placeholder="사유를 입력하세요 (예: 병원 방문)"
+              className="flex-1 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
+            />
+            <button
+              onClick={() => saveReason(d.id, reasonEdits[d.id] ?? currentReason)}
+              disabled={savingId === d.id}
+              className="px-2.5 py-1.5 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 shrink-0"
+            >
+              {savingId === d.id ? "저장중" : "저장"}
+            </button>
+          </div>
+        </div>
+      );
+    }
+    // 타인(관리자 조회) — 표시만
+    return currentReason ? (
+      <div className="mt-1.5 text-xs text-gray-600">
+        <span className="font-medium text-gray-500">{label} 사유:</span>{" "}
+        {currentReason}
+      </div>
+    ) : (
+      <div className="mt-1.5 text-xs text-gray-400">{label} 사유 미작성</div>
+    );
+  };
+
   // 해당 날짜 직원별 데이터 추출
   const dayData = employees.map((emp) => {
     const d = daily.find(
@@ -216,6 +300,11 @@ export default function AttendanceCalendarDayModal({
       className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4"
       onClick={onClose}
     >
+      {savedToast && (
+        <div className="fixed bottom-6 right-6 z-[60] bg-gray-900 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-lg">
+          {savedToast}
+        </div>
+      )}
       <div
         className="bg-white rounded-2xl max-w-4xl w-full max-h-[85vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
@@ -320,6 +409,7 @@ export default function AttendanceCalendarDayModal({
                       )}
                       {calNote && (req?.reason || d?.note) && " · "}
                       <span>{req?.reason ?? d?.note ?? ""}</span>
+                      {renderReason(d, emp.id)}
                     </td>
                   </tr>
                 );
@@ -401,6 +491,7 @@ export default function AttendanceCalendarDayModal({
                     {req?.reason ?? d?.note}
                   </p>
                 )}
+                {renderReason(d, emp.id)}
               </div>
             );
           })}

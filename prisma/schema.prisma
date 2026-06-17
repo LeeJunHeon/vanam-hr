@@ -340,6 +340,7 @@ model AttendanceDaily {
   overrideSource String?   @map("override_source") @db.VarChar(20)
   workMinutes    Int?      @map("work_minutes")
   note           String?
+  statusReason   String?   @map("status_reason")
   isConfirmed    Boolean   @default(false) @map("is_confirmed")
   confirmedAt    DateTime? @map("confirmed_at") @db.Timestamptz(6)
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
