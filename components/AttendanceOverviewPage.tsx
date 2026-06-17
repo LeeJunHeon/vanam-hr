@@ -170,7 +170,7 @@ function categoryIcon(code: string | null): string {
     case "ETC":
       return "📋";
     case "FAMILY_EVENT":
-      return ""; // 경조사는 아이콘 없음
+      return "🎗️"; // 경조사 리본
     default:
       return "";
   }

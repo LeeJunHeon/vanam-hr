@@ -70,7 +70,7 @@ const CATEGORY_GROUPS = [
   {
     key: "family_event",
     label: "경조사",
-    icon: "",
+    icon: "🎗️",
     codes: ["FAMILY_EVENT"],
     color: "indigo",
   },
