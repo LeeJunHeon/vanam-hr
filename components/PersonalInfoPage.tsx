@@ -319,7 +319,7 @@ export default function PersonalInfoPage() {
                   onClick={() => selectEmployee(e.employeeId)}
                   className={`w-full text-left px-4 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors ${
                     selectedId === e.employeeId ? "bg-blue-50" : ""
-                  } ${!search ? "cursor-move" : ""}`}
+                  } ${!search ? (dragIndex === index ? "cursor-grabbing" : "cursor-grab") : ""}`}
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium text-gray-900">{e.name}</span>
