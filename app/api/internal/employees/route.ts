@@ -13,7 +13,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const search = searchParams.get("search") || "";
 
-    const where: any = { isActive: true };
+    const where: any = { isActive: true, isHrOnly: false };
     if (search) {
       where.OR = [
         { employeeNo: { contains: search, mode: "insensitive" } },

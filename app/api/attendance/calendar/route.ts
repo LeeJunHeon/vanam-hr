@@ -84,7 +84,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    let employeeFilter: { isActive: true; departmentId?: number; id?: number };
+    let employeeFilter: { isActive: true; isHrOnly?: boolean; departmentId?: number; id?: number };
     if (targetEmployeeId !== null) {
       // 권한 통과한 단일 직원으로 강제
       employeeFilter = { isActive: true, id: targetEmployeeId };
@@ -98,6 +98,8 @@ export async function GET(request: NextRequest) {
     } else {
       return NextResponse.json({ error: "권한 부족" }, { status: 403 });
     }
+
+    employeeFilter.isHrOnly = false; // 인사 전용 직원은 근태에서 제외
 
     const employees = await prisma.employee.findMany({
       where: employeeFilter,

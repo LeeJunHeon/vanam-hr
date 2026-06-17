@@ -116,6 +116,7 @@ export async function GET(request: NextRequest) {
     const employees = await prisma.employee.findMany({
       where: {
         isActive: true,
+        isHrOnly: false,
         ...(departmentFilter !== null && { departmentId: departmentFilter }),
         ...(requestedEmployeeId !== null && { id: requestedEmployeeId }),
       },

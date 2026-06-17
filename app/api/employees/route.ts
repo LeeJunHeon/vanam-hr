@@ -39,6 +39,7 @@ export async function GET(request: NextRequest) {
       isAdmin && searchParams.get("includeInactive") === "true";
 
     const where: any = {};
+    where.isHrOnly = false; // 인사 전용 직원은 근태/직원관리에서 제외
     if (!includeInactive) where.isActive = true;
     if (search) {
       where.OR = [

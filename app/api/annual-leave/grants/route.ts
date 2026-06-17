@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
 
   const policy = await getPolicy();
   const employees = await prisma.employee.findMany({
-    where: { isActive: true },
+    where: { isActive: true, isHrOnly: false },
     select: { id: true, name: true, employeeNo: true, hiredAt: true,
               department: { select: { name: true } } },
     orderBy: { id: "asc" },

@@ -155,7 +155,21 @@ export async function DELETE(
   if (!Number.isInteger(employeeId)) {
     return NextResponse.json({ error: "employeeId가 올바르지 않습니다." }, { status: 400 });
   }
-  // 행이 없으면 조용히 성공 처리 (멱등)
+  const target = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: { id: true, isHrOnly: true },
+  });
+  if (!target) {
+    return NextResponse.json({ ok: true }); // 이미 없음(멱등)
+  }
+
+  if (target.isHrOnly) {
+    // 인사 전용 직원 → employees 행까지 완전 삭제 (personal_info는 FK Cascade로 함께 삭제됨)
+    await prisma.employee.delete({ where: { id: employeeId } });
+    return NextResponse.json({ ok: true, deletedEmployee: true });
+  }
+
+  // 일반 근태 직원 → 추가정보(personal_info)만 삭제 (기존 동작, 행 없어도 멱등)
   await prisma.employeePersonalInfo.deleteMany({ where: { employeeId } });
   return NextResponse.json({ ok: true });
 }

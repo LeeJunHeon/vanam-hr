@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Loader2, Search, Save, Trash2, Eye, EyeOff, IdCard } from "lucide-react";
+import { Loader2, Search, Save, Trash2, Eye, EyeOff, IdCard, Plus } from "lucide-react";
 
 interface EmpListItem {
   employeeId: number;
@@ -62,6 +62,10 @@ export default function PersonalInfoPage() {
   // 마스킹 토글 (주민번호/계좌 각각)
   const [showResident, setShowResident] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
+  // 인사 전용 직원 추가 모달
+  const [addOpen, setAddOpen] = useState(false);
+  const [addName, setAddName] = useState("");
+  const [adding, setAdding] = useState(false);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -133,9 +137,37 @@ export default function PersonalInfoPage() {
     }
   };
 
+  const handleAddPerson = async () => {
+    const nm = addName.trim();
+    if (!nm) { showToast("성명을 입력하세요."); return; }
+    setAdding(true);
+    try {
+      const res = await fetch("/api/personal-info/persons", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: nm }),
+      });
+      if (res.ok) {
+        const d = await res.json();
+        showToast("직원이 추가되었습니다.");
+        setAddOpen(false);
+        setAddName("");
+        await fetchList();
+        if (d.employeeId) selectEmployee(d.employeeId);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error ?? "추가 실패");
+      }
+    } catch {
+      showToast("네트워크 오류");
+    } finally {
+      setAdding(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (selectedId == null) return;
-    if (!confirm("이 직원의 개인정보를 삭제하시겠습니까?\n(기본 직원 정보는 유지되고, 추가 개인정보만 삭제됩니다.)")) return;
+    if (!confirm("이 직원의 정보를 삭제하시겠습니까?\n(인사정보 카드에서 추가한 인사 전용 직원이면 직원 전체가, 근태 직원이면 추가 정보만 삭제됩니다.)")) return;
     setSaving(true);
     try {
       const res = await fetch(`/api/personal-info/${selectedId}`, { method: "DELETE" });
@@ -226,7 +258,14 @@ export default function PersonalInfoPage() {
       <div className="flex flex-col lg:flex-row gap-4">
         {/* 좌측 — 직원 목록 */}
         <div className="lg:w-72 shrink-0 bg-white rounded-2xl border border-gray-100 overflow-hidden">
-          <div className="p-3 border-b border-gray-100">
+          <div className="p-3 border-b border-gray-100 space-y-2">
+            <button
+              onClick={() => { setAddName(""); setAddOpen(true); }}
+              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-semibold text-white bg-blue-600 rounded-xl hover:bg-blue-700"
+            >
+              <Plus size={15} />
+              직원 추가
+            </button>
             <div className="relative">
               <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
@@ -442,6 +481,44 @@ export default function PersonalInfoPage() {
           )}
         </div>
       </div>
+
+      {/* 직원 추가 모달 */}
+      {addOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-5">
+            <h3 className="text-base font-bold text-gray-900 mb-1">인사 전용 직원 추가</h3>
+            <p className="text-xs text-gray-500 mb-4">
+              근태 시스템에는 표시되지 않는 인사정보 카드 전용 직원입니다. 나머지 정보는 추가 후 상세에서 편집하세요.
+            </p>
+            <label className="block text-xs font-medium text-gray-600 mb-1">성명(한글)</label>
+            <input
+              type="text"
+              autoFocus
+              value={addName}
+              onChange={(e) => setAddName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleAddPerson(); }}
+              placeholder="예: 홍길동"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+            />
+            <div className="flex items-center justify-end gap-2 mt-5">
+              <button
+                onClick={() => { setAddOpen(false); setAddName(""); }}
+                className="px-3 py-2 text-sm font-medium text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200"
+              >
+                취소
+              </button>
+              <button
+                onClick={handleAddPerson}
+                disabled={adding}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-xl hover:bg-blue-700 disabled:opacity-50"
+              >
+                {adding ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}
+                추가
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
