@@ -137,7 +137,8 @@ export function canViewEmployee(
  * - LEE Donghak (employeeId=5) — 인사 담당 지정
  * 그 외 전부 false. (ADMIN 전체가 아니라 특정 인물만)
  */
-const PERSONAL_INFO_EMPLOYEE_IDS = [5]; // LEE Donghak
+// [임시 확인용] 1=LEE Junheon 추가. 확인 후 [5]로 되돌릴 것.
+const PERSONAL_INFO_EMPLOYEE_IDS = [5, 1]; // 5=LEE Donghak, 1=LEE Junheon(임시)
 
 export function canAccessPersonalInfo(session: Session | null | undefined): boolean {
   if (!session?.user) return false;
