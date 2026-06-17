@@ -84,6 +84,45 @@ export async function computeSystemUsedDays(
   return total;
 }
 
+// 특정 직원·연도의 연차 부여값 계산 (grant 행 우선, 없으면 정책 자동계산).
+export async function getGrantedDaysForEmployee(
+  employeeId: number,
+  year: number
+): Promise<number> {
+  const grant = await prisma.annualLeaveGrant.findUnique({
+    where: { employeeId_year: { employeeId, year } },
+  });
+  if (grant) return Number(grant.grantedDays);
+  // grant 없으면 자동계산
+  const emp = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: { hiredAt: true },
+  });
+  if (!emp?.hiredAt) return 0;
+  const policy = await getPolicy();
+  return computeGrantedDays(emp.hiredAt, new Date(), policy);
+}
+
+// 특정 직원·연도의 잔여 연차 계산.
+// 잔여 = 부여 - 도입전사용(initial_used_days) - 시스템사용.
+export async function getRemainingDays(
+  employeeId: number,
+  year: number
+): Promise<{ granted: number; initialUsed: number; systemUsed: number; remaining: number }> {
+  const grant = await prisma.annualLeaveGrant.findUnique({
+    where: { employeeId_year: { employeeId, year } },
+  });
+  const granted = await getGrantedDaysForEmployee(employeeId, year);
+  const initialUsed = grant ? Number(grant.initialUsedDays) : 0;
+  const systemUsed = await computeSystemUsedDays(employeeId, year);
+  return {
+    granted,
+    initialUsed,
+    systemUsed,
+    remaining: granted - initialUsed - systemUsed,
+  };
+}
+
 export async function getPolicy(): Promise<AnnualLeavePolicyValues> {
   const p = await prisma.annualLeavePolicy.findFirst();
   if (!p) {

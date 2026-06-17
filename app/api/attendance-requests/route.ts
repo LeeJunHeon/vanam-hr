@@ -7,6 +7,7 @@ import {
 } from "@/lib/auth-helpers";
 import { createNotifications } from "@/lib/notify";
 import { applyCorrectionToDaily } from "@/lib/attendance-correction";
+import { getRemainingDays } from "@/lib/annual-leave";
 
 function parseDate(s: string | null | undefined): Date | null {
   if (!s || typeof s !== "string") return null;
@@ -252,6 +253,35 @@ export async function POST(request: NextRequest) {
     }
 
     const reqType = categoryTypeToRequestType(category.type);
+
+    // ── 연차 잔여 검증 (annualLeaveDeduct > 0인 카테고리만) ──
+    // 연차/반차 등 차감 대상이면, 이번 신청량이 잔여를 넘는지 확인.
+    const deductPerDay = category.annualLeaveDeduct
+      ? Number(category.annualLeaveDeduct)
+      : 0;
+    if (deductPerDay > 0) {
+      // 신청 일수 (startDate~endDate 양끝 포함)
+      const reqDays =
+        Math.floor((endD.getTime() - startD.getTime()) / 86400000) + 1;
+      const requestAmount = reqDays * deductPerDay;
+      // 신청 시작 연도 기준 잔여 (역년)
+      const reqYear = startD.getUTCFullYear();
+      const { granted, remaining } = await getRemainingDays(
+        employeeIdNum,
+        reqYear
+      );
+      // 부여가 0인데 차감 신청이면(정책 미설정 등) 막지 않고 통과시킬지 결정:
+      // 여기서는 granted=0이면 "부여 정보 없음"으로 보고 통과(차단 안 함).
+      // 단, granted>0이면 잔여 검증.
+      if (granted > 0 && requestAmount > remaining) {
+        return NextResponse.json(
+          {
+            error: `연차 잔여가 부족합니다. (신청 ${requestAmount}일 / 잔여 ${remaining.toFixed(1)}일)`,
+          },
+          { status: 400 }
+        );
+      }
+    }
 
     // correction 타입은 정정 시각 필수
     let cciDate: Date | null = null;
