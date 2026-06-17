@@ -47,7 +47,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "employee-shifts", label: "직원별 시프트",  icon: Clock,       group: "관리자", adminOnly: true },
   { id: "approval-lines", label: "결재라인 설정",  icon: Users,       group: "관리자", adminOnly: true },
   { id: "system-settings", label: "시스템 설정",   icon: Settings,    group: "관리자", adminOnly: true },
-  { id: "personal-info",  label: "개인정보 카드",  icon: IdCard,      group: "관리자", personalInfoOnly: true },
+  { id: "personal-info",  label: "인사정보 카드",  icon: IdCard,      group: "관리자", personalInfoOnly: true },
 ];
 
 /**

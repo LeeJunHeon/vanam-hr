@@ -14,7 +14,7 @@ export async function GET() {
       name: true,
       department: { select: { name: true } },
       position: { select: { name: true } },
-      personalInfo: { select: { id: true } }, // 입력 여부만
+      personalInfo: { select: { id: true, hrName: true, hrPosition: true, hrDepartment: true } },
     },
     orderBy: { id: "asc" },
   });
@@ -23,9 +23,9 @@ export async function GET() {
     employees.map((e) => ({
       employeeId: e.id,
       employeeNo: e.employeeNo,
-      name: e.name,
-      departmentName: e.department?.name ?? null,
-      positionName: e.position?.name ?? null,
+      name: e.personalInfo?.hrName || e.name,
+      departmentName: e.personalInfo?.hrDepartment || e.department?.name || null,
+      positionName: e.personalInfo?.hrPosition || e.position?.name || null,
       hasInfo: !!e.personalInfo,
     }))
   );

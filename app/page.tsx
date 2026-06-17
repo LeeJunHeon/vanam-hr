@@ -38,7 +38,7 @@ const PAGE_TITLES: Record<PageId, string> = {
   "employee-shifts": "직원별 시프트",
   "approval-lines": "결재라인 설정",
   "system-settings": "시스템 설정",
-  "personal-info": "개인정보 카드",
+  "personal-info": "인사정보 카드",
 };
 
 export default function Home() {

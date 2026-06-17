@@ -681,6 +681,10 @@ model EmployeePersonalInfo {
   bankName            String?  @map("bank_name") @db.VarChar(100)
   accountNumber       String?  @map("account_number") @db.VarChar(50)
   accountHolder       String?  @map("account_holder") @db.VarChar(100)
+  hrName              String?  @map("hr_name") @db.VarChar(100)
+  hrPosition          String?  @map("hr_position") @db.VarChar(100)
+  hrDepartment        String?  @map("hr_department") @db.VarChar(100)
+  hrPhone             String?  @map("hr_phone") @db.VarChar(50)
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 

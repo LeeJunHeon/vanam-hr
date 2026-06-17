@@ -14,12 +14,17 @@ interface EmpListItem {
 
 interface PersonalDetail {
   employeeId: number;
+  employeeNo: string | null;
   name: string;
   positionName: string | null;
   departmentName: string | null;
   hiredAt: string | null;
   phone: string | null;
   email: string | null;
+  hrName: string | null;
+  hrPosition: string | null;
+  hrDepartment: string | null;
+  hrPhone: string | null;
   researcherNumber: string | null;
   university: string | null;
   finalDegree: string | null;
@@ -211,10 +216,10 @@ export default function PersonalInfoPage() {
       <div className="mb-4">
         <h1 className="text-xl sm:text-2xl font-bold text-gray-900 flex items-center gap-2">
           <IdCard size={22} className="text-blue-600" />
-          개인정보 카드
+          인사정보 카드
         </h1>
         <p className="text-sm text-gray-500 mt-0.5">
-          직원의 인사·학력·계좌 등 민감정보를 관리합니다 (제한된 권한자만 접근)
+          직원의 인사 기준 정보·학력·계좌 등을 관리합니다 (제한된 권한자만 접근)
         </p>
       </div>
 
@@ -275,9 +280,9 @@ export default function PersonalInfoPage() {
               {/* 헤더 + 액션 */}
               <div className="flex items-center justify-between border-b border-gray-100 pb-3">
                 <div>
-                  <h2 className="text-lg font-bold text-gray-900">{detail.name}</h2>
+                  <h2 className="text-lg font-bold text-gray-900">{detail.hrName || detail.name}</h2>
                   <p className="text-xs text-gray-500">
-                    {detail.positionName ?? "-"} · {detail.departmentName ?? "-"}
+                    {(detail.hrPosition || detail.positionName) ?? "-"} · {(detail.hrDepartment || detail.departmentName) ?? "-"}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -323,18 +328,22 @@ export default function PersonalInfoPage() {
               {!editing ? (
                 // ── 조회 모드 ──
                 <div className="space-y-5">
-                  {/* 기본 정보 (employees, 읽기전용) */}
+                  {/* 기본 정보 (인사 기준 우선 + employees 공유) */}
                   <section>
                     <h3 className="text-xs font-bold text-gray-700 mb-2">기본 정보</h3>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                      {field("이름", detail.name)}
-                      {field("회사 직책", detail.positionName)}
-                      {field("소속", detail.departmentName)}
-                      {field("입사일", detail.hiredAt)}
-                      {field("연락처", detail.phone)}
+                      {field("성명(한글)", detail.hrName)}
+                      {field("직급", detail.hrPosition)}
+                      {field("부서/소속", detail.hrDepartment)}
+                      {field("연락처", detail.hrPhone)}
+                      {field("사번", detail.employeeNo)}
                       {field("이메일", detail.email)}
+                      {field("입사일", detail.hiredAt)}
                       {field("국가연구자 번호", detail.researcherNumber)}
                     </div>
+                    <p className="text-[11px] text-gray-400 mt-2">
+                      근태 시스템 등록명: {detail.name} · {detail.positionName ?? "-"} · {detail.departmentName ?? "-"}
+                    </p>
                   </section>
 
                   {/* 학력 */}
@@ -372,8 +381,20 @@ export default function PersonalInfoPage() {
                 // ── 수정 모드 ──
                 <div className="space-y-5">
                   <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2 text-xs text-amber-800">
-                    기본 정보(이름/직책/소속/입사일/연락처/이메일)는 직원 관리에서 수정합니다. 여기서는 추가 정보만 편집합니다.
+                    사번·이메일·입사일은 직원 관리와 공유됩니다(여기서 수정하면 직원 관리에도 반영). 성명/직급/부서/연락처는 인사정보 카드 전용입니다.
                   </div>
+                  <section>
+                    <h3 className="text-xs font-bold text-gray-700 mb-2">기본 정보</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {inputField("성명(한글)", "hrName")}
+                      {inputField("직급", "hrPosition")}
+                      {inputField("부서/소속", "hrDepartment")}
+                      {inputField("연락처", "hrPhone")}
+                      {inputField("사번", "employeeNo")}
+                      {inputField("이메일", "email")}
+                      {inputField("입사일", "hiredAt", "예: 2024-01-15")}
+                    </div>
+                  </section>
                   <section>
                     <h3 className="text-xs font-bold text-gray-700 mb-2">국가연구자</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

@@ -19,6 +19,7 @@ export async function GET(
     where: { id: employeeId },
     select: {
       id: true,
+      employeeNo: true,
       name: true,
       email: true,
       phone: true,
@@ -35,14 +36,20 @@ export async function GET(
   const pi = emp.personalInfo;
   return NextResponse.json({
     employeeId: emp.id,
-    // 기본 정보 (employees)
+    // employees 공유 (양방향 수정 대상)
+    employeeNo: emp.employeeNo,
+    email: emp.email ?? null,
+    hiredAt: emp.hiredAt ? emp.hiredAt.toISOString().split("T")[0] : null,
+    // employees 참고용 (읽기 표시 — 근태 시스템 값)
     name: emp.name,
     positionName: emp.position?.name ?? null,
     departmentName: emp.department?.name ?? null,
-    hiredAt: emp.hiredAt ? emp.hiredAt.toISOString().split("T")[0] : null,
     phone: emp.phone ?? null,
-    email: emp.email ?? null,
-    // 추가 정보 (personal_info)
+    // 인사정보 카드 전용 (employee_personal_info)
+    hrName: pi?.hrName ?? null,
+    hrPosition: pi?.hrPosition ?? null,
+    hrDepartment: pi?.hrDepartment ?? null,
+    hrPhone: pi?.hrPhone ?? null,
     researcherNumber: pi?.researcherNumber ?? null,
     university: pi?.university ?? null,
     finalDegree: pi?.finalDegree ?? null,
@@ -83,7 +90,37 @@ export async function PUT(
     const t = v.trim();
     return t.length === 0 ? null : t;
   };
+
+  // ── employees 공유 업데이트 (사번/이메일/입사일) ──
+  const newNo = clean(body.employeeNo);
+  if (newNo) {
+    const dup = await prisma.employee.findUnique({ where: { employeeNo: newNo } });
+    if (dup && dup.id !== employeeId) {
+      return NextResponse.json({ error: `사번 "${newNo}"가 이미 다른 직원에게 있습니다.` }, { status: 409 });
+    }
+  }
+  let hiredAtVal: Date | null = null;
+  if (body.hiredAt) {
+    const s = String(body.hiredAt).trim();
+    if (s) {
+      const d = new Date(s + "T00:00:00.000Z");
+      if (isNaN(d.getTime())) {
+        return NextResponse.json({ error: "입사일 형식이 잘못되었습니다 (YYYY-MM-DD)." }, { status: 400 });
+      }
+      hiredAtVal = d;
+    }
+  }
+  await prisma.employee.update({
+    where: { id: employeeId },
+    data: { employeeNo: newNo, email: clean(body.email), hiredAt: hiredAtVal },
+  });
+
+  // ── personal_info upsert (인사 전용 hr 4개 + 기존 11개) ──
   const data = {
+    hrName: clean(body.hrName),
+    hrPosition: clean(body.hrPosition),
+    hrDepartment: clean(body.hrDepartment),
+    hrPhone: clean(body.hrPhone),
     researcherNumber: clean(body.researcherNumber),
     university: clean(body.university),
     finalDegree: clean(body.finalDegree),
