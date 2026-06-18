@@ -73,6 +73,16 @@ export async function GET(request: NextRequest) {
     const graceMinutes =
       policy && /^\d+$/.test(policy.value) ? parseInt(policy.value, 10) : 60;
 
+    // 정책: work_date_cutoff_hour (4 기본) — 야간근무가 자정을 넘긴 경우의 work_date 귀속 기준.
+    // aggregator(attendance_daily)와 동일 cutoff를 presence_raw "오늘" 판정에도 적용.
+    const cutoffPolicy = await prisma.policySetting.findUnique({
+      where: { key: "work_date_cutoff_hour" },
+    });
+    const cutoffHour =
+      cutoffPolicy && /^\d+$/.test(cutoffPolicy.value)
+        ? parseInt(cutoffPolicy.value, 10)
+        : 4;
+
     // 활성 직원 조회
     const employees = await prisma.employee.findMany({
       where: {
@@ -128,7 +138,11 @@ export async function GET(request: NextRequest) {
 
     const latestRows = await prisma.$queryRaw<LatestRow[]>`
       WITH today_kst AS (
-        SELECT (NOW() AT TIME ZONE 'Asia/Seoul')::date AS d
+        SELECT CASE
+          WHEN EXTRACT(HOUR FROM (NOW() AT TIME ZONE 'Asia/Seoul')) < ${cutoffHour}
+          THEN ((NOW() AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '1 day')::date
+          ELSE (NOW() AT TIME ZONE 'Asia/Seoul')::date
+        END AS d
       ),
       today_raw AS (
         SELECT
@@ -138,7 +152,11 @@ export async function GET(request: NextRequest) {
           location
         FROM hr.presence_raw
         WHERE employee_id = ANY(${employeeIds}::int[])
-          AND (checked_at AT TIME ZONE 'Asia/Seoul')::date = (SELECT d FROM today_kst)
+          AND CASE
+            WHEN EXTRACT(HOUR FROM (checked_at AT TIME ZONE 'Asia/Seoul')) < ${cutoffHour}
+            THEN ((checked_at AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '1 day')::date
+            ELSE (checked_at AT TIME ZONE 'Asia/Seoul')::date
+          END = (SELECT d FROM today_kst)
       ),
       latest_per_emp AS (
         SELECT DISTINCT ON (employee_id)
