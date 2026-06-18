@@ -82,8 +82,7 @@ export default function Home() {
   const showNotMapped = !meLoading && !isAdmin && !isMapped;
 
   // 개인정보 카드 접근 권한 — CEO 또는 LEE Donghak(employeeId=5)
-  // [임시 확인용] 1=LEE Junheon 추가. 확인 후 === 5로 되돌릴 것.
-  const canAccessPersonalInfo = userRole === "ceo" || me?.id === 5 || me?.id === 1;
+  const canAccessPersonalInfo = userRole === "ceo" || me?.id === 5;
 
   // admin이 아닌데 admin 전용 페이지로 가려고 하면 대시보드로 강제 이동
   useEffect(() => {
