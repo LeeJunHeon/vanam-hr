@@ -148,6 +148,9 @@ export default function AttendanceCalendarView({
     if (!data) return map;
 
     // 1) attendance_requests 우선 — 다일 일정도 일별로 펼침
+    // 같은 직원이 같은 날·같은 카테고리로 여러 건(중복 신청/동기화 중복) 있어도 1명으로 카운트.
+    // dedupe 키: `${ymd}|${code}` → 이미 센 employeeId Set
+    const reqCounted = new Map<string, Set<number>>();
     for (const r of data.requests) {
       const code = r.categoryCode;
       if (!code) continue;
@@ -156,9 +159,18 @@ export default function AttendanceCalendarView({
       const cursor = new Date(start);
       while (cursor <= end) {
         const ymd = cursor.toISOString().split("T")[0];
-        const m = map.get(ymd) ?? {};
-        m[code] = (m[code] ?? 0) + 1;
-        map.set(ymd, m);
+        const dedupeKey = `${ymd}|${code}`;
+        let seen = reqCounted.get(dedupeKey);
+        if (!seen) {
+          seen = new Set<number>();
+          reqCounted.set(dedupeKey, seen);
+        }
+        if (!seen.has(r.employeeId)) {
+          seen.add(r.employeeId);
+          const m = map.get(ymd) ?? {};
+          m[code] = (m[code] ?? 0) + 1;
+          map.set(ymd, m);
+        }
         cursor.setUTCDate(cursor.getUTCDate() + 1);
       }
     }
