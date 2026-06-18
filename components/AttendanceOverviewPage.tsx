@@ -688,18 +688,18 @@ export default function AttendanceOverviewPage() {
         </div>
 
         {/* 휴가 및 기타 (외근/출장이 아닌 모든 category) */}
-        <div className="bg-teal-50 rounded-2xl border border-teal-100 p-4 sm:p-5">
+        <div className="bg-rose-50 rounded-2xl border border-rose-100 p-4 sm:p-5">
           <div className="flex items-center gap-2 mb-2">
-            <Calendar size={16} className="text-teal-600" />
-            <p className="text-xs font-semibold text-teal-700 uppercase tracking-wide">
+            <Calendar size={16} className="text-rose-600" />
+            <p className="text-xs font-semibold text-rose-700 uppercase tracking-wide">
               휴가 및 기타
             </p>
           </div>
-          <p className="text-2xl sm:text-3xl font-bold text-teal-700 font-mono">
+          <p className="text-2xl sm:text-3xl font-bold text-rose-700 font-mono">
             {counts.leaveEtcCount}
-            <span className="text-base font-medium text-teal-600">명</span>
+            <span className="text-base font-medium text-rose-600">명</span>
           </p>
-          <p className="text-xs text-teal-600/80 mt-1">
+          <p className="text-xs text-rose-600/80 mt-1">
             진행중 {counts.leaveEtcWorking} · 완료 {counts.leaveEtcCompleted}
           </p>
         </div>
