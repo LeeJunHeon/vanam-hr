@@ -31,6 +31,11 @@ export default auth((req: NextRequest & { auth: any }) => {
     return NextResponse.next();
   }
 
+  // /api/internal/* 는 머신 토큰(HR_MCP_TOKEN)으로 자체 인증 — NextAuth 세션 불필요
+  if (pathname.startsWith("/api/internal")) {
+    return NextResponse.next();
+  }
+
   // /api/* 미인증 시 401 JSON
   if (pathname.startsWith("/api/")) {
     if (!req.auth?.user) {
