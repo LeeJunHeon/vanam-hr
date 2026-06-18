@@ -42,6 +42,21 @@ RUN_MINUTE = 0
 # 메인 루프 체크 주기 (초)
 CHECK_INTERVAL_SECONDS = 60
 
+# ============================================================================
+# 데이터 보관기간 정리(purge) 설정
+# ============================================================================
+PURGE_ENABLED = False   # 테스트 단계: 로그만 남기고 실제 삭제 안 함. 확신 들면 True로 바꿔 재배포.
+
+PRESENCE_RAW_RETENTION = '3 months'
+ATTENDANCE_DAILY_UNCONFIRMED_RETENTION = '1 year'
+ATTENDANCE_DAILY_CONFIRMED_RETENTION = '3 years'
+ATTENDANCE_REQUESTS_RETENTION = '3 years'
+MONTHLY_CONFIRMATIONS_RETENTION = '3 years'
+
+# 한 번에 이 건수보다 많이 지우려 하면 버그로 보고 중단
+PURGE_SAFETY_CAP_PRESENCE_RAW = 50000
+PURGE_SAFETY_CAP_DEFAULT = 10000
+
 
 def _is_valid_date(s) -> bool:
     """YYYY-MM-DD 형식 검증."""
@@ -746,6 +761,85 @@ class Syncer:
             f"(전체 종일 {grand_all_day} / 시간지정 {grand_timed} / 매칭 {grand_matched}) ==="
         )
 
+    def purge_old_data(self):
+        """데이터 보관기간 정리. PURGE_ENABLED=False면 대상 건수만 로그(dry-run).
+
+        5개 대상을 각각 독립된 try/except로 처리해 하나가 실패해도 나머지는 계속.
+        각 대상 공통 흐름:
+          1) count → (건수, 범위시작, 범위끝)
+          2) 대상 로그
+          3) 건수 0 → skip
+          4) dry-run(PURGE_ENABLED=False) → 삭제 생략
+          5) 안전상한 초과 → 삭제 중단(버그 의심)
+          6) 모두 통과 → 실제 delete 후 결과 로그
+        """
+        dry_run = not PURGE_ENABLED
+        self.logger.info(
+            f"=== [PURGE] 데이터 보관기간 정리 시작 (dry_run={dry_run}) ==="
+        )
+
+        def _process(label, count_fn, delete_fn, retention, cap):
+            try:
+                cnt, range_start, range_end = count_fn(retention)
+                cnt = cnt or 0
+                self.logger.info(
+                    f"[PURGE] {label}: 대상 {cnt}건, "
+                    f"범위 {range_start}~{range_end}, 보관기간 {retention}"
+                )
+                if cnt == 0:
+                    return
+                if not PURGE_ENABLED:
+                    self.logger.info(f"[PURGE] {label}: dry-run 모드라 실제 삭제 생략")
+                    return
+                if cnt > cap:
+                    self.logger.warning(
+                        f"[PURGE] {label}: 대상 {cnt}건이 안전상한 {cap} 초과 "
+                        f"→ 삭제 중단(버그 의심)"
+                    )
+                    return
+                deleted = delete_fn(retention)
+                self.logger.info(f"[PURGE] {label}: 실제 삭제 완료 {deleted}건")
+            except Exception as e:
+                self.logger.exception(f"[PURGE] {label}: 처리 실패 (계속 진행): {e}")
+
+        _process(
+            "presence_raw",
+            self.db.count_old_presence_raw,
+            self.db.delete_old_presence_raw,
+            PRESENCE_RAW_RETENTION,
+            PURGE_SAFETY_CAP_PRESENCE_RAW,
+        )
+        _process(
+            "attendance_daily(미확정)",
+            self.db.count_old_attendance_daily_unconfirmed,
+            self.db.delete_old_attendance_daily_unconfirmed,
+            ATTENDANCE_DAILY_UNCONFIRMED_RETENTION,
+            PURGE_SAFETY_CAP_DEFAULT,
+        )
+        _process(
+            "attendance_daily(확정)",
+            self.db.count_old_attendance_daily_confirmed,
+            self.db.delete_old_attendance_daily_confirmed,
+            ATTENDANCE_DAILY_CONFIRMED_RETENTION,
+            PURGE_SAFETY_CAP_DEFAULT,
+        )
+        _process(
+            "attendance_requests",
+            self.db.count_old_attendance_requests,
+            self.db.delete_old_attendance_requests,
+            ATTENDANCE_REQUESTS_RETENTION,
+            PURGE_SAFETY_CAP_DEFAULT,
+        )
+        _process(
+            "monthly_confirmations",
+            self.db.count_old_monthly_confirmations,
+            self.db.delete_old_monthly_confirmations,
+            MONTHLY_CONFIRMATIONS_RETENTION,
+            PURGE_SAFETY_CAP_DEFAULT,
+        )
+
+        self.logger.info("=== [PURGE] 데이터 보관기간 정리 종료 ===")
+
     def _should_run_now(self, now_kst: datetime) -> bool:
         """지금이 실행 시각(RUN_HOUR:RUN_MINUTE)이고, 오늘 아직 안 돌았으면 True."""
         if now_kst.hour != RUN_HOUR:
@@ -801,6 +895,10 @@ class Syncer:
                     self.sync_once()
                 except Exception as e:
                     self.logger.exception(f"sync_once 예외 (계속 진행): {e}")
+                try:
+                    self.purge_old_data()
+                except Exception as e:
+                    self.logger.exception(f"[PURGE] purge_old_data 예외 (계속 진행): {e}")
                 self.last_run_date = now_kst.date()
 
             if not self.running:

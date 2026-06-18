@@ -253,3 +253,168 @@ class Database:
                 """,
                 (holiday_date, name),
             )
+
+    # ========================================================================
+    # 데이터 보관기간 정리 (purge) — count/delete 쌍.
+    # retention은 호출자가 '3 months' 같은 문자열로 넘기고 retention::interval로 사용.
+    # 실제 삭제 여부는 syncer.purge_old_data()의 PURGE_ENABLED 가드가 결정한다.
+    # ========================================================================
+
+    def count_old_presence_raw(self, retention: str) -> tuple:
+        """보관기간 지난 presence_raw 대상: (건수, MIN(checked_at), MAX(checked_at))."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                SELECT COUNT(*), MIN(checked_at), MAX(checked_at)
+                FROM hr.presence_raw
+                WHERE checked_at < NOW() - %s::interval
+                """,
+                (retention,),
+            )
+            return c.fetchone()
+
+    def delete_old_presence_raw(self, retention: str) -> int:
+        """보관기간 지난 presence_raw 삭제 → 삭제 건수."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                DELETE FROM hr.presence_raw
+                WHERE checked_at < NOW() - %s::interval
+                """,
+                (retention,),
+            )
+            return c.rowcount
+
+    def count_old_attendance_daily_unconfirmed(self, retention: str) -> tuple:
+        """보관기간 지난 미확정 attendance_daily 대상:
+        (건수, MIN(work_date), MAX(work_date)). ★ is_confirmed = false 가드."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                SELECT COUNT(*), MIN(work_date), MAX(work_date)
+                FROM hr.attendance_daily
+                WHERE is_confirmed = false
+                  AND work_date < (CURRENT_DATE - %s::interval)::date
+                """,
+                (retention,),
+            )
+            return c.fetchone()
+
+    def delete_old_attendance_daily_unconfirmed(self, retention: str) -> int:
+        """보관기간 지난 미확정 attendance_daily 삭제 → 삭제 건수. ★ is_confirmed = false."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                DELETE FROM hr.attendance_daily
+                WHERE is_confirmed = false
+                  AND work_date < (CURRENT_DATE - %s::interval)::date
+                """,
+                (retention,),
+            )
+            return c.rowcount
+
+    def count_old_attendance_daily_confirmed(self, retention: str) -> tuple:
+        """보관기간 지난 확정 attendance_daily 대상:
+        (건수, MIN(work_date), MAX(work_date)). ★ is_confirmed = true 가드."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                SELECT COUNT(*), MIN(work_date), MAX(work_date)
+                FROM hr.attendance_daily
+                WHERE is_confirmed = true
+                  AND work_date < (CURRENT_DATE - %s::interval)::date
+                """,
+                (retention,),
+            )
+            return c.fetchone()
+
+    def delete_old_attendance_daily_confirmed(self, retention: str) -> int:
+        """보관기간 지난 확정 attendance_daily 삭제 → 삭제 건수. ★ is_confirmed = true."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                DELETE FROM hr.attendance_daily
+                WHERE is_confirmed = true
+                  AND work_date < (CURRENT_DATE - %s::interval)::date
+                """,
+                (retention,),
+            )
+            return c.rowcount
+
+    def count_old_attendance_requests(self, retention: str) -> tuple:
+        """보관기간 지난 attendance_requests 대상: (건수, MIN(end_date), MAX(end_date))."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                SELECT COUNT(*), MIN(end_date), MAX(end_date)
+                FROM hr.attendance_requests
+                WHERE end_date < (CURRENT_DATE - %s::interval)::date
+                """,
+                (retention,),
+            )
+            return c.fetchone()
+
+    def delete_old_attendance_requests(self, retention: str) -> int:
+        """보관기간 지난 attendance_requests 삭제 → 삭제 건수.
+
+        ★ 2단계 처리: trip_participant_dates의 링크를 먼저 NULL로 끊고(행은 보존),
+        그 다음 attendance_requests를 삭제한다. (FK 제약 위반 방지)
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            # 1단계: 출장 참여일자의 신청서 링크만 끊는다 (trip_participant_dates 행은 절대 삭제 X)
+            c.execute(
+                """
+                UPDATE hr.trip_participant_dates
+                SET attendance_request_id = NULL
+                WHERE attendance_request_id IN (
+                    SELECT id FROM hr.attendance_requests
+                    WHERE end_date < (CURRENT_DATE - %s::interval)::date
+                )
+                """,
+                (retention,),
+            )
+            # 2단계: 신청서 삭제
+            c.execute(
+                """
+                DELETE FROM hr.attendance_requests
+                WHERE end_date < (CURRENT_DATE - %s::interval)::date
+                """,
+                (retention,),
+            )
+            return c.rowcount
+
+    def count_old_monthly_confirmations(self, retention: str) -> tuple:
+        """보관기간 지난 monthly_confirmations 대상:
+        (건수, MIN(created_at), MAX(created_at))."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                SELECT COUNT(*), MIN(created_at), MAX(created_at)
+                FROM hr.monthly_confirmations
+                WHERE created_at < NOW() - %s::interval
+                """,
+                (retention,),
+            )
+            return c.fetchone()
+
+    def delete_old_monthly_confirmations(self, retention: str) -> int:
+        """보관기간 지난 monthly_confirmations 삭제 → 삭제 건수."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                DELETE FROM hr.monthly_confirmations
+                WHERE created_at < NOW() - %s::interval
+                """,
+                (retention,),
+            )
+            return c.rowcount
