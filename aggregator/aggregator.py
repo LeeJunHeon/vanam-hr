@@ -413,11 +413,26 @@ class Aggregator:
             # 정책1(timed_trip_exempt): 켜지면 시간형 출장/외근이 있는 날도 면제(normal).
             # 정책3(margin): 정책1이 꺼졌을 때만, 출장 시간 + 앞뒤 마진만큼 의무시간 차감.
             has_timed_trip = len(in_range_timed) > 0
+            # 외근/출장이 "지금 진행 중"(시작 <= now < 종료)이면 아직 하루가 안 끝난 것.
+            # 점심 끊김 등을 미리 퇴근/조퇴로 확정하지 않도록 판정을 보류한다.
+            # 외근이 끝난 뒤 재연결이 없으면 다음 사이클에 위 융합으로 check_out=외근종료가
+            # 되어 _determine_auto_status가 시프트종료와 비교해 정상/조퇴를 확정한다.
+            has_ongoing_timed_trip = any(
+                r["corrected_check_in"] is not None
+                and r["corrected_check_out"] is not None
+                and r["corrected_check_in"] <= now < r["corrected_check_out"]
+                for r in in_range_timed
+            )
             if has_allday:
                 auto_status = "normal"
             elif timed_trip_exempt and has_timed_trip:
                 # 정책1 ON + 시간형 출장/외근 존재 → 판정 면제
                 auto_status = "normal"
+            elif has_ongoing_timed_trip:
+                # 외근/출장 진행 중 → 퇴근/조퇴 확정 보류, '근무중(외근중)'으로 둔다.
+                # check_out도 비워 점심 끊김 시각이 퇴근으로 굳지 않게 한다.
+                check_out = None
+                auto_status = "working"
             elif check_in is not None and check_out is not None:
                 # 정책3용: 이 work_date 범위 내 시간형 일정 총 시간(분) 합산
                 trip_minutes = 0

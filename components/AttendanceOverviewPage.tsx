@@ -12,6 +12,7 @@ import {
   Check,
   Minus,
   Briefcase,
+  Calendar,
 } from "lucide-react";
 import EmployeeAttendanceDetailModal from "@/components/EmployeeAttendanceDetailModal";
 import AttendanceCalendarView from "@/components/AttendanceCalendarView";
@@ -528,6 +529,9 @@ export default function AttendanceOverviewPage() {
   // 섹션 1 요약 카운트 (progressStatus + autoStatus 기준)
   const counts = useMemo(() => {
     const rows = realtimeData?.rows ?? [];
+    // 외근 및 출장 카테고리 코드 (휴가/기타와 구분) — 기존 isVacationCategory와 동일한 상수 비교 방식
+    const isTrip = (code: string | null | undefined) =>
+      code === "EXTERNAL_WORK" || code === "BUSINESS_TRIP";
     return {
       working: rows.filter((r) => r.progressStatus === "working").length,
       away: rows.filter((r) => r.progressStatus === "away").length,
@@ -549,11 +553,46 @@ export default function AttendanceOverviewPage() {
           r.progressStatus === "category_working" ||
           r.progressStatus === "category_completed"
       ).length,
+      // 외근 및 출장 (EXTERNAL_WORK / BUSINESS_TRIP)
+      tripWorking: rows.filter(
+        (r) =>
+          r.progressStatus === "category_working" && isTrip(r.todayCategoryCode)
+      ).length,
+      tripCompleted: rows.filter(
+        (r) =>
+          r.progressStatus === "category_completed" &&
+          isTrip(r.todayCategoryCode)
+      ).length,
+      tripCount: rows.filter(
+        (r) =>
+          (r.progressStatus === "category_working" ||
+            r.progressStatus === "category_completed") &&
+          isTrip(r.todayCategoryCode)
+      ).length,
+      // 휴가 및 기타 (외근/출장이 아닌 모든 category)
+      leaveEtcWorking: rows.filter(
+        (r) =>
+          r.progressStatus === "category_working" &&
+          !isTrip(r.todayCategoryCode)
+      ).length,
+      leaveEtcCompleted: rows.filter(
+        (r) =>
+          r.progressStatus === "category_completed" &&
+          !isTrip(r.todayCategoryCode)
+      ).length,
+      leaveEtcCount: rows.filter(
+        (r) =>
+          (r.progressStatus === "category_working" ||
+            r.progressStatus === "category_completed") &&
+          !isTrip(r.todayCategoryCode)
+      ).length,
     };
   }, [realtimeData]);
 
   const workingTotal = counts.working + counts.away;
   const abnormalTotal = counts.late + counts.earlyLeave;
+  // 퇴근 완료 = 오늘 근태가 확정된 사람 전부(정상/지각/조퇴). 외근으로 마무리된 사람 포함.
+  const completedTotal = counts.normal + counts.late + counts.earlyLeave;
 
   const realtimeRows = realtimeData?.rows ?? [];
 
@@ -595,8 +634,8 @@ export default function AttendanceOverviewPage() {
         </div>
       </div>
 
-      {/* ───── 섹션 1: 지금 (요약 카드 5개) ───── */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
+      {/* ───── 섹션 1: 지금 (요약 카드 6개) ───── */}
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 sm:gap-4">
         {/* 근무 중 */}
         <div className="bg-emerald-50 rounded-2xl border border-emerald-100 p-4 sm:p-5">
           <div className="flex items-center gap-2 mb-2">
@@ -623,7 +662,7 @@ export default function AttendanceOverviewPage() {
             </p>
           </div>
           <p className="text-2xl sm:text-3xl font-bold text-blue-700 font-mono">
-            {counts.completed}
+            {completedTotal}
             <span className="text-base font-medium text-blue-600">명</span>
           </p>
           <p className="text-xs text-blue-600/80 mt-1">
@@ -631,20 +670,37 @@ export default function AttendanceOverviewPage() {
           </p>
         </div>
 
-        {/* 외근/휴가 (Phase 6-2B 신규) */}
+        {/* 외근 및 출장 (EXTERNAL_WORK / BUSINESS_TRIP) */}
         <div className="bg-purple-50 rounded-2xl border border-purple-100 p-4 sm:p-5">
           <div className="flex items-center gap-2 mb-2">
             <Briefcase size={16} className="text-purple-600" />
             <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide">
-              외근/휴가
+              외근 및 출장
             </p>
           </div>
           <p className="text-2xl sm:text-3xl font-bold text-purple-700 font-mono">
-            {counts.categoryCount}
+            {counts.tripCount}
             <span className="text-base font-medium text-purple-600">명</span>
           </p>
           <p className="text-xs text-purple-600/80 mt-1">
-            진행중 {counts.categoryWorking} · 완료 {counts.categoryCompleted}
+            진행중 {counts.tripWorking} · 완료 {counts.tripCompleted}
+          </p>
+        </div>
+
+        {/* 휴가 및 기타 (외근/출장이 아닌 모든 category) */}
+        <div className="bg-teal-50 rounded-2xl border border-teal-100 p-4 sm:p-5">
+          <div className="flex items-center gap-2 mb-2">
+            <Calendar size={16} className="text-teal-600" />
+            <p className="text-xs font-semibold text-teal-700 uppercase tracking-wide">
+              휴가 및 기타
+            </p>
+          </div>
+          <p className="text-2xl sm:text-3xl font-bold text-teal-700 font-mono">
+            {counts.leaveEtcCount}
+            <span className="text-base font-medium text-teal-600">명</span>
+          </p>
+          <p className="text-xs text-teal-600/80 mt-1">
+            진행중 {counts.leaveEtcWorking} · 완료 {counts.leaveEtcCompleted}
           </p>
         </div>
 
