@@ -542,10 +542,62 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // 두 종류를 합쳐 requestedAt 기준 최근순 정렬
+    // ── 내 출장 초대(수락/거부) ──────────────────────────────
+    // pending 탭이고 "본인 결재함"일 때만 노출. 초대 응답(accept/decline)은
+    // 본인만 가능하므로 CEO가 남의 결재함(approverId≠본인)을 볼 땐 제외한다.
+    // 결재(approval_status)와 무관하게 inviteStatus='invited'(아직 응답 안 한 초대)만 대상.
+    const myInvites =
+      status === "pending" &&
+      Number.isInteger(ownEmployeeId) &&
+      approverId === ownEmployeeId
+        ? await prisma.tripParticipant.findMany({
+            where: {
+              employeeId: ownEmployeeId as number,
+              inviteStatus: "invited",
+              tripEvent: { status: "active" },
+            },
+            include: {
+              tripEvent: {
+                select: {
+                  id: true,
+                  name: true,
+                  location: true,
+                  startDate: true,
+                  endDate: true,
+                },
+              },
+              dates: {
+                orderBy: [{ attendDate: "asc" }],
+                select: { attendDate: true, startTime: true, endTime: true },
+              },
+            },
+            orderBy: [{ createdAt: "asc" }],
+          })
+        : [];
+
+    const tripInviteItems = myInvites.map((p) => ({
+      kind: "trip_invite" as const,
+      participantId: p.id,
+      tripEventId: p.tripEventId,
+      eventName: p.tripEvent.name,
+      location: p.tripEvent.location,
+      eventStartDate: p.tripEvent.startDate.toISOString().split("T")[0],
+      eventEndDate: p.tripEvent.endDate.toISOString().split("T")[0],
+      inviteStatus: p.inviteStatus,
+      // 내 현재 참석 날짜(있으면). 시간은 "HH:MM"(없으면 종일=null).
+      dates: p.dates.map((d) => ({
+        attendDate: d.attendDate.toISOString().split("T")[0],
+        startTime: hhmmFromTime(d.startTime),
+        endTime: hhmmFromTime(d.endTime),
+      })),
+      // 정렬용 — 초대 생성 시각.
+      requestedAt: p.createdAt.toISOString(),
+    }));
+
+    // 세 종류(근태/출장결재/내 초대)를 합쳐 requestedAt 기준 최근순 정렬
     const merged: Array<
-      (typeof attendanceItems)[number] | TripItem
-    > = [...attendanceItems, ...tripItems];
+      (typeof attendanceItems)[number] | TripItem | (typeof tripInviteItems)[number]
+    > = [...attendanceItems, ...tripItems, ...tripInviteItems];
     merged.sort((a, b) => {
       const ta = new Date(a.requestedAt).getTime();
       const tb = new Date(b.requestedAt).getTime();

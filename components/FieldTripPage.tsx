@@ -1549,7 +1549,8 @@ function InviteModal({
 }
 
 // ── 날짜·시간 입력만 있는 모달 (join/accept/update_dates 공용) ──
-function DatesModal({
+// 결재함(ApprovalPage)의 출장 초대 "수락"에서도 동일 UI를 재사용하므로 export.
+export function DatesModal({
   title,
   submitLabel,
   event,
@@ -1631,7 +1632,7 @@ interface DatePayloadRow {
   startTime: string; // "" if blank
   endTime: string;
 }
-interface ApiDatePayload {
+export interface ApiDatePayload {
   attendDate: string;
   startTime?: string;
   endTime?: string;

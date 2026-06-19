@@ -18,9 +18,11 @@ import {
   MapPin,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
+import { DatesModal, type ApiDatePayload } from "@/components/FieldTripPage";
 
 // Phase 7 3단계: 결재함이 attendance + trip 두 종류를 모두 다룸.
 // 응답에 kind 필드가 추가됨 — 'attendance' or 'trip'.
+// + 출장 초대 응답: kind 'trip_invite' (수락/거부, approval과 무관).
 
 interface ApprovalItem {
   kind?: "attendance"; // 신규 — 미지정 시 attendance(레거시 호환)
@@ -114,9 +116,31 @@ interface TripApprovalItem {
   approvedAt: string | null;
 }
 
-type AnyApprovalItem = ApprovalItem | TripApprovalItem;
+// 출장 초대(수락/거부) 항목 — 결재(approve/reject)가 아니라 초대 응답(accept/decline).
+// inviteStatus='invited'인, 나에게 온 아직 응답 안 한 초대. pending 탭에서만 노출.
+interface TripInviteItem {
+  kind: "trip_invite";
+  participantId: number;
+  tripEventId: number;
+  eventName: string;
+  location: string | null;
+  eventStartDate: string;
+  eventEndDate: string;
+  inviteStatus: string;
+  dates: Array<{
+    attendDate: string;
+    startTime: string | null;
+    endTime: string | null;
+  }>;
+  requestedAt: string;
+}
+
+type AnyApprovalItem = ApprovalItem | TripApprovalItem | TripInviteItem;
 function isTrip(it: AnyApprovalItem): it is TripApprovalItem {
   return it.kind === "trip";
+}
+function isTripInvite(it: AnyApprovalItem): it is TripInviteItem {
+  return it.kind === "trip_invite";
 }
 
 interface CalendarSourceOption {
@@ -181,6 +205,10 @@ export default function ApprovalPage() {
   // Phase 7 3단계: 카테고리 필터(categoryCode 기준, "all" = 전체) + 출장 결재 팝업 대상
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [openTripItem, setOpenTripItem] = useState<TripApprovalItem | null>(null);
+  // 출장 초대 수락 시 날짜 선택이 필요한 경우 띄우는 모달 대상
+  const [openInviteAccept, setOpenInviteAccept] = useState<TripInviteItem | null>(
+    null
+  );
 
   const updateEditedCalendar = (
     reqId: number,
@@ -247,10 +275,12 @@ export default function ApprovalPage() {
     fetchApprovals();
   }, [fetchApprovals]);
 
-  // 카테고리 필터 적용
+  // 카테고리 필터 적용 — 출장 초대 항목은 카테고리가 없으므로 필터와 무관하게 항상 노출.
   const filteredApprovals = useMemo(() => {
     if (categoryFilter === "all") return approvals;
-    return approvals.filter((it) => it.categoryCode === categoryFilter);
+    return approvals.filter(
+      (it) => isTripInvite(it) || it.categoryCode === categoryFilter
+    );
   }, [approvals, categoryFilter]);
 
   // request_status lookup에 cancelled가 시드돼 있지 않을 수 있어 fallback 보강.
@@ -328,6 +358,63 @@ export default function ApprovalPage() {
         delete next[item.id];
         return next;
       });
+      fetchApprovals();
+    } catch {
+      alert("네트워크 오류");
+    }
+  };
+
+  // ── 출장 초대 수락/거부 (기존 PATCH /api/trip-participants/[pid] 재사용) ──
+  // accept: body.dates가 오면 그 값으로 교체, 없으면 기존 dates 유지(수락만).
+  const submitInviteAccept = async (
+    participantId: number,
+    dates: ApiDatePayload[] | undefined
+  ): Promise<string | null> => {
+    try {
+      const res = await fetch(`/api/trip-participants/${participantId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          dates ? { action: "accept", dates } : { action: "accept" }
+        ),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return data.error || `수락 실패 (${res.status})`;
+      showToast("✅ 초대를 수락했습니다");
+      setOpenInviteAccept(null);
+      fetchApprovals();
+      return null;
+    } catch {
+      return "네트워크 오류";
+    }
+  };
+
+  const handleInviteAccept = async (item: TripInviteItem) => {
+    // FieldTripPage와 동일 방식: 이미 참석 날짜가 있으면 그대로 수락,
+    // 없으면 동일한 날짜 선택 UI(DatesModal)를 띄운 뒤 수락.
+    if (item.dates.length === 0) {
+      setOpenInviteAccept(item);
+      return;
+    }
+    if (!confirm(`"${item.eventName}" 출장 초대를 수락하시겠습니까?`)) return;
+    const err = await submitInviteAccept(item.participantId, undefined);
+    if (err) alert(err);
+  };
+
+  const handleInviteDecline = async (item: TripInviteItem) => {
+    if (!confirm(`"${item.eventName}" 출장 초대를 거절하시겠습니까?`)) return;
+    try {
+      const res = await fetch(`/api/trip-participants/${item.participantId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "decline" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || "거절 실패");
+        return;
+      }
+      showToast("✅ 초대를 거절했습니다");
       fetchApprovals();
     } catch {
       alert("네트워크 오류");
@@ -449,7 +536,14 @@ export default function ApprovalPage() {
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {filteredApprovals.map((item) =>
-              isTrip(item) ? (
+              isTripInvite(item) ? (
+                <TripInviteCard
+                  key={`invite-${item.participantId}`}
+                  item={item}
+                  onAccept={() => handleInviteAccept(item)}
+                  onDecline={() => handleInviteDecline(item)}
+                />
+              ) : isTrip(item) ? (
                 <TripApprovalCard
                   key={`trip-${item.tripEventId}`}
                   item={item}
@@ -497,6 +591,34 @@ export default function ApprovalPage() {
             fetchApprovals();
           }}
           showToast={showToast}
+        />
+      )}
+
+      {/* 출장 초대 수락 — 날짜 선택(FieldTripPage의 DatesModal 재사용) */}
+      {openInviteAccept && (
+        <DatesModal
+          title="출장 초대 수락"
+          submitLabel="수락"
+          event={{
+            id: openInviteAccept.tripEventId,
+            name: openInviteAccept.eventName,
+            location: openInviteAccept.location,
+            description: null,
+            startDate: openInviteAccept.eventStartDate,
+            endDate: openInviteAccept.eventEndDate,
+            status: "active",
+            createdById: 0,
+            createdByName: null,
+            creatorIsAdmin: false,
+            createdAt: "",
+            participants: [],
+          }}
+          initialDates={[]}
+          requireAtLeastOne
+          onClose={() => setOpenInviteAccept(null)}
+          onSubmit={(dates) =>
+            submitInviteAccept(openInviteAccept.participantId, dates)
+          }
         />
       )}
 
@@ -919,6 +1041,8 @@ function CategoryFilterBar({
   const options = useMemo(() => {
     const seen = new Map<string, { code: string; name: string; color: string | null }>();
     for (const it of items) {
+      // 출장 초대 항목은 카테고리가 없으므로 필터 칩 후보에서 제외.
+      if (isTripInvite(it)) continue;
       if (!seen.has(it.categoryCode)) {
         seen.set(it.categoryCode, {
           code: it.categoryCode,
@@ -970,6 +1094,90 @@ function CategoryFilterBar({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+// ===================== 출장 초대 카드 (수락/거부) =====================
+function TripInviteCard({
+  item,
+  onAccept,
+  onDecline,
+}: {
+  item: TripInviteItem;
+  onAccept: () => void;
+  onDecline: () => void;
+}) {
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5 hover:border-blue-200 transition-colors">
+      {/* 제목 + 초대 배지 */}
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <h3 className="text-base font-bold text-gray-900 truncate inline-flex items-center gap-1.5">
+          <Plane size={14} className="text-blue-600 shrink-0" />
+          출장 초대 — {item.eventName}
+        </h3>
+        <span className="text-xs font-semibold px-2 py-0.5 rounded-full shrink-0 bg-blue-50 text-blue-700">
+          초대됨
+        </span>
+      </div>
+
+      {/* 기간 */}
+      <div className="flex items-center gap-2 text-sm text-gray-700 mb-1.5">
+        <Calendar size={13} className="text-gray-400" />
+        <span className="font-mono">
+          {item.eventStartDate}
+          {item.eventEndDate !== item.eventStartDate &&
+            ` ~ ${item.eventEndDate}`}
+        </span>
+      </div>
+
+      {/* 장소 */}
+      {item.location && (
+        <div className="flex items-center gap-2 text-sm text-gray-600 mb-1.5">
+          <MapPin size={13} className="text-gray-400" />
+          <span className="truncate">{item.location}</span>
+        </div>
+      )}
+
+      {/* 내 현재 참석 날짜(있으면) */}
+      {item.dates.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {item.dates.map((d, idx) => (
+            <span
+              key={`${d.attendDate}-${idx}`}
+              className="text-[11px] font-mono bg-gray-50 text-gray-700 px-1.5 py-0.5 rounded"
+            >
+              {d.attendDate}
+              {d.startTime || d.endTime
+                ? ` ${d.startTime ?? "-"}~${d.endTime ?? "-"}`
+                : " 종일"}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* 초대 시각 + 액션 버튼 */}
+      <div className="flex items-center justify-between pt-2 border-t border-gray-50 mt-2">
+        <p className="text-[10px] text-gray-400">
+          초대: {new Date(item.requestedAt).toLocaleString("ko-KR")}
+        </p>
+        <div className="flex gap-2">
+          <button
+            onClick={onAccept}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-white bg-emerald-500 rounded-lg hover:bg-emerald-600"
+          >
+            <CheckCircle size={13} />
+            수락
+          </button>
+          <button
+            onClick={onDecline}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-white bg-gray-400 rounded-lg hover:bg-gray-500"
+          >
+            <XCircle size={13} />
+            거부
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
