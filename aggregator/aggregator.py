@@ -326,6 +326,13 @@ class Aggregator:
         else:
             check_in, check_out = None, None
 
+        # WiFi 단독 산출값 보존(아래 cal_in 융합이 check_in을 변형하므로 라이브 변수 말고 이 값 사용).
+        wifi_check_in, wifi_check_out = check_in, check_out
+        # "현재 사무실 재실 중" 판별: WiFi로 출근이 잡혔고(왔었고) WiFi 기준 아직 퇴근 안 함
+        # (online 이거나, offline이어도 grace 이내) → 지금 재실 중으로 본다.
+        # 재실 중이면 외근이 끝났어도 외근 종료시각을 퇴근으로 굳히지 않는다(복귀 후 조퇴 오판 방지).
+        currently_present = (wifi_check_in is not None) and (wifi_check_out is None)
+
         # 2) 캘린더 자동 등록 보정 확인 (Phase 6-2B)
         active_requests = self.db.get_active_requests(emp_id, work_date)
 
@@ -383,7 +390,10 @@ class Aggregator:
                     if check_in is not None
                     else min(cal_in_candidates)
                 )
-            if cal_out_candidates:
+            # 재실 중(currently_present)이면 외근 종료를 퇴근으로 융합하지 않는다.
+            # → check_out은 WiFi값(None) 그대로 유지되어 '근무중'으로 남는다(복귀 후 조퇴 오판 방지).
+            # 복귀 안 하고 귀가(오프라인 유지·grace 경과)면 currently_present=False라 기존처럼 융합한다.
+            if cal_out_candidates and not currently_present:
                 check_out = (
                     max([check_out] + cal_out_candidates)
                     if check_out is not None
