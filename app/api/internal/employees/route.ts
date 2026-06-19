@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireHrReadAuth } from "@/lib/internal-auth";
+import { requireHrPublicAuth } from "@/lib/internal-auth";
 
 export const dynamic = "force-dynamic";
 
 // GET /api/internal/employees?search=... — 직원 검색(최소 필드만).
 // ⚠️ 개인정보(email/phone/userId/입퇴사일/note) 절대 미노출. 활성 직원만. 신원 불필요.
 export async function GET(request: Request) {
-  const auth = requireHrReadAuth(request);
+  const auth = requireHrPublicAuth(request);
   if (!auth.ok) return auth.response;
   try {
     const { searchParams } = new URL(request.url);

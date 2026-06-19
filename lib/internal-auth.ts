@@ -34,3 +34,22 @@ export function requireHrReadAuth(request: Request): HrReadAuthResult {
   }
   return { ok: true };
 }
+
+// 공개(비개인) HR 조회 인증 — 신원 불필요 데이터(직원목록·외근·근태항목) 전용.
+// 전환기: HR_MCP_TOKEN(기존 MCP) 또는 HR_PORTAL_TOKEN(포털) 둘 다 허용.
+// (MCP 도구 제거 후 HR_MCP_TOKEN 분기를 삭제해 포털 전용으로 좁힌다.)
+export function requireHrPublicAuth(request: Request): HrReadAuthResult {
+  const mcp = process.env.HR_MCP_TOKEN;
+  const portal = process.env.HR_PORTAL_TOKEN;
+  if (!mcp && !portal) {
+    return { ok: false, response: NextResponse.json({ error: "HR 토큰 미설정" }, { status: 500 }) };
+  }
+  const authHeader = request.headers.get("authorization") ?? "";
+  const m = authHeader.match(/^Bearer\s+(.+)$/i);
+  const token = m?.[1]?.trim() ?? "";
+  if (token) {
+    if (mcp && safeStringEqual(token, mcp)) return { ok: true };
+    if (portal && safeStringEqual(token, portal)) return { ok: true };
+  }
+  return { ok: false, response: NextResponse.json({ error: "인증 실패" }, { status: 401 }) };
+}

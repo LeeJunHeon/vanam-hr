@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireHrReadAuth } from "@/lib/internal-auth";
+import { requireHrPublicAuth } from "@/lib/internal-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +11,7 @@ function ymd(d: Date): string {
 // GET /api/internal/external-work — 전사 외근(EXTERNAL_WORK) 신청 목록(최소 필드, 사유 제외).
 // 앱에서도 전 로그인 사용자에게 공개되는 정보. 신원 불필요.
 export async function GET(request: Request) {
-  const auth = requireHrReadAuth(request);
+  const auth = requireHrPublicAuth(request);
   if (!auth.ok) return auth.response;
   try {
     const rows = await prisma.attendanceRequest.findMany({
