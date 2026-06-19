@@ -63,8 +63,8 @@ export async function GET(request: NextRequest) {
       rangeEnd = new Date(Date.UTC(y + 1, 0, 1));
     }
 
-    const [pendingRequests, dailies] = await Promise.all([
-      // 결재 대기 (기간 무관, 현재 pending 전체)
+    const [attendancePending, dailies, pendingTripEvents] = await Promise.all([
+      // 결재 대기 (기간 무관, 현재 pending 전체) — 근태/휴가 신청
       prisma.attendanceRequest.count({ where: { status: "pending" } }),
       // 기간 내 attendance_daily — employee/category include 후 메모리 분류
       prisma.attendanceDaily.findMany({
@@ -83,7 +83,16 @@ export async function GET(request: NextRequest) {
         },
         orderBy: { workDate: "desc" },
       }),
+      // 출장 결재 대기 — approval_status='pending' 참석자가 1명 이상인 active trip_event 단위.
+      // (결재함의 출장 카드 1장 = 이벤트 1건과 일치. 결재자 필터 없이 전사 기준.)
+      prisma.tripParticipant.groupBy({
+        by: ["tripEventId"],
+        where: { approvalStatus: "pending", tripEvent: { status: "active" } },
+      }),
     ]);
+
+    // 결재 대기 = 근태/휴가 신청(pending) + 출장 결재 대기 이벤트 수
+    const pendingRequests = attendancePending + pendingTripEvents.length;
 
     // 공통 필드 추출 헬퍼
     const base = (d: (typeof dailies)[number]) => ({
