@@ -19,7 +19,6 @@ services:
       # Phase 6-2E: 결재 승인 시 calendar-syncer 호출용
       CALENDAR_SYNCER_URL: ${CALENDAR_SYNCER_URL:-http://hr-calendar-syncer:8765}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
-      HR_MCP_TOKEN: ${HR_MCP_TOKEN}
       HR_PORTAL_TOKEN: ${HR_PORTAL_TOKEN}
       # 단계 C: 이메일 알림(nodemailer) — aggregator와 동일 .env 값 재사용
       SMTP_HOST: ${SMTP_HOST}
