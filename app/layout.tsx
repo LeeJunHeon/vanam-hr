@@ -1,15 +1,27 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import Providers from "@/components/Providers";
 
 export const metadata: Metadata = {
   title: "VanaM 근태 관리",
   description: "VanaM 근태 관리 시스템",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "VanaM",
+  },
   icons: {
     icon: "https://vanam.synology.me/favicon.ico",
     shortcut: "https://vanam.synology.me/favicon.ico",
-    apple: "https://vanam.synology.me/favicon.ico",
+    apple: "/apple-touch-icon.png",
   },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#61696C",
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({
