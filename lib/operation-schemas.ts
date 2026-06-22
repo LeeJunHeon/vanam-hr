@@ -58,4 +58,23 @@ export const OPERATION_SCHEMAS: OperationSchema[] = [
     cardTitle: "출장 생성 확인",
     cardShow: ["name", "location", "startDate", "endDate"],
   },
+  {
+    id: "hr_trip_invite",
+    label: "출장 참석자 초대",
+    description:
+      "이미 만들어진 그룹 출장에 다른 직원을 참석자로 초대한다. 초대받은 사람은 수락 시 참석 날짜를 직접 고른다(여기서는 날짜를 받지 않는다). 출장을 새로 '만드는' hr_trip_create와는 다르다.",
+    triggers: ["출장에 초대", "출장 초대", "참석자 추가", "출장에 넣어줘", "출장 멤버 추가"],
+    app: "hr",
+    fields: [
+      { name: "trip", label: "출장", type: "text", required: true,
+        validation: "초대 대상 출장. 출장명(또는 일부)으로 말한다. 예: '부산 고객사 방문'. 어느 출장인지 불명확하면 되묻는다." },
+      { name: "employee", label: "초대할 직원", type: "text", required: true,
+        validation: "초대할 직원의 등록된 이름(영문) 또는 사번. 한글 이름은 인식이 안 될 수 있으니 영문 이름/사번 권장. 불명확하면 되묻는다." },
+    ],
+    steps: [
+      { api: "POST /api/internal/invite-trip", body: ["trip", "employee"] },
+    ],
+    cardTitle: "출장 초대 확인",
+    cardShow: ["trip", "employee"],
+  },
 ];
