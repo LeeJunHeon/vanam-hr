@@ -4,13 +4,6 @@ import { requireSession } from "@/lib/auth-helpers";
 
 export const dynamic = "force-dynamic";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "https://vanam.synology.me",
-  "Access-Control-Allow-Methods": "GET, PATCH, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-  "Access-Control-Allow-Credentials": "true",
-};
-
 // GET /api/portal-notifications?limit=10
 //   포털 TopBar 종 버튼/드롭다운용. 본인 알림 최신순 + 안읽음 수.
 export async function GET(request: NextRequest) {
@@ -18,11 +11,11 @@ export async function GET(request: NextRequest) {
     const r = await requireSession();
     if (!r.ok) {
       // 미인증 — 빈 응답(포털에서 조용히 처리)
-      return NextResponse.json({ unreadCount: 0, items: [] }, { headers: corsHeaders });
+      return NextResponse.json({ unreadCount: 0, items: [] });
     }
     const employeeId = r.session.user.employeeId;
     if (!Number.isInteger(employeeId)) {
-      return NextResponse.json({ unreadCount: 0, items: [] }, { headers: corsHeaders });
+      return NextResponse.json({ unreadCount: 0, items: [] });
     }
     const empId = employeeId as number;
 
@@ -51,12 +44,11 @@ export async function GET(request: NextRequest) {
           isRead: n.isRead,
           createdAt: n.createdAt.toISOString(),
         })),
-      },
-      { headers: corsHeaders }
+      }
     );
   } catch (error) {
     console.error("GET /api/portal-notifications error:", error);
-    return NextResponse.json({ unreadCount: 0, items: [] }, { headers: corsHeaders });
+    return NextResponse.json({ unreadCount: 0, items: [] });
   }
 }
 
@@ -66,11 +58,11 @@ export async function PATCH(request: NextRequest) {
   try {
     const r = await requireSession();
     if (!r.ok) {
-      return NextResponse.json({ error: "로그인이 필요합니다." }, { status: 401, headers: corsHeaders });
+      return NextResponse.json({ error: "로그인이 필요합니다." }, { status: 401 });
     }
     const employeeId = r.session.user.employeeId;
     if (!Number.isInteger(employeeId)) {
-      return NextResponse.json({ error: "직원 매핑이 없습니다." }, { status: 403, headers: corsHeaders });
+      return NextResponse.json({ error: "직원 매핑이 없습니다." }, { status: 403 });
     }
     const empId = employeeId as number;
 
@@ -83,7 +75,7 @@ export async function PATCH(request: NextRequest) {
         where: { employeeId: empId, isRead: false },
         data: { isRead: true, readAt: now },
       });
-      return NextResponse.json({ updated: res.count }, { headers: corsHeaders });
+      return NextResponse.json({ updated: res.count });
     }
 
     if (Array.isArray(ids) && ids.length > 0) {
@@ -92,23 +84,18 @@ export async function PATCH(request: NextRequest) {
         .filter((n) => Number.isInteger(n) && n > 0)
         .map((n) => BigInt(n));
       if (numIds.length === 0) {
-        return NextResponse.json({ updated: 0 }, { headers: corsHeaders });
+        return NextResponse.json({ updated: 0 });
       }
       const res = await prisma.notification.updateMany({
         where: { id: { in: numIds }, employeeId: empId },
         data: { isRead: true, readAt: now },
       });
-      return NextResponse.json({ updated: res.count }, { headers: corsHeaders });
+      return NextResponse.json({ updated: res.count });
     }
 
-    return NextResponse.json({ error: "ids 또는 all 중 하나가 필요합니다." }, { status: 400, headers: corsHeaders });
+    return NextResponse.json({ error: "ids 또는 all 중 하나가 필요합니다." }, { status: 400 });
   } catch (error) {
     console.error("PATCH /api/portal-notifications error:", error);
-    return NextResponse.json({ error: "읽음 처리 실패" }, { status: 500, headers: corsHeaders });
+    return NextResponse.json({ error: "읽음 처리 실패" }, { status: 500 });
   }
-}
-
-// CORS preflight
-export async function OPTIONS() {
-  return new Response(null, { status: 204, headers: corsHeaders });
 }

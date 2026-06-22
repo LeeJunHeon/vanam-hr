@@ -4,13 +4,6 @@ import { requireSession } from "@/lib/auth-helpers";
 
 export const dynamic = "force-dynamic";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "https://vanam.synology.me",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-  "Access-Control-Allow-Credentials": "true",
-};
-
 type ProgressStatus =
   | "working"
   | "away"
@@ -27,8 +20,7 @@ function emptyResponse() {
       progressStatus: "unknown",
       statusLabel: "",
       week: { normal: 0, late: 0, earlyLeave: 0, absent: 0 },
-    },
-    { headers: corsHeaders }
+    }
   );
 }
 
@@ -284,16 +276,10 @@ export async function GET() {
     }
 
     return NextResponse.json(
-      { hasEmployee: true, progressStatus, statusLabel, week },
-      { headers: corsHeaders }
+      { hasEmployee: true, progressStatus, statusLabel, week }
     );
   } catch (error) {
     console.error("GET /api/portal-summary error:", error);
     return emptyResponse();
   }
-}
-
-// CORS preflight
-export async function OPTIONS() {
-  return new Response(null, { status: 204, headers: corsHeaders });
 }
