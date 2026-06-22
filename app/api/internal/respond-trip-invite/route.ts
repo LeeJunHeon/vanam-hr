@@ -2,14 +2,21 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireHrWriteAuth } from "@/lib/internal-write-auth";
 import { resolveHrIdentity } from "@/lib/internal-identity";
+import { parseDatesArray } from "@/lib/trip-helpers";
+import { resolveApprovers } from "@/lib/approval-resolver";
+import {
+  createTripParticipantAttendanceRequests,
+  rebuildTripEventCalendar,
+} from "@/lib/trip-calendar";
 import { createNotifications } from "@/lib/notify";
 
 export const dynamic = "force-dynamic";
 
-// POST /api/internal/respond-trip-invite — 챗 출장 초대 응답.
-// 본인(x-acting-user-email→resolveHrIdentity)이 초대된 활성 출장만 → 위조 불가.
-// 거부(decline)만 즉시 처리(웹 decline과 동일: inviteStatus="declined"+주최자 알림).
-// 수락은 참석 날짜 선택이 필요 → 포털 결재함으로 안내(실수 거부 방지 위해 action 명시).
+// POST /api/internal/respond-trip-invite — 챗 출장 초대 응답(수락/거부).
+// 본인(x-acting-user-email→resolveHrIdentity)의 초대 건만 → 위조 불가.
+// 거부: inviteStatus="declined" + 주최자 알림 (웹 decline 동일).
+// 수락: 참석 날짜 + 결재선 계산 + (확정 시)근태/캘린더 / (대기 시)결재 알림 (웹 trip-participants accept 동일).
+//       참석 날짜 미지정 시 출장 전체 기간. 시간 미지정 = 종일.
 export async function POST(request: Request) {
   const auth = requireHrWriteAuth(request);
   if (!auth.ok) return auth.response;
@@ -23,43 +30,44 @@ export async function POST(request: Request) {
   }
   const myId = identity.employeeId as number;
 
-  let body: { trip?: unknown; action?: unknown };
+  let body: { trip?: unknown; action?: unknown; attendDates?: unknown };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "bad_request" }, { status: 400 });
   }
   const tripText = typeof body.trip === "string" ? body.trip.trim() : "";
-  const action = typeof body.action === "string" ? body.action.trim() : "";
+  const actionRaw = typeof body.action === "string" ? body.action.trim() : "";
+  const attendDatesText = typeof body.attendDates === "string" ? body.attendDates.trim() : "";
 
-  // 수락은 참석 날짜 선택이 필요 → 결재함 안내(여기서 거부 처리하지 않음)
-  if (action === "수락" || action === "accept") {
-    return NextResponse.json(
-      { error: "출장 수락은 참석 날짜 선택이 필요합니다. 포털 결재함(출장)에서 수락해 주세요." },
-      { status: 400 }
-    );
-  }
-  if (action !== "거부" && action !== "decline") {
+  const action =
+    actionRaw === "수락" || actionRaw === "accept" ? "accept"
+    : actionRaw === "거부" || actionRaw === "decline" ? "decline" : "";
+  if (!action) {
     return NextResponse.json({ error: "응답은 수락/거부 중 하나여야 합니다." }, { status: 400 });
   }
   if (!tripText) {
     return NextResponse.json({ error: "어느 출장인지(trip) 알려주세요." }, { status: 400 });
   }
 
-  // 본인이 참여자로 있는 활성 출장만 대상(위조 불가)
+  // 본인이 참여자인 활성 출장만 + 이벤트 기간
   const myParts = await prisma.tripParticipant.findMany({
     where: { employeeId: myId, tripEvent: { status: "active" } },
     select: {
       id: true,
       inviteStatus: true,
-      tripEvent: { select: { id: true, name: true, createdById: true } },
+      approvalStatus: true,
+      approverIds: true,
+      tripEvent: {
+        select: { id: true, name: true, startDate: true, endDate: true, createdById: true },
+      },
     },
   });
   if (myParts.length === 0) {
     return NextResponse.json({ error: "초대받은 활성 출장이 없습니다." }, { status: 404 });
   }
 
-  // 출장 특정: id 또는 이름(정확→부분 일치)
+  // 출장 특정: id 또는 이름(정확→부분)
   const tripIdNum = Number(tripText);
   let matches = myParts.filter((p) =>
     Number.isInteger(tripIdNum) ? p.tripEvent.id === tripIdNum : p.tripEvent.name === tripText
@@ -72,39 +80,119 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: `'${tripText}' — 초대받은 출장에서 찾을 수 없습니다.` }, { status: 404 });
   }
   if (matches.length > 1) {
-    const names = matches.map((p) => p.tripEvent.name).join(", ");
-    return NextResponse.json({ error: `출장을 특정할 수 없습니다: ${names}` }, { status: 400 });
+    return NextResponse.json({ error: `출장을 특정할 수 없습니다: ${matches.map((p) => p.tripEvent.name).join(", ")}` }, { status: 400 });
+  }
+  const part = matches[0];
+  const ev = part.tripEvent;
+
+  // ───── 거부 ───── (웹 decline 동일)
+  if (action === "decline") {
+    const updated = await prisma.tripParticipant.update({
+      where: { id: part.id },
+      data: { inviteStatus: "declined" },
+    });
+    try {
+      const creatorId = ev.createdById;
+      if (Number.isInteger(creatorId) && creatorId !== myId) {
+        const me = await prisma.employee.findUnique({ where: { id: myId }, select: { name: true } });
+        await createNotifications({
+          employeeIds: [creatorId],
+          type: "trip_decline",
+          title: "출장 초대 거절",
+          body: `${me?.name ?? "직원"}님이 출장 초대를 거절했습니다.`,
+          linkPage: "field-trip",
+          linkRefId: ev.id,
+          sourceType: "trip",
+        });
+      }
+    } catch (e) {
+      console.error("[notify] 출장 거절 알림 생성 실패:", e);
+    }
+    return NextResponse.json({ ok: true, tripEventId: ev.id, inviteStatus: updated.inviteStatus }, { status: 200 });
   }
 
-  const part = matches[0];
+  // ───── 수락 ───── (웹 trip-participants accept 동일)
+  // 참석 날짜: 지정(콤마구분 YYYY-MM-DD) 없으면 출장 전체 기간
+  let rawDates: { attendDate: string }[];
+  if (attendDatesText) {
+    rawDates = attendDatesText.split(",").map((s) => s.trim()).filter(Boolean).map((d) => ({ attendDate: d }));
+  } else {
+    rawDates = [];
+    const start = new Date(ev.startDate);
+    const end = new Date(ev.endDate);
+    for (let t = start.getTime(); t <= end.getTime(); t += 86400000) {
+      rawDates.push({ attendDate: new Date(t).toISOString().split("T")[0] });
+    }
+  }
+  if (rawDates.length === 0) {
+    return NextResponse.json({ error: "참석 날짜를 1개 이상 지정하거나 비워서 전체 기간으로 하세요." }, { status: 400 });
+  }
+  const parsed = parseDatesArray(rawDates, ev.startDate, ev.endDate);
+  if (!parsed.ok) {
+    return NextResponse.json({ error: parsed.error }, { status: 400 });
+  }
+  const parsedDates = parsed.dates;
 
-  // 거부 처리 (웹 decline과 동일)
-  const updated = await prisma.tripParticipant.update({
-    where: { id: part.id },
-    data: { inviteStatus: "declined" },
+  // 결재선 계산: pending이고 approverIds 비어있으면 부서 결재선(웹 accept 방법 B)
+  let acceptApproverIds: number[] | null = null;
+  let acceptApprovalMode: "all" | "any" | null = null;
+  let acceptDeputyId: number | null = null;
+  if (part.approvalStatus === "pending" && (!Array.isArray(part.approverIds) || part.approverIds.length === 0)) {
+    const resolved = await resolveApprovers(prisma, identity.departmentId);
+    acceptApproverIds = resolved.approverIds;
+    acceptApprovalMode = resolved.approvalMode;
+    acceptDeputyId = resolved.deputyApproverId;
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.tripParticipantDate.deleteMany({ where: { tripParticipantId: part.id } });
+    await tx.tripParticipantDate.createMany({
+      data: parsedDates.map((d) => ({
+        tripParticipantId: part.id,
+        attendDate: d.attendDate,
+        startTime: d.startTime,
+        endTime: d.endTime,
+      })),
+    });
+    await tx.tripParticipant.update({
+      where: { id: part.id },
+      data: {
+        inviteStatus: "accepted",
+        ...(acceptApproverIds !== null
+          ? { approverIds: acceptApproverIds, approvalMode: acceptApprovalMode ?? "all", deputyApproverId: acceptDeputyId }
+          : {}),
+      },
+    });
   });
 
-  // 주최자에게 거절 알림 (본인이 주최자면 생략) — 웹 decline과 동일
-  try {
-    const creatorId = part.tripEvent.createdById;
-    if (Number.isInteger(creatorId) && creatorId !== myId) {
+  // 후처리: 확정(not_required)→근태+캘린더 / 대기(pending)→결재 알림 (웹 accept 동일)
+  if (part.approvalStatus === "not_required") {
+    try {
+      await createTripParticipantAttendanceRequests(part.id);
+    } catch (e) {
+      console.error(`[respond-trip-invite accept] createTripParticipantAttendanceRequests(${part.id}) 실패:`, e);
+    }
+    try {
+      await rebuildTripEventCalendar(ev.id);
+    } catch (e) {
+      console.error(`[respond-trip-invite accept] rebuildTripEventCalendar(${ev.id}) 실패:`, e);
+    }
+  } else if (acceptApproverIds !== null && acceptApproverIds.length > 0) {
+    try {
       const me = await prisma.employee.findUnique({ where: { id: myId }, select: { name: true } });
       await createNotifications({
-        employeeIds: [creatorId],
-        type: "trip_decline",
-        title: "출장 초대 거절",
-        body: `${me?.name ?? "직원"}님이 출장 초대를 거절했습니다.`,
-        linkPage: "field-trip",
-        linkRefId: part.tripEvent.id,
+        employeeIds: acceptApproverIds,
+        type: "trip_request",
+        title: "새 출장 결재 요청",
+        body: `${me?.name ?? "직원"}님의 출장 참여 결재 요청`,
+        linkPage: "approval",
+        linkRefId: ev.id,
         sourceType: "trip",
       });
+    } catch (e) {
+      console.error("[notify] 출장 결재 요청 알림 생성 실패(accept):", e);
     }
-  } catch (e) {
-    console.error("[notify] 출장 거절 알림 생성 실패:", e);
   }
 
-  return NextResponse.json(
-    { ok: true, tripEventId: part.tripEvent.id, inviteStatus: updated.inviteStatus },
-    { status: 200 }
-  );
+  return NextResponse.json({ ok: true, tripEventId: ev.id, inviteStatus: "accepted" }, { status: 200 });
 }

@@ -127,20 +127,22 @@ export const OPERATION_SCHEMAS: OperationSchema[] = [
   {
     id: "hr_trip_respond",
     label: "출장 초대 응답",
-    description: "본인이 초대받은 출장 초대에 응답한다. 출장명으로 본인의 초대 건을 찾는다. 거부는 즉시 처리. 수락은 참석 날짜 선택이 필요해 포털 결재함에서 한다고 안내된다. 본인 명의로만.",
-    triggers: ["출장 초대", "출장 거절", "출장 거부", "출장 안 가", "출장 참여 안", "초대 거절", "출장 수락"],
+    description: "본인이 초대받은 출장 초대에 응답한다. 출장명으로 본인의 초대 건을 찾는다. 수락 시 참석 날짜를 지정할 수 있고(미지정이면 출장 전체 기간 참석), 거부도 가능. 본인 명의로만.",
+    triggers: ["출장 초대", "출장 거절", "출장 거부", "출장 안 가", "출장 참여", "초대 거절", "출장 수락", "출장 갈게", "출장 참석"],
     app: "hr",
     fields: [
       { name: "trip", label: "출장", type: "text", required: true,
         validation: "초대받은 출장명. 본인이 초대된 활성 출장 중에서 찾는다." },
       { name: "action", label: "응답", type: "enum", required: true, enumValues: ["수락", "거부"],
-        validation: "사용자가 거절/안 간다는 의미면 '거부', 참석/수락이면 '수락'." },
+        validation: "참석/수락이면 '수락', 거절/안 간다면 '거부'." },
+      { name: "attendDates", label: "참석 날짜", type: "text", required: false,
+        validation: "수락 시에만. 참석할 날짜를 YYYY-MM-DD로, 여러 날이면 콤마로 구분(예: 2026-06-03,2026-06-04). 비우면 출장 전체 기간 참석. 모두 출장 기간 내여야 한다." },
     ],
     steps: [
-      { api: "POST /api/internal/respond-trip-invite", body: ["trip", "action"] },
+      { api: "POST /api/internal/respond-trip-invite", body: ["trip", "action", "attendDates"] },
     ],
     cardTitle: "출장 초대 응답 확인",
-    cardShow: ["trip", "action"],
+    cardShow: ["trip", "action", "attendDates"],
   },
   {
     id: "hr_trip_approve",
