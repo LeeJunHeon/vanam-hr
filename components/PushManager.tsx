@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 
+const BP = process.env.NEXT_PUBLIC_BASE_PATH || "";
+
 type PushState =
   | "idle"
   | "unsupported"
@@ -47,7 +49,7 @@ export default function PushManager() {
     let cancelled = false;
     (async () => {
       try {
-        const reg = await navigator.serviceWorker.register("/sw.js");
+        const reg = await navigator.serviceWorker.register(`${BP}/sw.js`, { scope: `${BP}/` });
         const existing = await reg.pushManager.getSubscription();
         if (cancelled) return;
         if (Notification.permission === "granted" && existing) {
