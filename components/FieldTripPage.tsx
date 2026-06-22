@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import TimePicker from "@/components/TimePicker";
+import { buildMemoHeader, extractMemoHeader, extractMemoNotes, composeMemo } from "@/lib/calendar-memo";
 
 // Phase 7 2단계: 출장 관리 페이지 — 이벤트 + 참석자(초대/self-join/수락/거절/날짜수정/제거).
 // 결재 처리(approve/reject)와 캘린더/근태 반영은 3·4단계.
@@ -51,6 +52,7 @@ interface ExternalRow {
   departmentName: string | null;
   categoryName: string | null;
   categoryColor: string | null;
+  externalSource: string | null;
   startDate: string;
   endDate: string;
   correctedCheckIn: string | null;
@@ -563,6 +565,11 @@ function ExternalWorkCard({
           <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-orange-50 text-orange-600">
             외근
           </span>
+          {item.externalSource === "google_calendar" && (
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-sky-50 text-sky-600">
+              구글 캘린더
+            </span>
+          )}
           {item.reason && (
             <span className="text-xs text-gray-500 truncate">{item.reason}</span>
           )}
@@ -593,7 +600,7 @@ function CreateTripModal({
   const { current } = useCurrentEmployee();
   const [name, setName] = useState("");
   const [location, setLocation] = useState("");
-  const [description, setDescription] = useState("");
+  const [memoNotes, setMemoNotes] = useState("");
   // 등록할 캘린더 선택 (Field Trip / External Meeting). Vacation(휴가)은 제외.
   const selectableCalendars = calendarSources.filter(
     (cs) => cs.calendarName !== "VanaM_Vacation"
@@ -601,29 +608,15 @@ function CreateTripModal({
   const [calendarSourceId, setCalendarSourceId] = useState<number | null>(
     selectableCalendars[0]?.id ?? null
   );
-  // 메모를 사용자가 직접 손댔는지 추적 — 손대기 전까지는 자동 헤더로 채워둔다.
-  // (RequestPage 휴가/외근 autoDesc와 동일 형식)
-  const [descTouched, setDescTouched] = useState(false);
+  const memoHeader = buildMemoHeader({
+    name: current?.name,
+    dept: current?.departmentName,
+    categoryName: "출장 및 외근",
+  });
   const [startDate, setStartDate] = useState(todayYmd());
   const [endDate, setEndDate] = useState(todayYmd());
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
-  // 사용자가 메모를 수정하기 전까지 RequestPage 휴가/외근과 동일 형식으로 자동 채움.
-  // 이벤트명과 무관(생성자/카테고리는 고정) — current 로드 시점에 1회 채워지면 충분.
-  useEffect(() => {
-    if (descTouched) return;
-    const empName = current?.name ?? "-";
-    const deptSuffix = current?.departmentName
-      ? ` (${current.departmentName})`
-      : "";
-    const lines = [
-      "[VanaM HR 자동 등록]",
-      `신청자: ${empName}${deptSuffix}`,
-      "카테고리: 출장 및 외근",
-    ];
-    setDescription(lines.join("\n"));
-  }, [current, descTouched]);
 
   const canSubmit =
     name.trim().length > 0 &&
@@ -643,7 +636,7 @@ function CreateTripModal({
         body: JSON.stringify({
           name: name.trim(),
           location: location.trim() || undefined,
-          description: description.trim() || undefined,
+          description: composeMemo(memoHeader, memoNotes),
           startDate,
           endDate,
           calendarSourceId,
@@ -703,18 +696,18 @@ function CreateTripModal({
           />
         </Field>
         <Field label="메모(설명)">
+          <div className="px-3 py-2 text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-xl whitespace-pre-line select-none">
+            {memoHeader}
+          </div>
           <textarea
-            value={description}
-            onChange={(e) => {
-              setDescTouched(true);
-              setDescription(e.target.value);
-            }}
+            value={memoNotes}
+            onChange={(e) => setMemoNotes(e.target.value)}
             rows={3}
-            placeholder="구글 캘린더 일정 설명에 표시됩니다"
-            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 resize-none"
+            placeholder="추가로 남길 메모를 입력하세요 (선택)"
+            className="w-full mt-2 px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 resize-none"
           />
           <p className="text-[10px] text-gray-400 mt-1">
-            * 캘린더 일정 설명에 자동 안내 문구가 함께 표시됩니다.
+            * 위 기본 안내문은 수정할 수 없으며, 아래에 추가 메모만 입력됩니다.
           </p>
         </Field>
         <div className="grid grid-cols-2 gap-3">
@@ -778,7 +771,11 @@ function EditTripModal({
 }) {
   const [name, setName] = useState(event.name);
   const [location, setLocation] = useState(event.location ?? "");
-  const [description, setDescription] = useState(event.description ?? "");
+  const memoHeader = extractMemoHeader(
+    event.description,
+    buildMemoHeader({ name: event.createdByName, categoryName: "출장 및 외근" }),
+  );
+  const [memoNotes, setMemoNotes] = useState(extractMemoNotes(event.description));
   const [startDate, setStartDate] = useState(event.startDate);
   const [endDate, setEndDate] = useState(event.endDate);
   const [submitting, setSubmitting] = useState(false);
@@ -803,7 +800,7 @@ function EditTripModal({
           action: "update",
           name: name.trim(),
           location: location.trim() || undefined,
-          description: description.trim() || undefined,
+          description: composeMemo(memoHeader, memoNotes),
           startDate,
           endDate,
         }),
@@ -851,15 +848,18 @@ function EditTripModal({
           />
         </Field>
         <Field label="메모(설명)">
+          <div className="px-3 py-2 text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-xl whitespace-pre-line select-none">
+            {memoHeader}
+          </div>
           <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            value={memoNotes}
+            onChange={(e) => setMemoNotes(e.target.value)}
             rows={3}
-            placeholder="구글 캘린더 일정 설명에 표시됩니다"
-            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 resize-none"
+            placeholder="추가로 남길 메모를 입력하세요 (선택)"
+            className="w-full mt-2 px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-blue-400 resize-none"
           />
           <p className="text-[10px] text-gray-400 mt-1">
-            * 캘린더 일정 설명에 그대로 반영됩니다.
+            * 위 기본 안내문은 수정할 수 없으며, 아래에 추가 메모만 입력됩니다.
           </p>
         </Field>
         <div className="grid grid-cols-2 gap-3">

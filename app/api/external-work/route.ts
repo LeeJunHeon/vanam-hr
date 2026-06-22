@@ -39,6 +39,7 @@ export async function GET() {
         departmentName: r.employee?.department?.name ?? null,
         categoryName: r.category?.name ?? null,
         categoryColor: r.category?.displayColor ?? null,
+        externalSource: r.externalSource,
         startDate: ymd(r.startDate),
         endDate: ymd(r.endDate),
         correctedCheckIn: r.correctedCheckIn

@@ -19,6 +19,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
+import { buildMemoHeader, extractMemoNotes, composeMemo } from "@/lib/calendar-memo";
 import { exportCSV } from "@/lib/csvUtils";
 import DatePicker from "@/components/DatePicker";
 import TimePicker from "@/components/TimePicker";
@@ -457,7 +458,10 @@ export default function RequestPage() {
         next.calendarSourceId = suggestedSourceId;
       }
       next.calendarEventTitle = autoTitle;
-      next.calendarEventDescription = autoDesc;
+      next.calendarEventDescription = composeMemo(
+        autoDesc,
+        extractMemoNotes(f.calendarEventDescription)
+      );
       // 시간: 반차면 기본값, 연차(시간불가)면 클리어, 그 외는 사용자 입력 유지
       if (halfDayDefault) {
         next.correctedCheckIn = halfDayDefault.in;
@@ -497,6 +501,16 @@ export default function RequestPage() {
     () =>
       categories.find((c) => c.id === Number(form.categoryId)) ?? null,
     [categories, form.categoryId]
+  );
+
+  const memoHeader = useMemo(
+    () =>
+      buildMemoHeader({
+        name: current?.name,
+        dept: current?.departmentName,
+        categoryName: selectedCategory?.name ?? "",
+      }),
+    [current, selectedCategory]
   );
 
   const openCreate = () => {
@@ -1229,15 +1243,22 @@ export default function RequestPage() {
                             <label className="block text-xs font-semibold text-blue-700 mb-1">
                               일정 설명
                             </label>
+                            <div className="px-3 py-2 mb-2 text-xs text-blue-700/80 bg-blue-50/60 border border-blue-200 rounded-xl whitespace-pre-line select-none font-mono">
+                              {memoHeader}
+                            </div>
                             <textarea
-                              value={form.calendarEventDescription}
+                              value={extractMemoNotes(form.calendarEventDescription)}
                               onChange={(e) =>
                                 setForm((f) => ({
                                   ...f,
-                                  calendarEventDescription: e.target.value,
+                                  calendarEventDescription: composeMemo(
+                                    memoHeader,
+                                    e.target.value
+                                  ),
                                 }))
                               }
-                              rows={5}
+                              rows={4}
+                              placeholder="추가로 남길 메모를 입력하세요 (선택)"
                               className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400 resize-none font-mono"
                             />
                           </div>
