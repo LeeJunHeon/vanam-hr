@@ -77,4 +77,25 @@ export const OPERATION_SCHEMAS: OperationSchema[] = [
     cardTitle: "출장 초대 확인",
     cardShow: ["trip", "employee"],
   },
+  {
+    id: "hr_approve",
+    label: "근태 결재(승인/반려)",
+    description:
+      "본인 결재함의 대기 중인 근태 신청을 승인하거나 반려한다. 가능하면 먼저 my_approvals 조회로 대기 목록을 보여준 뒤, 사용자가 지정한 신청자(또는 '전체')의 신청을 처리한다. 본인이 결재자로 지정된 건만 처리되며 권한은 서버가 강제한다.",
+    triggers: ["승인해줘", "반려해줘", "결재 승인", "결재 반려", "결재해줘", "이거 승인", "반려할게"],
+    app: "hr",
+    fields: [
+      { name: "target", label: "결재 대상", type: "text", required: true,
+        validation: "결재할 신청의 신청자 이름(영문 권장) 또는 '전체'(내 대기 건 모두 승인). 반려는 '전체' 불가 — 특정 신청자만. 불명확하면 되묻는다." },
+      { name: "action", label: "동작", type: "enum", required: true, enumValues: ["승인", "반려"],
+        validation: "사용자가 승인하려 하면 '승인', 반려하려 하면 '반려'." },
+      { name: "rejectReason", label: "반려 사유", type: "text", required: false,
+        validation: "반려일 때만 필수. 승인이면 비운다." },
+    ],
+    steps: [
+      { api: "POST /api/internal/approve-request", body: ["target", "action", "rejectReason"] },
+    ],
+    cardTitle: "결재 확인",
+    cardShow: ["target", "action", "rejectReason"],
+  },
 ];
