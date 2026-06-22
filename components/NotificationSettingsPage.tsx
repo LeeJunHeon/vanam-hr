@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Loader2, Bell } from "lucide-react";
 
-// 알림 종류 정의 (정책 키 prefix ↔ 라벨). DB의 16개 키와 1:1.
+// 알림 종류 정의 (정책 키 prefix ↔ 라벨). DB의 24개 키와 1:1 (앱/이메일/푸시).
 const NOTIFY_TYPES: { type: string; label: string; desc: string }[] = [
   { type: "approval_request", label: "새 결재 요청", desc: "휴가/근태 신청 시 결재자에게" },
   { type: "trip_request", label: "새 외근 결재 요청", desc: "외근 참여(결재 필요) 시 부서 결재자에게" },
@@ -116,13 +116,13 @@ export default function NotificationSettingsPage() {
           알림 설정
         </h1>
         <p className="text-sm text-gray-500 mt-0.5">
-          알림 종류별로 앱/이메일 수신 여부를 설정합니다 (전체 공통 적용)
+          알림 종류별로 앱/이메일/푸시 수신 여부를 설정합니다 (전체 공통 적용)
         </p>
       </div>
 
       {/* 안내 */}
       <div className="bg-blue-50 border border-blue-200 rounded-2xl px-4 py-3 text-sm text-blue-800">
-        <strong>안내:</strong> 이 설정은 회사 전체에 공통 적용됩니다. 이메일은 SMTP가 설정된 경우에만 발송됩니다.
+        <strong>안내:</strong> 이 설정은 회사 전체에 공통 적용됩니다. 이메일은 SMTP가 설정된 경우에만 발송되며, 푸시는 VanaM 포털 PWA에서 알림을 허용한 기기에만 전송됩니다.
       </div>
 
       {loading ? (
@@ -133,16 +133,17 @@ export default function NotificationSettingsPage() {
       ) : (
         <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
           {/* 표 헤더 */}
-          <div className="grid grid-cols-[1fr_auto_auto] gap-4 px-5 py-3 bg-gray-50 border-b border-gray-100 text-xs font-semibold text-gray-500 uppercase">
+          <div className="grid grid-cols-[1fr_auto_auto_auto] gap-4 px-5 py-3 bg-gray-50 border-b border-gray-100 text-xs font-semibold text-gray-500 uppercase">
             <div>알림 종류</div>
             <div className="w-16 text-center">앱</div>
             <div className="w-16 text-center">이메일</div>
+            <div className="w-16 text-center">푸시</div>
           </div>
           {/* 표 본문 */}
           {NOTIFY_TYPES.map((nt) => (
             <div
               key={nt.type}
-              className="grid grid-cols-[1fr_auto_auto] gap-4 px-5 py-4 border-b border-gray-50 last:border-0 items-center"
+              className="grid grid-cols-[1fr_auto_auto_auto] gap-4 px-5 py-4 border-b border-gray-50 last:border-0 items-center"
             >
               <div>
                 <div className="text-sm font-medium text-gray-900">{nt.label}</div>
@@ -153,6 +154,9 @@ export default function NotificationSettingsPage() {
               </div>
               <div className="w-16 flex justify-center">
                 <Switch keyName={`notify_${nt.type}_email`} />
+              </div>
+              <div className="w-16 flex justify-center">
+                <Switch keyName={`notify_${nt.type}_push`} />
               </div>
             </div>
           ))}
