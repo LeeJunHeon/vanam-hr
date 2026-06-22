@@ -14,7 +14,11 @@ const isLocal = !process.env.NEXTAUTH_URL ||
 const disableAuth = process.env.DISABLE_AUTH === "true";
 
 export default auth((req: NextRequest & { auth: any }) => {
-  const { pathname } = req.nextUrl;
+  const __basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
+  const pathname =
+    __basePath && req.nextUrl.pathname.startsWith(__basePath)
+      ? req.nextUrl.pathname.slice(__basePath.length) || "/"
+      : req.nextUrl.pathname;
 
   // ⚠️ 로컬 UI 확인 모드: 모든 요청 통과
   if (disableAuth) return NextResponse.next();
