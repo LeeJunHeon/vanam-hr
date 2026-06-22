@@ -47,6 +47,13 @@ export default auth((req: NextRequest & { auth: any }) => {
     return NextResponse.next();
   }
 
+  // PWA 정적 자산(manifest.json, sw.js, 아이콘 등)은 인증 없이 통과시킨다.
+  // 브라우저는 manifest/아이콘을 자격증명(쿠키) 없이 요청하므로, 인증 redirect가 끼면
+  // JSON/이미지 대신 로그인 HTML이 와서 PWA(manifest 파싱·아이콘)가 깨진다.
+  if (/\.(?:json|js|png|jpg|jpeg|gif|svg|ico|webmanifest)$/.test(pathname)) {
+    return NextResponse.next();
+  }
+
   // 페이지 라우트 미인증 시:
   //  - 로컬: 자체 /login
   //  - 운영: 포털 /login

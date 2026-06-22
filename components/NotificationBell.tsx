@@ -15,7 +15,7 @@ export interface NotificationItem {
 }
 
 interface NotificationBellProps {
-  // 알림 API 엔드포인트 전체 경로. 근태=" /api/notifications", 포털="https://hr.vanam.synology.me/api/portal-notifications"
+  // 알림 API 엔드포인트 전체 경로. 근태=" /api/notifications", 포털="/hr/api/portal-notifications"
   apiUrl: string;
   // cross-origin(포털)이면 true → fetch credentials include
   crossOrigin?: boolean;

@@ -1,6 +1,16 @@
 import webpush from "web-push";
 import { prisma } from "@/lib/prisma";
 
+// basePath(예: /hr) 보정: 푸시 클릭 목적지/아이콘이 통합 도메인에서 올바른 앱으로 향하도록.
+// (NEXT_PUBLIC_BASE_PATH 비어 있으면 무동작 — BasePathFetch 와 동일 규칙)
+const BP = process.env.NEXT_PUBLIC_BASE_PATH || "";
+function withBasePath(u: string): string {
+  if (BP && u.startsWith("/") && !u.startsWith("//") && u !== BP && !u.startsWith(BP + "/")) {
+    return BP + u;
+  }
+  return u;
+}
+
 let configured = false;
 function ensureConfigured() {
   if (configured) return;
@@ -48,9 +58,9 @@ export async function sendPushToEmployees(
   const data = JSON.stringify({
     title: payload.title,
     body: payload.body ?? "",
-    url: payload.url ?? "/",
+    url: withBasePath(payload.url ?? "/"),
     tag: payload.tag,
-    icon: payload.icon ?? "/icon-192.png",
+    icon: withBasePath(payload.icon ?? "/icon-192.png"),
   });
 
   const okEndpoints: string[] = [];
