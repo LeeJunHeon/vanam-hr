@@ -142,4 +142,26 @@ export const OPERATION_SCHEMAS: OperationSchema[] = [
     cardTitle: "출장 초대 응답 확인",
     cardShow: ["trip", "action"],
   },
+  {
+    id: "hr_trip_approve",
+    label: "출장 참여 결재",
+    description: "본인이 결재자로 지정된 출장 참여 신청을 승인/반려한다. 출장명 + 대상(신청자 이름 또는 '전체') + 승인/반려. 반려는 사유 필수. 결재 권한은 시스템이 신원으로 검증한다.",
+    triggers: ["출장 결재", "출장 승인", "출장 반려", "출장 참여 승인", "출장 참여 반려", "출장 신청 승인", "출장 신청 반려"],
+    app: "hr",
+    fields: [
+      { name: "trip", label: "출장", type: "text", required: true,
+        validation: "결재할 출장명. 활성 출장 중에서 찾는다." },
+      { name: "target", label: "대상", type: "text", required: true,
+        validation: "결재 대상 신청자 이름. 모두 처리하면 '전체'." },
+      { name: "action", label: "결재", type: "enum", required: true, enumValues: ["승인", "반려"],
+        validation: "승인 또는 반려." },
+      { name: "rejectReason", label: "반려 사유", type: "text", required: false,
+        validation: "반려일 때만 필수." },
+    ],
+    steps: [
+      { api: "POST /api/internal/approve-trip", body: ["trip", "target", "action", "rejectReason"] },
+    ],
+    cardTitle: "출장 참여 결재 확인",
+    cardShow: ["trip", "target", "action", "rejectReason"],
+  },
 ];
