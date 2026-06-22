@@ -35,6 +35,28 @@ export const OPERATION_SCHEMAS: OperationSchema[] = [
     cardShow: ["category", "startDate", "endDate", "reason"],
   },
   {
+    id: "hr_correction",
+    label: "근태정정",
+    description: "특정 날짜의 출근/퇴근 시각을 정정 신청한다. 출근 시각·퇴근 시각 중 하나 이상 필요. 정정은 하루만 가능. 결재선은 시스템이 자동 배정. 본인 명의로만.",
+    triggers: ["근태 정정", "출근 시간 정정", "퇴근 시간 정정", "출퇴근 정정", "시간 수정", "깜빡하고 안 찍었", "정정 신청"],
+    app: "hr",
+    fields: [
+      { name: "correctionCategory", label: "정정 항목", type: "enum", required: true,
+        validation: "표시된 정정 항목 중 하나를 그대로 넣는다. 항목이 하나뿐이면 그것을 넣는다." },
+      { name: "date", label: "정정 날짜", type: "date", required: true,
+        validation: "YYYY-MM-DD. '어제'·'오늘' 등은 [현재 시각] KST 기준으로 환산. 정정은 하루만." },
+      { name: "checkIn", label: "정정 출근 시각", type: "text", required: false,
+        validation: "HH:MM 24시간 형식(예: 09:00). 출근 시각 정정이 아니면 비운다." },
+      { name: "checkOut", label: "정정 퇴근 시각", type: "text", required: false,
+        validation: "HH:MM 24시간 형식(예: 18:00). 퇴근 시각 정정이 아니면 비운다. 출근/퇴근 중 최소 하나는 필요." },
+    ],
+    steps: [
+      { api: "POST /api/internal/correct-attendance", body: ["correctionCategory", "date", "checkIn", "checkOut"] },
+    ],
+    cardTitle: "근태정정 확인",
+    cardShow: ["correctionCategory", "date", "checkIn", "checkOut"],
+  },
+  {
     id: "hr_trip_create",
     label: "출장(이벤트) 생성",
     description:

@@ -10,23 +10,27 @@ export async function GET(request: Request) {
   const auth = requireHrPublicAuth(request);
   if (!auth.ok) return auth.response;
 
-  let categoryNames: string[] = [];
+  let leaveNames: string[] = [];
+  let correctionNames: string[] = [];
   try {
     const cats = await prisma.attendanceCategory.findMany({
       where: { isActive: true },
       orderBy: { sortOrder: "asc" },
-      select: { name: true },
+      select: { name: true, type: true },
     });
-    categoryNames = cats.map((c) => c.name);
+    leaveNames = cats.filter((c) => c.type !== "correction").map((c) => c.name);
+    correctionNames = cats.filter((c) => c.type === "correction").map((c) => c.name);
   } catch {
     // 실패 시 enumValues 없이 진행
   }
 
   const schemas = OPERATION_SCHEMAS.map((op) => ({
     ...op,
-    fields: op.fields.map((f) =>
-      f.name === "category" && categoryNames.length > 0 ? { ...f, enumValues: categoryNames } : f
-    ),
+    fields: op.fields.map((f) => {
+      if (f.name === "category" && leaveNames.length > 0) return { ...f, enumValues: leaveNames };
+      if (f.name === "correctionCategory" && correctionNames.length > 0) return { ...f, enumValues: correctionNames };
+      return f;
+    }),
   }));
 
   return NextResponse.json(schemas);
