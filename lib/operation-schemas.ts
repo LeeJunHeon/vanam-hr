@@ -120,4 +120,22 @@ export const OPERATION_SCHEMAS: OperationSchema[] = [
     cardTitle: "결재 확인",
     cardShow: ["target", "action", "rejectReason"],
   },
+  {
+    id: "hr_trip_respond",
+    label: "출장 초대 응답",
+    description: "본인이 초대받은 출장 초대에 응답한다. 출장명으로 본인의 초대 건을 찾는다. 거부는 즉시 처리. 수락은 참석 날짜 선택이 필요해 포털 결재함에서 한다고 안내된다. 본인 명의로만.",
+    triggers: ["출장 초대", "출장 거절", "출장 거부", "출장 안 가", "출장 참여 안", "초대 거절", "출장 수락"],
+    app: "hr",
+    fields: [
+      { name: "trip", label: "출장", type: "text", required: true,
+        validation: "초대받은 출장명. 본인이 초대된 활성 출장 중에서 찾는다." },
+      { name: "action", label: "응답", type: "enum", required: true, enumValues: ["수락", "거부"],
+        validation: "사용자가 거절/안 간다는 의미면 '거부', 참석/수락이면 '수락'." },
+    ],
+    steps: [
+      { api: "POST /api/internal/respond-trip-invite", body: ["trip", "action"] },
+    ],
+    cardTitle: "출장 초대 응답 확인",
+    cardShow: ["trip", "action"],
+  },
 ];
