@@ -1,7 +1,6 @@
 "use client";
 
 import { SessionProvider } from "next-auth/react";
-import PushManager from "@/components/PushManager";
 import BasePathFetch from "@/components/BasePathFetch";
 
 export default function Providers({ children }: { children: React.ReactNode }) {
@@ -10,7 +9,6 @@ export default function Providers({ children }: { children: React.ReactNode }) {
     <SessionProvider basePath={`${bp}/api/auth`}>
       <BasePathFetch />
       {children}
-      <PushManager />
     </SessionProvider>
   );
 }

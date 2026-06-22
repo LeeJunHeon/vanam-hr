@@ -14,19 +14,22 @@ interface CreateNotificationArgs {
 // 전역 정책(policy_settings)에서 이 type의 앱/이메일 on 여부를 읽는다.
 // 키 규칙: notify_{type}_app / notify_{type}_email. 값은 'true'/'false' 문자열.
 // 키가 없으면 기본값: 앱=true(수신), 이메일=false(미수신) — 안전.
-async function getChannelFlags(type: string): Promise<{ app: boolean; email: boolean }> {
+async function getChannelFlags(type: string): Promise<{ app: boolean; email: boolean; push: boolean }> {
   const appKey = `notify_${type}_app`;
   const emailKey = `notify_${type}_email`;
+  const pushKey = `notify_${type}_push`;
   const rows = await prisma.policySetting.findMany({
-    where: { key: { in: [appKey, emailKey] } },
+    where: { key: { in: [appKey, emailKey, pushKey] } },
     select: { key: true, value: true },
   });
   const map = new Map(rows.map((r) => [r.key, r.value]));
   const appRaw = map.get(appKey);
   const emailRaw = map.get(emailKey);
+  const pushRaw = map.get(pushKey);
   return {
     app: appRaw !== undefined ? appRaw === "true" : true,    // 기본 켜짐
     email: emailRaw !== undefined ? emailRaw === "true" : false, // 기본 꺼짐
+    push: pushRaw !== undefined ? pushRaw === "true" : true,  // 기본 켜짐
   };
 }
 
@@ -75,6 +78,39 @@ export async function createNotifications(args: CreateNotificationArgs): Promise
     }
   }
 
-  // 반환값: 앱 알림 대상 수(기존 호환). 이메일은 별개로 흘려보냄.
+  // ── 웹 푸시 (포털 경유) ──
+  // 구독·발송은 포털이 소유. HR은 포털 내부 API를 호출만 한다.
+  if (flags.push) {
+    try {
+      const portalUrl = process.env.PORTAL_API_URL;
+      const token = process.env.PUSH_INTERNAL_TOKEN;
+      if (portalUrl && token) {
+        const page = linkPage || "approval";
+        const url = `/hr/?page=${encodeURIComponent(page)}`;
+        const res = await fetch(`${portalUrl}/api/internal/push`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            employeeIds: uniqueIds,
+            title,
+            body: body ?? undefined,
+            url,
+            tag: type,
+          }),
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!res.ok) {
+          console.error("[notify] 포털 푸시 응답 오류:", res.status);
+        }
+      }
+    } catch (e) {
+      console.error("[notify] 푸시 발송 중 오류:", e);
+    }
+  }
+
+  // 반환값: 앱 알림 대상 수(기존 호환). 이메일/푸시는 별개로 흘려보냄.
   return flags.app ? uniqueIds.length : 0;
 }

@@ -206,7 +206,6 @@ model Employee {
   presenceRaws         PresenceRaw[]
   attendanceDailies    AttendanceDaily[]
   monthlyConfirmations MonthlyConfirmation[]
-  pushSubscriptions    PushSubscription[]
   notifications        Notification[]
   notificationPrefs    NotificationPref[]
 
@@ -480,24 +479,6 @@ model MonthlyConfirmation {
 }
 
 // Web Push 구독 (PWA)
-model PushSubscription {
-  id         Int       @id @default(autoincrement())
-  employeeId Int       @map("employee_id")
-  endpoint   String    @unique
-  p256dhKey  String    @map("p256dh_key")
-  authKey    String    @map("auth_key")
-  userAgent  String?   @map("user_agent")
-  isActive   Boolean   @default(true) @map("is_active")
-  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(6)
-  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-
-  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@index([employeeId, isActive], map: "idx_push_subs_emp")
-  @@map("push_subscriptions")
-  @@schema("hr")
-}
-
 // 공휴일 (Google Calendar 공휴일 캘린더 → DB 캐시)
 // 결근 면제 + UI 라벨 표시용. calendar-syncer가 매 사이클 갱신.
 model Holiday {
