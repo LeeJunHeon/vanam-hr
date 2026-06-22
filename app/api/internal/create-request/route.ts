@@ -20,7 +20,7 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: { category?: unknown; startDate?: unknown; endDate?: unknown; reason?: unknown };
+  let body: { category?: unknown; startDate?: unknown; endDate?: unknown; startTime?: unknown; endTime?: unknown; reason?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -31,6 +31,15 @@ export async function POST(request: Request) {
   const startDate = typeof body.startDate === "string" ? body.startDate : "";
   const endDate = typeof body.endDate === "string" ? body.endDate : "";
   const reason = typeof body.reason === "string" ? body.reason : null;
+  const startTime = typeof body.startTime === "string" ? body.startTime.trim() : "";
+  const endTime = typeof body.endTime === "string" ? body.endTime.trim() : "";
+  const hhmm = /^\d{2}:\d{2}$/;
+  if (startTime && !hhmm.test(startTime)) {
+    return NextResponse.json({ error: "시작 시각 형식이 잘못되었습니다 (HH:MM)." }, { status: 400 });
+  }
+  if (endTime && !hhmm.test(endTime)) {
+    return NextResponse.json({ error: "종료 시각 형식이 잘못되었습니다 (HH:MM)." }, { status: 400 });
+  }
 
   if (!categoryName) {
     return NextResponse.json({ error: "근태 항목(category)이 필요합니다." }, { status: 400 });
@@ -50,6 +59,8 @@ export async function POST(request: Request) {
     startDate,
     endDate,
     reason,
+    correctedCheckIn: startTime ? `${startDate}T${startTime}` : null,
+    correctedCheckOut: endTime ? `${endDate}T${endTime}` : null,
   });
 
   if (!result.ok) {
