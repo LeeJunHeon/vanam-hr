@@ -34,4 +34,28 @@ export const OPERATION_SCHEMAS: OperationSchema[] = [
     cardTitle: "근태 신청 확인",
     cardShow: ["category", "startDate", "endDate", "reason"],
   },
+  {
+    id: "hr_trip_create",
+    label: "출장(이벤트) 생성",
+    description:
+      "여러 명이 참여할 수 있는 그룹 출장 이벤트를 생성한다. 주최자는 본인이며, 참석자 초대는 생성 후 별도로 한다. 본인의 단순 연차·외근 '신청'(hr_leave_request)과는 다르다 — 이건 출장 일정 자체를 '만드는' 작업이다.",
+    triggers: ["출장 만들어", "출장 만들어줘", "출장 생성", "출장 일정 만들어", "출장 이벤트 만들어", "출장 잡아줘", "출장 등록해줘", "그룹 출장 만들어"],
+    app: "hr",
+    fields: [
+      { name: "name", label: "출장명", type: "text", required: true,
+        validation: "출장 제목. 예: '부산 고객사 방문'. 사용자가 안 밝히면 되묻는다." },
+      { name: "location", label: "장소", type: "text", required: false,
+        validation: "출장 장소. 사용자가 말하지 않으면 비워둔다(되묻지 않아도 됨)." },
+      { name: "startDate", label: "시작일", type: "date", required: true,
+        validation: "YYYY-MM-DD. '다음주 월요일' 등은 [현재 시각] KST 기준으로 환산한다." },
+      { name: "endDate", label: "종료일", type: "date", required: true,
+        validation: "YYYY-MM-DD. 하루짜리면 startDate와 같게 넣는다." },
+      { name: "description", label: "설명", type: "text", required: false },
+    ],
+    steps: [
+      { api: "POST /api/internal/create-trip", body: ["name", "location", "startDate", "endDate", "description"] },
+    ],
+    cardTitle: "출장 생성 확인",
+    cardShow: ["name", "location", "startDate", "endDate"],
+  },
 ];
