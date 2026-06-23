@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireHrPortalAuth } from "@/lib/internal-portal-auth";
 import { resolveHrIdentity } from "@/lib/internal-identity";
+import { resolvePeriodRange } from "@/lib/period-range";
 
 export const dynamic = "force-dynamic";
 
@@ -13,11 +14,8 @@ export async function GET(request: NextRequest) {
   if (!Number.isInteger(identity.employeeId)) {
     return NextResponse.json({ mapped: false, records: [] });
   }
-  const KST = 9 * 60 * 60 * 1000;
-  const now = new Date(Date.now() + KST);
-  const y = now.getUTCFullYear(), m = now.getUTCMonth();
-  const start = new Date(Date.UTC(y, m, 1));
-  const end = new Date(Date.UTC(y, m + 1, 1));
+  const sp = new URL(request.url).searchParams;
+  const { start, end, label } = resolvePeriodRange(sp.get("period"), sp.get("yearMonth"));
   const dailies = await prisma.attendanceDaily.findMany({
     where: { employeeId: identity.employeeId as number, workDate: { gte: start, lt: end } },
     orderBy: [{ workDate: "asc" }],
@@ -25,7 +23,7 @@ export async function GET(request: NextRequest) {
   });
   return NextResponse.json({
     mapped: true,
-    month: `${y}-${String(m + 1).padStart(2, "0")}`,
+    month: label,
     records: dailies.map((d) => ({
       workDate: d.workDate.toISOString().split("T")[0],
       checkIn: d.checkIn ? d.checkIn.toISOString() : null,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireHrPortalAuth } from "@/lib/internal-portal-auth";
 import { resolveHrIdentity } from "@/lib/internal-identity";
+import { resolvePeriodRange } from "@/lib/period-range";
 
 export const dynamic = "force-dynamic";
 
@@ -14,11 +15,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ mapped: false });
   }
   const empId = identity.employeeId as number;
-  const KST = 9 * 60 * 60 * 1000;
-  const now = new Date(Date.now() + KST);
-  const y = now.getUTCFullYear(), m = now.getUTCMonth();
-  const start = new Date(Date.UTC(y, m, 1));
-  const end = new Date(Date.UTC(y, m + 1, 1));
+  const sp = new URL(request.url).searchParams;
+  const { start, end, label } = resolvePeriodRange(sp.get("period"), sp.get("yearMonth"));
   const [attended, leaveRaw, pending, completed] = await Promise.all([
     prisma.attendanceDaily.count({ where: { employeeId: empId, workDate: { gte: start, lt: end }, checkIn: { not: null } } }),
     prisma.attendanceDaily.findMany({ where: { employeeId: empId, workDate: { gte: start, lt: end }, category: { annualLeaveDeduct: { not: null } } }, include: { category: { select: { annualLeaveDeduct: true } } } }),
@@ -28,7 +26,7 @@ export async function GET(request: NextRequest) {
   const leaveDays = leaveRaw.reduce((s, d) => s + Number(d.category?.annualLeaveDeduct ?? 0), 0);
   return NextResponse.json({
     mapped: true,
-    month: `${y}-${String(m + 1).padStart(2, "0")}`,
+    month: label,
     attended, leaveDays, pending, completed,
   });
 }

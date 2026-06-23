@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireHrPublicAuth } from "@/lib/internal-auth";
+import { resolvePeriodRange } from "@/lib/period-range";
 
 export const dynamic = "force-dynamic";
 
@@ -14,8 +15,16 @@ export async function GET(request: Request) {
   const auth = requireHrPublicAuth(request);
   if (!auth.ok) return auth.response;
   try {
+    const sp = new URL(request.url).searchParams;
+    const period = sp.get("period");
+    const yearMonth = sp.get("yearMonth");
+    const where: any = { category: { code: "EXTERNAL_WORK" } };
+    if (period || yearMonth) {
+      const { start, end } = resolvePeriodRange(period, yearMonth);
+      where.startDate = { gte: start, lt: end };
+    }
     const rows = await prisma.attendanceRequest.findMany({
-      where: { category: { code: "EXTERNAL_WORK" } },
+      where,
       orderBy: [{ startDate: "desc" }, { requestedAt: "desc" }],
       select: {
         id: true,

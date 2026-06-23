@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireHrPortalAuth } from "@/lib/internal-portal-auth";
 import { resolveHrIdentity } from "@/lib/internal-identity";
+import { resolvePeriodRange } from "@/lib/period-range";
 
 export const dynamic = "force-dynamic";
 
@@ -13,8 +14,16 @@ export async function GET(request: NextRequest) {
   if (!Number.isInteger(identity.employeeId)) {
     return NextResponse.json({ mapped: false, requests: [] });
   }
+  const sp = new URL(request.url).searchParams;
+  const period = sp.get("period");
+  const yearMonth = sp.get("yearMonth");
+  const where: any = { employeeId: identity.employeeId as number };
+  if (period || yearMonth) {
+    const { start, end } = resolvePeriodRange(period, yearMonth);
+    where.requestedAt = { gte: start, lt: end };
+  }
   const rows = await prisma.attendanceRequest.findMany({
-    where: { employeeId: identity.employeeId as number },
+    where,
     orderBy: [{ requestedAt: "desc" }],
     take: 30,
     include: { category: { select: { name: true } } },
