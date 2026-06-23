@@ -956,7 +956,7 @@ export async function PUT(request: NextRequest) {
           type: "approval_result",
           title: `결재 ${resultLabel}`,
           body: resultBody,
-          linkPage: "attendance",
+          linkPage: "request",
           linkRefId: idNum,
           sourceType: "attendance_request",
         });

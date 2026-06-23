@@ -135,7 +135,7 @@ async function processOne(
           type: "approval_result",
           title: "결재 승인",
           body: `${category.name} 신청이 승인되었습니다.`,
-          linkPage: "attendance",
+          linkPage: "request",
           linkRefId: t.id,
           sourceType: "attendance_request",
         });
@@ -163,7 +163,7 @@ async function processOne(
         type: "approval_result",
         title: "결재 반려",
         body,
-        linkPage: "attendance",
+        linkPage: "request",
         linkRefId: t.id,
         sourceType: "attendance_request",
       });
