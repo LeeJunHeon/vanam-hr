@@ -644,11 +644,7 @@ class Syncer:
                 # - 참석자: response_status='accepted'만 (declined/needsAction/tentative 제외)
                 creator = p["creator_email"]
                 target_emails: set[str] = set()
-                # 위임 대행 계정(CALENDAR_SUBJECT_EMAIL)이 creator인 경우 = HR이 위임으로 만든 일정.
-                # 이 계정은 실제 참여자가 아니라 시스템 대행이므로 근태 대상에서 제외한다.
-                # (vanam_source SKIP이 누락돼도 본인에게 잘못 반영되는 것을 막는 2차 방어)
-                subject_lower = (self.config.subject_email or "").lower().strip()
-                if creator and creator.lower().strip() != subject_lower:
+                if creator:
                     target_emails.add(creator.lower().strip())
                 accepted_count = 0
                 for a in p.get("attendees") or []:
