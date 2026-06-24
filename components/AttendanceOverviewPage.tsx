@@ -357,7 +357,12 @@ function renderActivityInfo(r: RealtimeRow): ReactNode {
   }
 
   // 캘린더 보정 우선 (Q-A)
-  if (r.todayIsOverridden && r.todayCategoryCode && r.todayCategoryName) {
+  if (
+    (r.progressStatus === "category_working" ||
+      r.progressStatus === "category_completed") &&
+    r.todayCategoryCode &&
+    r.todayCategoryName
+  ) {
     const icon = categoryIcon(r.todayCategoryCode);
     let timeInfo: string;
     if (!r.todayCheckIn && !r.todayCheckOut) {
