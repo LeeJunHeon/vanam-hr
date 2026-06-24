@@ -447,7 +447,11 @@ function renderActivityShort(r: RealtimeRow): string {
     return `${formatTime(r.latestCheckedAt)} 연결`;
   }
   // 캘린더 보정 우선
-  if (r.todayIsOverridden && r.todayCategoryName) {
+  if (
+    (r.progressStatus === "category_working" ||
+      r.progressStatus === "category_completed") &&
+    r.todayCategoryName
+  ) {
     if (!r.todayCheckIn && !r.todayCheckOut) return "종일";
     const start = r.todayCheckIn ? formatTime(r.todayCheckIn) : "";
     const end = r.todayCheckOut ? formatTime(r.todayCheckOut) : "(진행 중)";
