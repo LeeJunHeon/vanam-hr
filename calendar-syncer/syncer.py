@@ -642,7 +642,7 @@ class Syncer:
                 else:
                     cat_label = f"category={cat_code} (default)"
 
-                # 처리 대상 이메일 집합 — creator + accepted 참석자 (중복 제거)
+                # 처리 대상 이메일 집합 — accepted 참석자만 (없으면 creator)
                 # - creator: accepted 참석자가 한 명도 없을 때만 대상에 포함
                 # - 참석자: response_status='accepted'만 (declined/needsAction/tentative 제외)
                 creator = p["creator_email"]
