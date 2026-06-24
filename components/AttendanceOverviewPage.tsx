@@ -410,7 +410,7 @@ function renderActivityInfo(r: RealtimeRow): ReactNode {
     case "completed":
       return (
         <span className="inline-flex items-center gap-1 flex-wrap">
-          <Check size={12} className="text-blue-500 shrink-0" />
+          <WifiOff size={12} className="text-gray-400 shrink-0" />
           {formatTime(r.todayCheckIn)} ~{" "}
           {formatTime(r.todayCheckOut ?? r.latestCheckedAt)}
           {r.todayWorkMinutes != null
