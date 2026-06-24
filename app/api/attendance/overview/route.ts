@@ -255,6 +255,7 @@ export async function GET(request: NextRequest) {
     const todayEndUtc = new Date(todayStartUtc.getTime() + 24 * 60 * 60 * 1000);
 
     const firstOnlineMap = new Map<number, Date>();
+    const lastOnlineMap = new Map<number, Date>();
     const lastOfflineMap = new Map<number, Date>();
     if (employeeIds.length > 0) {
       const [firstOnline, lastOffline] = await Promise.all([
@@ -266,6 +267,7 @@ export async function GET(request: NextRequest) {
             checkedAt: { gte: todayStartUtc, lt: todayEndUtc },
           },
           _min: { checkedAt: true },
+          _max: { checkedAt: true },
         }),
         prisma.presenceRaw.groupBy({
           by: ["employeeId"],
@@ -281,11 +283,23 @@ export async function GET(request: NextRequest) {
         if (row.employeeId != null && row._min.checkedAt) {
           firstOnlineMap.set(row.employeeId, row._min.checkedAt);
         }
+        if (row.employeeId != null && row._max.checkedAt) {
+          lastOnlineMap.set(row.employeeId, row._max.checkedAt);
+        }
       }
       for (const row of lastOffline) {
         if (row.employeeId != null && row._max.checkedAt) {
           lastOfflineMap.set(row.employeeId, row._max.checkedAt);
         }
+      }
+    }
+
+    // 마지막 끊김이 마지막 연결보다 나중일 때만 "퇴근"으로 인정 (재연결 시 제외)
+    const wifiOutMap = new Map<number, Date>();
+    for (const [empId, lastOff] of lastOfflineMap) {
+      const lastOn = lastOnlineMap.get(empId);
+      if (!lastOn || lastOff > lastOn) {
+        wifiOutMap.set(empId, lastOff);
       }
     }
 
@@ -305,7 +319,7 @@ export async function GET(request: NextRequest) {
         checkIn: a.checkIn ? a.checkIn.toISOString() : null,
         checkOut: a.checkOut ? a.checkOut.toISOString() : null,
         wifiCheckIn: ymd === todayYmdKst ? (firstOnlineMap.get(a.employeeId)?.toISOString() ?? null) : null,
-        wifiCheckOut: ymd === todayYmdKst ? (lastOfflineMap.get(a.employeeId)?.toISOString() ?? null) : null,
+        wifiCheckOut: ymd === todayYmdKst ? (wifiOutMap.get(a.employeeId)?.toISOString() ?? null) : null,
         workMinutes: a.workMinutes ?? null,
         autoStatus: a.autoStatus ?? null,
         isOverridden: a.isOverridden,
