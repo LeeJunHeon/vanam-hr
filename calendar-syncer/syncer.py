@@ -617,7 +617,10 @@ class Syncer:
                 p = self.client.parse_event(event)
 
                 # 시스템 생성분은 스킵 (무한루프 방지)
-                if p["ext_props"].get("vanam_source"):
+                # - vanam_source(extendedProperties): 정상 경로로 만든 신규 이벤트
+                # - description 태그: vanam_source가 없는 과거 생성 이벤트까지 커버
+                _desc = event.get("description") or ""
+                if p["ext_props"].get("vanam_source") or "[VanaM HR 자동 등록]" in _desc:
                     self.logger.info(
                         f"  [{cal_name}] [SKIP-시스템생성] {p['summary']}"
                     )
