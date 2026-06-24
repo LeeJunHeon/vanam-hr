@@ -369,8 +369,8 @@ function renderActivityInfo(r: RealtimeRow): ReactNode {
     }
     return (
       <span className="inline-flex items-center gap-1 flex-wrap">
-        <WifiOff size={12} className="text-rose-600 shrink-0" />
-        <span className="text-rose-600 font-medium">연결 끊김</span>
+        <WifiOff size={12} className="text-gray-400 shrink-0" />
+        <span className="text-gray-400 font-medium">연결 끊김</span>
         <span className="text-gray-300">·</span>
         {icon && <span className="shrink-0">{icon}</span>}
         <span
