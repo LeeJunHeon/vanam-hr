@@ -643,18 +643,19 @@ class Syncer:
                     cat_label = f"category={cat_code} (default)"
 
                 # 처리 대상 이메일 집합 — creator + accepted 참석자 (중복 제거)
-                # - creator: 응답 상태 무관하게 항상 포함 (기존 동작)
+                # - creator: accepted 참석자가 한 명도 없을 때만 대상에 포함
                 # - 참석자: response_status='accepted'만 (declined/needsAction/tentative 제외)
                 creator = p["creator_email"]
                 target_emails: set[str] = set()
-                if creator:
-                    target_emails.add(creator.lower().strip())
                 accepted_count = 0
                 for a in p.get("attendees") or []:
                     email = a.get("email")
                     if a.get("response_status") == "accepted" and email:
                         target_emails.add(email.lower().strip())
                         accepted_count += 1
+                # 참석자(accepted)가 한 명도 없을 때만 생성자를 출장/외근 대상으로 처리
+                if accepted_count == 0 and creator:
+                    target_emails.add(creator.lower().strip())
 
                 # 카테고리 없으면 아무도 처리 안 함
                 if not cat_id:
