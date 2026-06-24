@@ -33,6 +33,8 @@ interface DetailRow {
   workDate: string;
   checkIn: string | null;
   checkOut: string | null;
+  wifiCheckIn: string | null;
+  wifiCheckOut: string | null;
   workMinutes: number | null;
   autoStatus: string | null;
   isOverridden: boolean;
@@ -257,6 +259,12 @@ export default function EmployeeAttendanceDetailModal({
     [rows]
   );
 
+  // "오늘" 행만 WiFi 첫연결/마지막끊김으로 표시(과거 행은 기존 융합값 유지)
+  const dispCheckIn = (r: DetailRow) =>
+    r.workDate === todayYmd() ? r.wifiCheckIn : r.checkIn;
+  const dispCheckOut = (r: DetailRow) =>
+    r.workDate === todayYmd() ? r.wifiCheckOut : r.checkOut;
+
   return (
     <div
       className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
@@ -392,10 +400,10 @@ export default function EmployeeAttendanceDetailModal({
                               {formatDateLabel(r.workDate)}
                             </td>
                             <td className="px-4 py-2.5 text-sm text-gray-900 font-mono">
-                              {formatTime(r.checkIn)}
+                              {formatTime(dispCheckIn(r))}
                             </td>
                             <td className="px-4 py-2.5 text-sm text-gray-900 font-mono">
-                              {formatTime(r.checkOut)}
+                              {formatTime(dispCheckOut(r))}
                             </td>
                             <td className="px-4 py-2.5 text-sm text-gray-900 font-mono text-right">
                               {formatWorkMinutes(r.workMinutes)}
@@ -447,7 +455,7 @@ export default function EmployeeAttendanceDetailModal({
                         </div>
                         <div className="flex items-center justify-between text-xs">
                           <span className="text-gray-900 font-mono">
-                            {formatTime(r.checkIn)} ~ {formatTime(r.checkOut)}
+                            {formatTime(dispCheckIn(r))} ~ {formatTime(dispCheckOut(r))}
                           </span>
                           <span className="text-gray-700 font-mono font-semibold">
                             {formatWorkMinutes(r.workMinutes)}

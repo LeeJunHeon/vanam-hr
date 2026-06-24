@@ -244,6 +244,51 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // ── 오늘(KST) WiFi 첫 연결 / 마지막 끊김 ──
+    const _nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const _ky = _nowKst.getUTCFullYear();
+    const _km = _nowKst.getUTCMonth();
+    const _kd = _nowKst.getUTCDate();
+    const _pad = (n: number) => String(n).padStart(2, "0");
+    const todayYmdKst = `${_ky}-${_pad(_km + 1)}-${_pad(_kd)}`;
+    const todayStartUtc = new Date(Date.UTC(_ky, _km, _kd) - 9 * 60 * 60 * 1000);
+    const todayEndUtc = new Date(todayStartUtc.getTime() + 24 * 60 * 60 * 1000);
+
+    const firstOnlineMap = new Map<number, Date>();
+    const lastOfflineMap = new Map<number, Date>();
+    if (employeeIds.length > 0) {
+      const [firstOnline, lastOffline] = await Promise.all([
+        prisma.presenceRaw.groupBy({
+          by: ["employeeId"],
+          where: {
+            employeeId: { in: employeeIds },
+            status: "online",
+            checkedAt: { gte: todayStartUtc, lt: todayEndUtc },
+          },
+          _min: { checkedAt: true },
+        }),
+        prisma.presenceRaw.groupBy({
+          by: ["employeeId"],
+          where: {
+            employeeId: { in: employeeIds },
+            status: "offline",
+            checkedAt: { gte: todayStartUtc, lt: todayEndUtc },
+          },
+          _max: { checkedAt: true },
+        }),
+      ]);
+      for (const row of firstOnline) {
+        if (row.employeeId != null && row._min.checkedAt) {
+          firstOnlineMap.set(row.employeeId, row._min.checkedAt);
+        }
+      }
+      for (const row of lastOffline) {
+        if (row.employeeId != null && row._max.checkedAt) {
+          lastOfflineMap.set(row.employeeId, row._max.checkedAt);
+        }
+      }
+    }
+
     // employees + attendance 조인
     const empMap = new Map(employees.map((e) => [e.id, e]));
     const rows = attendance.map((a) => {
@@ -259,6 +304,8 @@ export async function GET(request: NextRequest) {
         workDate: ymd,
         checkIn: a.checkIn ? a.checkIn.toISOString() : null,
         checkOut: a.checkOut ? a.checkOut.toISOString() : null,
+        wifiCheckIn: ymd === todayYmdKst ? (firstOnlineMap.get(a.employeeId)?.toISOString() ?? null) : null,
+        wifiCheckOut: ymd === todayYmdKst ? (lastOfflineMap.get(a.employeeId)?.toISOString() ?? null) : null,
         workMinutes: a.workMinutes ?? null,
         autoStatus: a.autoStatus ?? null,
         isOverridden: a.isOverridden,
