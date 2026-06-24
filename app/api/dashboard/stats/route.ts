@@ -10,6 +10,8 @@ export async function GET(request: NextRequest) {
   try {
     const _auth = await requireAdmin();
     if (!_auth.ok) return _auth.response;
+    const viewerIsCeo = _auth.session.user.role === "ceo";
+    const myEmployeeId = _auth.session.user.employeeId as number;
 
     const { searchParams } = new URL(request.url);
     const period = (searchParams.get("period") || "month") as
@@ -64,8 +66,18 @@ export async function GET(request: NextRequest) {
     }
 
     const [attendancePending, dailies, pendingTripEvents] = await Promise.all([
-      // 결재 대기 (기간 무관, 현재 pending 전체) — 근태/휴가 신청
-      prisma.attendanceRequest.count({ where: { status: "pending" } }),
+      // 결재 대기 — 결재함과 동일 기준 (CEO는 전사, 그 외는 본인이 결재자/대리결재자인 것만)
+      prisma.attendanceRequest.count({
+        where: viewerIsCeo
+          ? { status: "pending" }
+          : {
+              status: "pending",
+              OR: [
+                { approverIds: { has: myEmployeeId } },
+                { deputyApproverId: myEmployeeId },
+              ],
+            },
+      }),
       // 기간 내 attendance_daily — employee/category include 후 메모리 분류
       prisma.attendanceDaily.findMany({
         where: { workDate: { gte: rangeStart, lt: rangeEnd } },
