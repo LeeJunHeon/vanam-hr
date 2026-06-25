@@ -108,7 +108,7 @@ export async function POST(request: NextRequest) {
     if (!_auth.ok) return _auth.response;
 
     const body = await request.json();
-    const { departmentId, categoryId, approverIds, approvalMode, deputyApproverId, autoDelegateHours } = body;
+    const { departmentId, categoryIds, approverIds, approvalMode, deputyApproverId, autoDelegateHours } = body;
 
     if (departmentId === undefined || departmentId === null || departmentId === "") {
       return NextResponse.json({ error: "부서는 필수입니다." }, { status: 400 });
@@ -142,19 +142,29 @@ export async function POST(request: NextRequest) {
 
     const dept = await prisma.department.findUnique({ where: { id: deptIdNum } });
     if (!dept) return NextResponse.json({ error: `부서 id ${deptIdNum}를 찾을 수 없습니다.` }, { status: 400 });
-    // 카테고리(항목별 라인) — 선택. 비우면 부서 기본 라인(null).
-    let catIdNum: number | null = null;
-    let catName = "기본";
-    if (categoryId !== undefined && categoryId !== null && categoryId !== "") {
-      const v = Number(categoryId);
-      if (!Number.isInteger(v)) return NextResponse.json({ error: "categoryId는 정수여야 합니다." }, { status: 400 });
-      const cat = await prisma.attendanceCategory.findUnique({ where: { id: v } });
-      if (!cat) return NextResponse.json({ error: `근태 항목 id ${v}를 찾을 수 없습니다.` }, { status: 400 });
-      catIdNum = v;
-      catName = cat.name;
+    // 카테고리(항목별 라인) — 여러 개 선택 가능. 비우면 부서 기본 라인(null) 하나.
+    let catIdList: (number | null)[] = [null];
+    if (Array.isArray(categoryIds) && categoryIds.length > 0) {
+      const tmp: number[] = [];
+      for (const c of categoryIds) {
+        const v = Number(c);
+        if (!Number.isInteger(v)) return NextResponse.json({ error: "categoryId는 정수여야 합니다." }, { status: 400 });
+        const cat = await prisma.attendanceCategory.findUnique({ where: { id: v } });
+        if (!cat) return NextResponse.json({ error: `근태 항목 id ${v}를 찾을 수 없습니다.` }, { status: 400 });
+        tmp.push(v);
+      }
+      catIdList = Array.from(new Set(tmp));
     }
-    const existing = await prisma.approvalLine.findFirst({ where: { departmentId: deptIdNum, categoryId: catIdNum } });
-    if (existing) return NextResponse.json({ error: `부서 "${dept.name}"의 "${catName}" 결재선이 이미 존재합니다.` }, { status: 409 });
+    // 선택한 각 항목(또는 부서 기본)에 이미 결재선이 있으면 전체 취소
+    for (const cid of catIdList) {
+      const existing = await prisma.approvalLine.findFirst({ where: { departmentId: deptIdNum, categoryId: cid } });
+      if (existing) {
+        const nm = cid === null
+          ? "기본"
+          : (await prisma.attendanceCategory.findUnique({ where: { id: cid } }))?.name ?? String(cid);
+        return NextResponse.json({ error: `부서 "${dept.name}"의 "${nm}" 결재선이 이미 존재합니다.` }, { status: 409 });
+      }
+    }
 
     // 대리(선택)
     let deputyIdNum: number | null = null;
@@ -171,43 +181,25 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "autoDelegateHours는 1 이상 정수여야 합니다." }, { status: 400 });
     }
 
-    const line = await prisma.approvalLine.create({
-      data: {
-        departmentId: deptIdNum,
-        categoryId: catIdNum,
-        approverIds: ids,
-        approvalMode: mode,
-        primaryApproverId: ids[0], // NOT NULL 호환
-        deputyApproverId: deputyIdNum,
-        autoDelegateHours: hours,
-      },
-      include: {
-        department: { select: { id: true, code: true, name: true } },
-        deputyApprover: { select: { id: true, employeeNo: true, name: true } },
-      },
-    });
+    // 선택한 각 항목(또는 부서 기본)에 동일한 결재선을 트랜잭션으로 한꺼번에 생성
+    const createdLines = await prisma.$transaction(
+      catIdList.map((cid) =>
+        prisma.approvalLine.create({
+          data: {
+            departmentId: deptIdNum,
+            categoryId: cid,
+            approverIds: ids,
+            approvalMode: mode,
+            primaryApproverId: ids[0], // NOT NULL 호환
+            deputyApproverId: deputyIdNum,
+            autoDelegateHours: hours,
+          },
+        })
+      )
+    );
 
-    const nameMap = new Map(approverEmps.map((e) => [e.id, { employeeNo: e.employeeNo, name: e.name }]));
     return NextResponse.json(
-      {
-        id: line.id,
-        departmentId: line.departmentId,
-        departmentCode: line.department.code,
-        departmentName: line.department.name,
-        approverIds: line.approverIds,
-        approvalMode: line.approvalMode,
-        approvers: line.approverIds.map((id) => ({
-          id,
-          employeeNo: nameMap.get(id)?.employeeNo ?? null,
-          name: nameMap.get(id)?.name ?? null,
-        })),
-        deputyApproverId: line.deputyApproverId,
-        deputyApproverNo: line.deputyApprover?.employeeNo ?? null,
-        deputyApproverName: line.deputyApprover?.name ?? null,
-        autoDelegateHours: line.autoDelegateHours,
-        primaryApproverId: line.primaryApproverId,
-        primaryApproverName: nameMap.get(line.primaryApproverId ?? -1)?.name ?? null,
-      },
+      { count: createdLines.length, ids: createdLines.map((l) => l.id) },
       { status: 201 }
     );
   } catch (error) {

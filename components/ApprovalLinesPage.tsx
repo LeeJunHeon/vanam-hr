@@ -27,7 +27,7 @@ interface FallbackInfo { employeeId: number | null; employeeNo: string | null; n
 
 const EMPTY_FORM = {
   departmentId: "" as "" | string,
-  categoryId: "" as "" | string,
+  categoryIds: [] as number[],
   approverIds: [] as number[],
   approvalMode: "all" as "all" | "any",
   deputyApproverId: null as number | null,
@@ -131,7 +131,7 @@ export default function ApprovalLinesPage() {
     setEditTarget(l);
     setForm({
       departmentId: String(l.departmentId),
-      categoryId: l.categoryId != null ? String(l.categoryId) : "",
+      categoryIds: l.categoryId != null ? [l.categoryId] : [],
       approverIds: l.approverIds ?? [],
       approvalMode: l.approvalMode === "any" ? "any" : "all",
       deputyApproverId: l.deputyApproverId ?? null,
@@ -145,6 +145,13 @@ export default function ApprovalLinesPage() {
     setForm((f) => ({
       ...f,
       approverIds: f.approverIds.includes(id) ? f.approverIds.filter((x) => x !== id) : [...f.approverIds, id],
+    }));
+  };
+
+  const toggleCategory = (id: number) => {
+    setForm((f) => ({
+      ...f,
+      categoryIds: f.categoryIds.includes(id) ? f.categoryIds.filter((x) => x !== id) : [...f.categoryIds, id],
     }));
   };
 
@@ -164,7 +171,7 @@ export default function ApprovalLinesPage() {
       };
       if (!editTarget) {
         payload.departmentId = Number(form.departmentId);
-        payload.categoryId = form.categoryId === "" ? null : Number(form.categoryId);
+        payload.categoryIds = form.categoryIds; // 빈 배열이면 부서 기본 라인
       }
       const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const data = await res.json();
@@ -303,18 +310,31 @@ export default function ApprovalLinesPage() {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-blue-700 mb-1">적용 항목</label>
+            <label className="block text-xs font-semibold text-blue-700 mb-1">
+              적용 항목
+              <span className="ml-1 font-normal text-blue-500">({form.categoryIds.length === 0 ? "부서 기본" : `${form.categoryIds.length}개 선택됨`})</span>
+            </label>
             {editTarget ? (
               <input disabled value={editTarget.categoryName ?? "부서 기본 (전체)"}
                 className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-gray-100 text-gray-500 outline-none" />
             ) : (
-              <select value={form.categoryId} onChange={(e) => setForm((f) => ({ ...f, categoryId: e.target.value }))}
-                className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400">
-                <option value="">부서 기본 (전체)</option>
-                {categories.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
-              </select>
+              <div className="max-h-44 overflow-y-auto border border-blue-200 rounded-xl bg-white divide-y divide-blue-50">
+                {categories.length === 0 ? (
+                  <div className="px-3 py-4 text-sm text-gray-400 text-center">항목이 없습니다</div>
+                ) : (
+                  categories.map((c) => {
+                    const checked = form.categoryIds.includes(c.id);
+                    return (
+                      <label key={c.id} className={`flex items-center gap-2.5 px-3 py-2 text-sm cursor-pointer ${checked ? "bg-blue-50" : "hover:bg-gray-50"}`}>
+                        <input type="checkbox" checked={checked} onChange={() => toggleCategory(c.id)} className="accent-blue-600 w-4 h-4" />
+                        <span className="font-medium text-gray-800">{c.name}</span>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
             )}
-            <p className="text-[10px] text-gray-500 mt-1">특정 항목을 고르면 그 항목 신청에만 적용됩니다. '부서 기본'은 항목별 라인이 없을 때 적용됩니다.</p>
+            <p className="text-[10px] text-gray-500 mt-1">여러 항목을 선택하면 각 항목에 같은 결재선이 한꺼번에 생성됩니다. 아무것도 선택하지 않으면 '부서 기본' 라인이 만들어집니다. (수정 시 항목은 고정)</p>
           </div>
 
           <div>
