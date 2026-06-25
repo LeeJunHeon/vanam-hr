@@ -40,6 +40,7 @@ export async function GET(request: NextRequest) {
       orderBy: [{ department: { sortOrder: "asc" } }],
       include: {
         department: { select: { id: true, code: true, name: true } },
+        category: { select: { id: true, code: true, name: true } },
         primaryApprover: {
           select: { id: true, employeeNo: true, name: true },
         },
@@ -72,6 +73,9 @@ export async function GET(request: NextRequest) {
         departmentId: l.departmentId,
         departmentCode: l.department.code,
         departmentName: l.department.name,
+        categoryId: l.categoryId,
+        categoryCode: l.category?.code ?? null,
+        categoryName: l.category?.name ?? null,
         primaryApproverId: l.primaryApproverId,
         primaryApproverNo: l.primaryApprover.employeeNo,
         primaryApproverName: l.primaryApprover.name,
@@ -104,7 +108,7 @@ export async function POST(request: NextRequest) {
     if (!_auth.ok) return _auth.response;
 
     const body = await request.json();
-    const { departmentId, approverIds, approvalMode, deputyApproverId, autoDelegateHours } = body;
+    const { departmentId, categoryId, approverIds, approvalMode, deputyApproverId, autoDelegateHours } = body;
 
     if (departmentId === undefined || departmentId === null || departmentId === "") {
       return NextResponse.json({ error: "부서는 필수입니다." }, { status: 400 });
@@ -138,8 +142,19 @@ export async function POST(request: NextRequest) {
 
     const dept = await prisma.department.findUnique({ where: { id: deptIdNum } });
     if (!dept) return NextResponse.json({ error: `부서 id ${deptIdNum}를 찾을 수 없습니다.` }, { status: 400 });
-    const existing = await prisma.approvalLine.findFirst({ where: { departmentId: deptIdNum, categoryId: null } });
-    if (existing) return NextResponse.json({ error: `부서 "${dept.name}"에 이미 결재선이 존재합니다.` }, { status: 409 });
+    // 카테고리(항목별 라인) — 선택. 비우면 부서 기본 라인(null).
+    let catIdNum: number | null = null;
+    let catName = "기본";
+    if (categoryId !== undefined && categoryId !== null && categoryId !== "") {
+      const v = Number(categoryId);
+      if (!Number.isInteger(v)) return NextResponse.json({ error: "categoryId는 정수여야 합니다." }, { status: 400 });
+      const cat = await prisma.attendanceCategory.findUnique({ where: { id: v } });
+      if (!cat) return NextResponse.json({ error: `근태 항목 id ${v}를 찾을 수 없습니다.` }, { status: 400 });
+      catIdNum = v;
+      catName = cat.name;
+    }
+    const existing = await prisma.approvalLine.findFirst({ where: { departmentId: deptIdNum, categoryId: catIdNum } });
+    if (existing) return NextResponse.json({ error: `부서 "${dept.name}"의 "${catName}" 결재선이 이미 존재합니다.` }, { status: 409 });
 
     // 대리(선택)
     let deputyIdNum: number | null = null;
@@ -159,6 +174,7 @@ export async function POST(request: NextRequest) {
     const line = await prisma.approvalLine.create({
       data: {
         departmentId: deptIdNum,
+        categoryId: catIdNum,
         approverIds: ids,
         approvalMode: mode,
         primaryApproverId: ids[0], // NOT NULL 호환
