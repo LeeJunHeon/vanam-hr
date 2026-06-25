@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { createNotifications } from "@/lib/notify";
 import { applyCorrectionToDaily } from "@/lib/attendance-correction";
 import { getRemainingDays } from "@/lib/annual-leave";
+import { resolveApprovers } from "@/lib/approval-resolver";
 
 function parseDate(s: string | null | undefined): Date | null {
   if (!s || typeof s !== "string") return null;
@@ -178,27 +179,11 @@ export async function createAttendanceRequest(
   // 결재선을 타는 대상: CEO 아님 + (ADMIN이면서 외근)도 아님
   //  → EMPLOYEE 전부, 그리고 "외근이 아닌 ADMIN"이 여기에 해당.
   if (!isCeoRequester && !adminAutoApprove) {
-    let line = null;
-    if (emp.departmentId !== null) {
-      line = await prisma.approvalLine.findUnique({
-        where: { departmentId: emp.departmentId },
-      });
-    }
-    if (line && Array.isArray(line.approverIds) && line.approverIds.length > 0) {
-      approverIds = line.approverIds;
-      approvalMode = line.approvalMode === "any" ? "any" : "all";
-      deputyApproverId = line.deputyApproverId; // 호환 유지
-    } else {
-      // 부서 결재선이 없으면 fallback 결재자(policy_settings) 단독
-      const fb = await prisma.policySetting.findUnique({
-        where: { key: "fallback_approver_employee_id" },
-      });
-      const fbId = fb ? Number(fb.value) : NaN;
-      if (Number.isInteger(fbId)) {
-        approverIds = [fbId];
-        approvalMode = "any";
-      }
-    }
+    // 결재선 결정을 resolveApprovers로 통일: (부서+카테고리) 항목별 라인 → 부서 기본 → fallback
+    const resolved = await resolveApprovers(prisma, emp.departmentId, categoryIdNum);
+    approverIds = resolved.approverIds;
+    approvalMode = resolved.approvalMode;
+    deputyApproverId = resolved.deputyApproverId;
     primaryApproverId = approverIds.length > 0 ? approverIds[0] : null;
   }
 

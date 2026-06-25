@@ -138,7 +138,7 @@ export async function POST(request: NextRequest) {
 
     const dept = await prisma.department.findUnique({ where: { id: deptIdNum } });
     if (!dept) return NextResponse.json({ error: `부서 id ${deptIdNum}를 찾을 수 없습니다.` }, { status: 400 });
-    const existing = await prisma.approvalLine.findUnique({ where: { departmentId: deptIdNum } });
+    const existing = await prisma.approvalLine.findFirst({ where: { departmentId: deptIdNum, categoryId: null } });
     if (existing) return NextResponse.json({ error: `부서 "${dept.name}"에 이미 결재선이 존재합니다.` }, { status: 409 });
 
     // 대리(선택)

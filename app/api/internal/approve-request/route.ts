@@ -247,9 +247,9 @@ export async function POST(request: Request) {
   for (const r of candidates) {
     const emp = await prisma.employee.findUnique({
       where: { id: r.employeeId },
-      select: { department: { select: { approvalLine: { select: { autoDelegateHours: true } } } } },
+      select: { department: { select: { approvalLines: { where: { categoryId: null }, select: { autoDelegateHours: true } } } } },
     });
-    const autoDelegateHours = emp?.department?.approvalLine?.autoDelegateHours ?? 24;
+    const autoDelegateHours = emp?.department?.approvalLines?.[0]?.autoDelegateHours ?? 24;
 
     const res = await processOne(
       {

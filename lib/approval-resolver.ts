@@ -8,7 +8,8 @@ import type { Prisma } from "@/app/generated/prisma/client";
 // attendance-requests의 결재선 결정과 동일 규칙 — 출장/일반 결재가 공유.
 export async function resolveApprovers(
   db: Prisma.TransactionClient | typeof prisma,
-  departmentId: number | null
+  departmentId: number | null,
+  categoryId: number | null = null
 ): Promise<{
   approverIds: number[];
   approvalMode: "all" | "any";
@@ -20,9 +21,16 @@ export async function resolveApprovers(
 
   let line = null;
   if (departmentId !== null) {
-    line = await db.approvalLine.findUnique({
-      where: { departmentId },
+    // 1순위: (부서 + 카테고리) 항목별 라인
+    line = await db.approvalLine.findFirst({
+      where: { departmentId, categoryId },
     });
+    // 2순위: 항목별 라인이 없으면 부서 기본 라인(category_id NULL)
+    if (!line && categoryId !== null) {
+      line = await db.approvalLine.findFirst({
+        where: { departmentId, categoryId: null },
+      });
+    }
   }
   if (line && Array.isArray(line.approverIds) && line.approverIds.length > 0) {
     approverIds = line.approverIds;

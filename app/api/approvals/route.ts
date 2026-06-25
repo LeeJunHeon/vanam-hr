@@ -303,7 +303,8 @@ export async function GET(request: NextRequest) {
               select: {
                 id: true,
                 name: true,
-                approvalLine: {
+                approvalLines: {
+                  where: { categoryId: null },
                   select: { autoDelegateHours: true },
                 },
               },
@@ -348,7 +349,7 @@ export async function GET(request: NextRequest) {
       const isPrimary = r.primaryApproverId === approverId;
       const isDeputy = r.deputyApproverId === approverId;
       const autoDelegateHours =
-        r.employee.department?.approvalLine?.autoDelegateHours ?? 24;
+        r.employee.department?.approvalLines?.[0]?.autoDelegateHours ?? 24;
       const delegated = isDelegationElapsed(r.requestedAt, autoDelegateHours);
       const hoursLeft = hoursUntilDelegation(r.requestedAt, autoDelegateHours);
 
@@ -677,7 +678,7 @@ export async function PUT(request: NextRequest) {
             departmentId: true,
             department: {
               select: {
-                approvalLine: { select: { autoDelegateHours: true } },
+                approvalLines: { where: { categoryId: null }, select: { autoDelegateHours: true } },
               },
             },
           },
@@ -703,7 +704,7 @@ export async function PUT(request: NextRequest) {
 
     // 대리 위임 경과 판정 (autoDelegateHours = 신청자 부서 결재선 기준, 기본 24)
     const autoDelegateHours =
-      target.employee?.department?.approvalLine?.autoDelegateHours ?? 24;
+      target.employee?.department?.approvalLines?.[0]?.autoDelegateHours ?? 24;
     const delegationElapsed = isDelegationElapsed(
       target.requestedAt,
       autoDelegateHours
