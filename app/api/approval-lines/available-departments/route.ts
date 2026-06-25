@@ -9,13 +9,8 @@ export async function GET() {
     const _auth = await requireAdmin();
     if (!_auth.ok) return _auth.response;
 
-    const lines = await prisma.approvalLine.findMany({
-      select: { departmentId: true },
-    });
-    const takenIds = lines.map((l) => l.departmentId);
-
+    // 항목별 결재선(부서 기본 + 항목별)으로 한 부서에 여러 라인 가능 → 모든 활성 부서 노출
     const where: any = { isActive: true };
-    if (takenIds.length > 0) where.id = { notIn: takenIds };
 
     const departments = await prisma.department.findMany({
       where,

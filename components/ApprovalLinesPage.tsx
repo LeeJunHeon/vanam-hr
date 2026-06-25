@@ -11,6 +11,8 @@ interface ApprovalLine {
   departmentId: number;
   departmentCode: string;
   departmentName: string;
+  categoryId: number | null;
+  categoryName: string | null;
   approverIds: number[];
   approvalMode: string;
   approvers: ApproverBrief[];
@@ -19,11 +21,13 @@ interface ApprovalLine {
   autoDelegateHours: number;
 }
 interface DeptOption { id: number; code: string; name: string; }
+interface CatOption { id: number; code: string; name: string; }
 interface EmpOption { id: number; employeeNo: string; name: string; departmentName: string | null; positionCode: string | null; }
 interface FallbackInfo { employeeId: number | null; employeeNo: string | null; name: string | null; isActive: boolean; }
 
 const EMPTY_FORM = {
   departmentId: "" as "" | string,
+  categoryId: "" as "" | string,
   approverIds: [] as number[],
   approvalMode: "all" as "all" | "any",
   deputyApproverId: null as number | null,
@@ -36,6 +40,7 @@ export default function ApprovalLinesPage() {
   const [search, setSearch] = useState("");
 
   const [availableDepartments, setAvailableDepartments] = useState<DeptOption[]>([]);
+  const [categories, setCategories] = useState<CatOption[]>([]);
   const [employees, setEmployees] = useState<EmpOption[]>([]);
 
   const [showForm, setShowForm] = useState(false);
@@ -61,6 +66,23 @@ export default function ApprovalLinesPage() {
           setEmployees(data.map((e: any) => ({ id: e.id, employeeNo: e.employeeNo, name: e.name, departmentName: e.departmentName, positionCode: e.positionCode ?? null })));
         }
       } catch (e) { console.error("employees fetch error:", e); }
+    })();
+  }, []);
+
+  // 근태 항목 목록 (항목별 결재선용) — 외근은 '출장 및 외근'(출장)으로 묶으므로 EXTERNAL_WORK 제외
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/categories");
+        if (res.ok) {
+          const data = await res.json();
+          setCategories(
+            data
+              .filter((c: any) => c.code !== "EXTERNAL_WORK")
+              .map((c: any) => ({ id: c.id, code: c.code, name: c.name }))
+          );
+        }
+      } catch (e) { console.error("categories fetch error:", e); }
     })();
   }, []);
 
@@ -109,6 +131,7 @@ export default function ApprovalLinesPage() {
     setEditTarget(l);
     setForm({
       departmentId: String(l.departmentId),
+      categoryId: l.categoryId != null ? String(l.categoryId) : "",
       approverIds: l.approverIds ?? [],
       approvalMode: l.approvalMode === "any" ? "any" : "all",
       deputyApproverId: l.deputyApproverId ?? null,
@@ -139,7 +162,10 @@ export default function ApprovalLinesPage() {
         deputyApproverId: form.deputyApproverId ?? null,
         autoDelegateHours: form.autoDelegateHours,
       };
-      if (!editTarget) payload.departmentId = Number(form.departmentId);
+      if (!editTarget) {
+        payload.departmentId = Number(form.departmentId);
+        payload.categoryId = form.categoryId === "" ? null : Number(form.categoryId);
+      }
       const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const data = await res.json();
       if (!res.ok) { setFormError(data.error || "저장 실패"); return; }
@@ -206,7 +232,7 @@ export default function ApprovalLinesPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900">결재라인 설정</h1>
-          <p className="text-sm text-gray-500 mt-0.5">부서별 결재자(여러 명)와 승인 방식을 관리합니다 (부서당 1개)</p>
+          <p className="text-sm text-gray-500 mt-0.5">부서별 · 항목별 결재선을 관리합니다 (부서 기본 + 항목별)</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={handleExportCSV} disabled={!lines || lines.length === 0}
@@ -274,6 +300,21 @@ export default function ApprovalLinesPage() {
               </select>
             )}
             {editTarget && <p className="text-[10px] text-gray-400 mt-1">부서 변경 불가 — 옮기려면 삭제 후 재생성</p>}
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-blue-700 mb-1">적용 항목</label>
+            {editTarget ? (
+              <input disabled value={editTarget.categoryName ?? "부서 기본 (전체)"}
+                className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-gray-100 text-gray-500 outline-none" />
+            ) : (
+              <select value={form.categoryId} onChange={(e) => setForm((f) => ({ ...f, categoryId: e.target.value }))}
+                className="w-full px-3 py-2.5 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400">
+                <option value="">부서 기본 (전체)</option>
+                {categories.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+              </select>
+            )}
+            <p className="text-[10px] text-gray-500 mt-1">특정 항목을 고르면 그 항목 신청에만 적용됩니다. '부서 기본'은 항목별 라인이 없을 때 적용됩니다.</p>
           </div>
 
           <div>
@@ -369,7 +410,10 @@ export default function ApprovalLinesPage() {
             <div key={l.id} className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <h3 className="text-base font-bold text-gray-900 truncate">{l.departmentName}</h3>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <h3 className="text-base font-bold text-gray-900 truncate">{l.departmentName}</h3>
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${l.categoryId == null ? "bg-gray-100 text-gray-600" : "bg-blue-50 text-blue-700"}`}>{l.categoryName ?? "기본"}</span>
+                  </div>
                   <span className="text-xs text-gray-400">{l.departmentCode}</span>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
