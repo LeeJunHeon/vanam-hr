@@ -8,6 +8,7 @@ import {
 import {
   createTripParticipantAttendanceRequests,
   rebuildTripEventCalendar,
+  getBusinessTripCategoryId,
 } from "@/lib/trip-calendar";
 import { resolveApprovers } from "@/lib/approval-resolver";
 import { createNotifications } from "@/lib/notify";
@@ -107,7 +108,7 @@ export async function POST(
         where: { id: ownId as number },
         select: { departmentId: true },
       });
-      const resolved = await resolveApprovers(prisma, me?.departmentId ?? null);
+      const resolved = await resolveApprovers(prisma, me?.departmentId ?? null, await getBusinessTripCategoryId());
       resolvedApproverIds = resolved.approverIds;
       resolvedApprovalMode = resolved.approvalMode;
       resolvedDeputyId = resolved.deputyApproverId;

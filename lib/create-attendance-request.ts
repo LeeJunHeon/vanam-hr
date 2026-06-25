@@ -3,6 +3,7 @@ import { createNotifications } from "@/lib/notify";
 import { applyCorrectionToDaily } from "@/lib/attendance-correction";
 import { getRemainingDays } from "@/lib/annual-leave";
 import { resolveApprovers } from "@/lib/approval-resolver";
+import { getBusinessTripCategoryId } from "@/lib/trip-calendar";
 
 function parseDate(s: string | null | undefined): Date | null {
   if (!s || typeof s !== "string") return null;
@@ -179,8 +180,13 @@ export async function createAttendanceRequest(
   // 결재선을 타는 대상: CEO 아님 + (ADMIN이면서 외근)도 아님
   //  → EMPLOYEE 전부, 그리고 "외근이 아닌 ADMIN"이 여기에 해당.
   if (!isCeoRequester && !adminAutoApprove) {
+    // 외근/출장은 '출장 및 외근'(BUSINESS_TRIP) 결재선을 공유 → 외근이면 출장 categoryId로 정규화
+    let approvalCategoryId: number | null = categoryIdNum;
+    if (category.code === "EXTERNAL_WORK") {
+      approvalCategoryId = await getBusinessTripCategoryId();
+    }
     // 결재선 결정을 resolveApprovers로 통일: (부서+카테고리) 항목별 라인 → 부서 기본 → fallback
-    const resolved = await resolveApprovers(prisma, emp.departmentId, categoryIdNum);
+    const resolved = await resolveApprovers(prisma, emp.departmentId, approvalCategoryId);
     approverIds = resolved.approverIds;
     approvalMode = resolved.approvalMode;
     deputyApproverId = resolved.deputyApproverId;

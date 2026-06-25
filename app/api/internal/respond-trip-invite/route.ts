@@ -7,6 +7,7 @@ import { resolveApprovers } from "@/lib/approval-resolver";
 import {
   createTripParticipantAttendanceRequests,
   rebuildTripEventCalendar,
+  getBusinessTripCategoryId,
 } from "@/lib/trip-calendar";
 import { createNotifications } from "@/lib/notify";
 
@@ -138,7 +139,7 @@ export async function POST(request: Request) {
   let acceptApprovalMode: "all" | "any" | null = null;
   let acceptDeputyId: number | null = null;
   if (part.approvalStatus === "pending" && (!Array.isArray(part.approverIds) || part.approverIds.length === 0)) {
-    const resolved = await resolveApprovers(prisma, identity.departmentId);
+    const resolved = await resolveApprovers(prisma, identity.departmentId, await getBusinessTripCategoryId());
     acceptApproverIds = resolved.approverIds;
     acceptApprovalMode = resolved.approvalMode;
     acceptDeputyId = resolved.deputyApproverId;
