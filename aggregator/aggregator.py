@@ -357,6 +357,23 @@ class Aggregator:
                 ts_kst = ts.astimezone(_KST) if ts.tzinfo is not None else ts.replace(tzinfo=_KST)
                 return day_start <= ts_kst < day_end
 
+            # 다일(시작·종료 날짜가 다른) 시간형 일정은 '종일' 일정으로 간주한다.
+            # 예: 출장 6/24 09:00 ~ 6/26 17:00 → 6/24·6/25·6/26 모두 종일 출장으로 매일 기록.
+            # (그렇지 않으면 시작 시각이 있는 첫날만 기록되고 중간·마지막 날이 누락됨)
+            # 하루짜리 시간형(시작·종료 날짜 동일)은 변환되지 않아 기존 시간 판정을 유지한다.
+            _converted_reqs = []
+            for _r in active_requests:
+                _ci = _r["corrected_check_in"]
+                _co = _r["corrected_check_out"]
+                if (
+                    _ci is not None
+                    and _co is not None
+                    and _ci.astimezone(_KST).date() != _co.astimezone(_KST).date()
+                ):
+                    _r = {**_r, "corrected_check_in": None, "corrected_check_out": None}
+                _converted_reqs.append(_r)
+            active_requests = _converted_reqs
+
             # 이 work_date 범위에 속하는 시간형 일정만 (융합·카테고리 공용)
             in_range_timed = [
                 r for r in active_requests
