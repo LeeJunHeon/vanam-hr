@@ -731,6 +731,10 @@ class Aggregator:
         - 중복 방지: try_log_attendance_alert로 '로그 먼저' 성공 시에만 발송.
         - 메일 형식은 기존 끊김 알림과 동일 톤. 날짜는 실제 직전 근무일을 표기.
         """
+        # 알림 정책(이메일)이 꺼져 있으면 발송 자체를 스킵
+        if (self.db.get_policy("notify_attendance_alert_email") or "true") != "true":
+            return
+
         try:
             pending = self.db.get_pending_attendance_alerts()
         except Exception as e:
@@ -832,6 +836,10 @@ class Aggregator:
         - 임계분: hr.policy_settings.disconnect_alert_minutes (기본 30)
         - 점심: lunch_start/lunch_end (기본 12:00/13:00)
         """
+        # 알림 정책(이메일)이 꺼져 있으면 발송 자체를 스킵
+        if (self.db.get_policy("notify_disconnect_email") or "true") != "true":
+            return
+
         email = emp.get("email")
         if not email:
             return
