@@ -902,9 +902,11 @@ class Aggregator:
             self._disconnect_notified.pop(emp_id, None)
             return
 
-        # 4) 점심시간 안이면 알림 안 함
+        # 4) 점심시간 안이면 알림 안 함 (+ 끊김 계산에서 점심 제외용으로 구간 보존)
         lunch_start_raw = self.db.get_policy("lunch_start") or "12:00"
         lunch_end_raw = self.db.get_policy("lunch_end") or "13:00"
+        lunch_start_dt = None
+        lunch_end_dt = None
         try:
             ls_h, ls_m = map(int, str(lunch_start_raw).split(":"))
             le_h, le_m = map(int, str(lunch_end_raw).split(":"))
@@ -917,7 +919,8 @@ class Aggregator:
             if lunch_start_dt <= now_kst <= lunch_end_dt:
                 return
         except (ValueError, AttributeError):
-            pass  # 점심 정책 파싱 실패는 무시 (점심 체크만 skip)
+            lunch_start_dt = None
+            lunch_end_dt = None
 
         # 5) 임계분 정책 (기본 30)
         try:
@@ -941,7 +944,12 @@ class Aggregator:
         if not raw:
             # B) 오늘 한 번도 안 잡힘 — 시프트 시작 + 임계분이 지났는지 확인
             #     비교는 같은 timezone 기준(now_kst aware vs shift_start_dt aware → OK)
-            if shift_start_dt + timedelta(minutes=threshold_min) <= now_kst:
+            _eff_sec_b = (now_kst - shift_start_dt).total_seconds()
+            if lunch_start_dt is not None and lunch_end_dt is not None:
+                _ovs = max(shift_start_dt, lunch_start_dt)
+                _ove = min(now_kst, lunch_end_dt)
+                _eff_sec_b -= max(0.0, (_ove - _ovs).total_seconds())
+            if _eff_sec_b >= threshold_min * 60:
                 disconnected = True
                 last_seen = None
         else:
@@ -956,6 +964,15 @@ class Aggregator:
                 # presence_raw.checked_at은 timezone-aware (DB timestamptz)
                 # now도 aware(UTC) → 차이 계산 가능
                 elapsed = (now - last_offline_at).total_seconds()
+                if lunch_start_dt is not None and lunch_end_dt is not None:
+                    _lo_kst = (
+                        last_offline_at.astimezone(KST)
+                        if last_offline_at.tzinfo is not None
+                        else last_offline_at
+                    )
+                    _ovs = max(_lo_kst, lunch_start_dt)
+                    _ove = min(now_kst, lunch_end_dt)
+                    elapsed -= max(0.0, (_ove - _ovs).total_seconds())
                 if elapsed >= threshold_min * 60:
                     disconnected = True
                     # 가장 최근 'online' 기록을 last_seen으로
