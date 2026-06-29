@@ -734,8 +734,10 @@ class Aggregator:
         - 중복 방지: try_log_attendance_alert로 '로그 먼저' 성공 시에만 발송.
         - 메일 형식은 기존 끊김 알림과 동일 톤. 날짜는 실제 직전 근무일을 표기.
         """
-        # 알림 정책(이메일)이 꺼져 있으면 발송 자체를 스킵
-        if (self.db.get_policy("notify_attendance_alert_email") or "true") != "true":
+        # 알림 채널 정책 (이메일/푸시 독립). 둘 다 꺼져 있으면 스킵.
+        _email_on = (self.db.get_policy("notify_attendance_alert_email") or "true") == "true"
+        _push_on = (self.db.get_policy("notify_attendance_alert_push") or "false") == "true"
+        if not _email_on and not _push_on:
             return
 
         try:
@@ -804,17 +806,30 @@ class Aggregator:
                 f"확인이 필요하시면 근태 시스템에서 정정을 신청해주세요.\n\n"
                 f"[해당 메일은 자동 전송 되었습니다.]"
             )
-            ok = self.notifier.send(email, subject, body)
-            if ok:
-                self.logger.info(
-                    f"  [attn-alert] 발송 (emp={emp_id}, name={name}, "
-                    f"email={email}, work_date={work_date}, status={status})"
+            if _email_on:
+                ok = self.notifier.send(email, subject, body)
+                if ok:
+                    self.logger.info(
+                        f"  [attn-alert] 메일 발송 (emp={emp_id}, name={name}, "
+                        f"email={email}, work_date={work_date}, status={status})"
+                    )
+                else:
+                    # 발송 실패 시 로그는 이미 들어갔으므로 재발송되지 않는다(누락<중복 우선 결정).
+                    self.logger.warning(
+                        f"  [attn-alert] 메일 발송 실패하였으나 로그는 기록됨 "
+                        f"(emp={emp_id}, work_date={work_date})"
+                    )
+            if _push_on:
+                self._send_push(
+                    [emp_id],
+                    "근태 확인 요청",
+                    f"{wd_str} 근태가 '{status_label}'(으)로 기록되었습니다.",
+                    "attendance",
+                    "attendance_alert",
                 )
-            else:
-                # 발송 실패 시 로그는 이미 들어갔으므로 재발송되지 않는다(누락<중복 우선 결정).
-                self.logger.warning(
-                    f"  [attn-alert] 발송 실패하였으나 로그는 기록됨 "
-                    f"(emp={emp_id}, work_date={work_date})"
+                self.logger.info(
+                    f"  [attn-alert] 푸시 발송 (emp={emp_id}, name={name}, "
+                    f"work_date={work_date}, status={status})"
                 )
 
     def _send_push(self, employee_ids, title, body, page, tag):

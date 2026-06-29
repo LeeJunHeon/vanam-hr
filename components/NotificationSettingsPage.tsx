@@ -14,7 +14,7 @@ const NOTIFY_TYPES: { type: string; label: string; desc: string; channels: ("app
   { type: "trip_remove", label: "외근 참석자 제외", desc: "참석자에서 제외 시 대상에게", channels: ["app", "email", "push"] },
   { type: "cancel", label: "결재 취소", desc: "승인된 신청 취소 시 결재자에게", channels: ["app", "email", "push"] },
   { type: "disconnect", label: "근무중 WiFi 끊김", desc: "근무 시간 중 WiFi가 끊긴 본인에게", channels: ["email", "push"] },
-  { type: "attendance_alert", label: "근태 확인 요청", desc: "결근/지각/조퇴 기록 시 본인에게 (현재 이메일만)", channels: ["email"] },
+  { type: "attendance_alert", label: "근태 확인 요청", desc: "결근/지각/조퇴 기록 시 본인에게", channels: ["email", "push"] },
 ];
 
 type FlagMap = Record<string, boolean>; // key(notify_xxx_app) → bool
