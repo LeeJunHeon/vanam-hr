@@ -37,9 +37,12 @@ work_date 귀속 (야간 근무자 정책):
 sync 단순 루프. asyncio 의존성 없음.
 """
 
+import json
+import os
 import signal
 import sys
 import time
+import urllib.request
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -814,6 +817,35 @@ class Aggregator:
                     f"(emp={emp_id}, work_date={work_date})"
                 )
 
+    def _send_push(self, employee_ids, title, body, page, tag):
+        """포털 내부 푸시 API 호출. 환경변수 미설정/실패 시 조용히 스킵."""
+        portal_url = os.environ.get("PORTAL_API_URL")
+        token = os.environ.get("PUSH_INTERNAL_TOKEN")
+        if not portal_url or not token or not employee_ids:
+            return
+        try:
+            payload = json.dumps({
+                "employeeIds": employee_ids,
+                "title": title,
+                "body": body,
+                "url": f"/hr/?page={page}",
+                "tag": tag,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{portal_url}/api/internal/push",
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status >= 400:
+                    self.logger.error(f"[push] 포털 응답 오류: {resp.status}")
+        except Exception as e:
+            self.logger.error(f"[push] 발송 실패: {e}")
+
     def _check_disconnect_alert(
         self,
         emp: dict,
@@ -836,8 +868,10 @@ class Aggregator:
         - 임계분: hr.policy_settings.disconnect_alert_minutes (기본 30)
         - 점심: lunch_start/lunch_end (기본 12:00/13:00)
         """
-        # 알림 정책(이메일)이 꺼져 있으면 발송 자체를 스킵
-        if (self.db.get_policy("notify_disconnect_email") or "true") != "true":
+        # 알림 채널 정책 (이메일/푸시 독립). 둘 다 꺼져 있으면 스킵.
+        _email_on = (self.db.get_policy("notify_disconnect_email") or "true") == "true"
+        _push_on = (self.db.get_policy("notify_disconnect_push") or "false") == "true"
+        if not _email_on and not _push_on:
             return
 
         email = emp.get("email")
@@ -1021,8 +1055,20 @@ class Aggregator:
                 pass
         body = "\n".join(body_lines)
 
-        ok = self.notifier.send(email, subject, body)
-        if ok:
+        sent = False
+        if _email_on:
+            if self.notifier.send(email, subject, body):
+                sent = True
+        if _push_on:
+            self._send_push(
+                [emp_id],
+                "근무중 WiFi 끊김",
+                f"사내 WiFi 연결이 {threshold_min}분 이상 확인되지 않았습니다.",
+                "attendance",
+                "disconnect",
+            )
+            sent = True
+        if sent:
             self._disconnect_notified[emp_id] = today_str
             self.logger.info(
                 f"  [disconnect] 알림 발송 (emp={emp_id}, name={emp_name}, "
