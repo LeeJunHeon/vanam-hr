@@ -87,6 +87,8 @@ interface RealtimeRow {
   todayCategoryColor: string | null;
   todayIsOverridden: boolean;
   todayReason: string | null;
+  todayCorrectedIn: string | null;
+  todayCorrectedOut: string | null;
   progressStatus: ProgressStatus;
 }
 
@@ -356,7 +358,7 @@ function renderActivityInfo(r: RealtimeRow): ReactNode {
     );
   }
 
-  // 캘린더 보정 우선 (Q-A)
+  // 캘린더 보정 우선 (Q-A) — 출장/외근/휴가
   if (
     (r.progressStatus === "category_working" ||
       r.progressStatus === "category_completed") &&
@@ -364,19 +366,16 @@ function renderActivityInfo(r: RealtimeRow): ReactNode {
     r.todayCategoryName
   ) {
     const icon = categoryIcon(r.todayCategoryCode);
-    let timeInfo: string;
-    if (!r.todayCheckIn && !r.todayCheckOut) {
-      timeInfo = "종일";
-    } else {
-      const start = r.todayCheckIn ? formatTime(r.todayCheckIn) : "";
-      const end = r.todayCheckOut ? formatTime(r.todayCheckOut) : "(진행 중)";
-      timeInfo = `${start} ~ ${end}`;
-    }
+    // 시각은 해당 일정(외근/출장) 기준. 시간형이면 일정 시작~종료, 종일이면 "종일".
+    // WiFi 출근 시각(todayCheckIn)은 일정 표시에 쓰지 않는다.
+    const timeInfo =
+      r.todayCorrectedIn && r.todayCorrectedOut
+        ? `${formatTime(r.todayCorrectedIn)} ~ ${formatTime(
+            r.todayCorrectedOut
+          )}`
+        : "종일";
     return (
       <span className="inline-flex items-center gap-1 flex-wrap">
-        <WifiOff size={12} className="text-gray-400 shrink-0" />
-        <span className="text-gray-400 font-medium">연결 끊김</span>
-        <span className="text-gray-300">·</span>
         {icon && <span className="shrink-0">{icon}</span>}
         <span
           className="font-medium"

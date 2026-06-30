@@ -357,6 +357,12 @@ export async function GET(request: NextRequest) {
         todayCategoryColor: r.today_category_color ?? null,
         todayIsOverridden: r.today_is_overridden ?? false,
         todayReason: r.today_reason ?? null,
+        todayCorrectedIn: r.today_corrected_in
+          ? r.today_corrected_in.toISOString()
+          : null,
+        todayCorrectedOut: r.today_corrected_out
+          ? r.today_corrected_out.toISOString()
+          : null,
         progressStatus,
       };
     });
