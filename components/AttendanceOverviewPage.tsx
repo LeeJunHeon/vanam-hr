@@ -376,6 +376,21 @@ function renderActivityInfo(r: RealtimeRow): ReactNode {
         : "종일";
     return (
       <span className="inline-flex items-center gap-1 flex-wrap">
+        {r.realtimeStatus === "working" ? (
+          <>
+            <Wifi size={12} className="text-emerald-500 shrink-0" />
+            <span className="text-gray-600">
+              {r.latestLocation ?? "위치 미상"} ·{" "}
+              {formatRelativeTime(r.latestCheckedAt)} 연결
+            </span>
+          </>
+        ) : (
+          <>
+            <WifiOff size={12} className="text-gray-400 shrink-0" />
+            <span className="text-gray-400 font-medium">연결 끊김</span>
+          </>
+        )}
+        <span className="text-gray-300">·</span>
         {icon && <span className="shrink-0">{icon}</span>}
         <span
           className="font-medium"
