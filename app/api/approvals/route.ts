@@ -7,6 +7,11 @@ import {
 } from "@/lib/trip-calendar";
 import { createNotifications } from "@/lib/notify";
 import { applyCorrectionToDaily } from "@/lib/attendance-correction";
+import { sweepEligibleDelegations } from "@/lib/sweep-delegations";
+
+// 결재함 조회 시 위임 자동 마감을 throttle로 트리거(B). 모듈 레벨 상태.
+const DELEGATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 결재함 조회 트리거 throttle
+let lastDelegationSweepAt = 0;
 
 // Phase 7 3단계: 결재함에 출장(trip) 결재를 합치는 방식 A.
 // - 출장 카테고리 표기는 attendance 카테고리와 통일된 키로 노출(필터/표시 공유).
@@ -223,6 +228,14 @@ export async function GET(request: NextRequest) {
     const { session } = sessionR;
     const isCeo = session.user.role === "ceo";
     const ownEmployeeId = session.user.employeeId;
+
+    // 위임 자동 마감 트리거(fire-and-forget, throttle). 응답은 기다리지 않는다.
+    if (Date.now() - lastDelegationSweepAt > DELEGATION_SWEEP_INTERVAL_MS) {
+      lastDelegationSweepAt = Date.now();
+      void sweepEligibleDelegations().catch((e) =>
+        console.error("[sweep] 위임 마감 실패:", e)
+      );
+    }
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get("status") || "pending";

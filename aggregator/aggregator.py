@@ -71,6 +71,8 @@ class Aggregator:
         # - 연결 복귀 시 해당 emp 제거 → 다시 끊기면 같은 날에도 재발송
         # - 날짜가 바뀌면 기록값이 오늘과 달라 자동으로 재발송 허용
         self._disconnect_notified: dict[int, str] = {}
+        # 대리 위임 자동 마감 스윕 날짜 게이트 (KST 기준 하루 1회)
+        self._last_sweep_date = None
 
     def compute_check_in_out(
         self,
@@ -840,9 +842,16 @@ class Aggregator:
     def _sweep_delegations(self):
         """대리 위임 자동 마감 스윕 — HR 내부 API(/api/internal/sweep-delegations) 호출.
 
+        KST 기준 하루 1회만 실행(날짜 게이트). 매 사이클 호출돼도 실제 발송은 하루 1회.
         HR_INTERNAL_URL/INTERNAL_API_TOKEN 미설정 시 return(데몬 중단 금지).
         모든 예외 흡수하고 error 로그만 남긴다.
         """
+        # 날짜 게이트: 하루 1회. env 체크보다 먼저 통과 처리해야 재시도 폭주를 막는다.
+        today = datetime.now(KST).date()
+        if self._last_sweep_date == today:
+            return
+        self._last_sweep_date = today
+
         hr_url = os.environ.get("HR_INTERNAL_URL")
         token = os.environ.get("INTERNAL_API_TOKEN")
         if not hr_url or not token:
