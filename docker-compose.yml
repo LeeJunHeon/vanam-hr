@@ -84,9 +84,9 @@ services:
       SMTP_USER: ${SMTP_USER}
       SMTP_PASSWORD: ${SMTP_PASSWORD}
       SMTP_FROM: ${SMTP_FROM}
-      # 포털 웹푸시(끊김/근태 확인 요청)용 — hr-nextjs와 동일 값 재사용
-      PORTAL_API_URL: ${PORTAL_API_URL}
-      PUSH_INTERNAL_TOKEN: ${PUSH_INTERNAL_TOKEN}
+      # 알림 통로 통일 — HR 내부 API(/api/internal/notify)로 위임
+      HR_INTERNAL_URL: ${HR_INTERNAL_URL:-http://hr-nextjs:3000}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
     volumes:
       - ./aggregator/logs:/app/logs
     networks:

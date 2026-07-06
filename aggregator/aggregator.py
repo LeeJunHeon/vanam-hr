@@ -734,12 +734,6 @@ class Aggregator:
         - 중복 방지: try_log_attendance_alert로 '로그 먼저' 성공 시에만 발송.
         - 메일 형식은 기존 끊김 알림과 동일 톤. 날짜는 실제 직전 근무일을 표기.
         """
-        # 알림 채널 정책 (이메일/푸시 독립). 둘 다 꺼져 있으면 스킵.
-        _email_on = (self.db.get_policy("notify_attendance_alert_email") or "true") == "true"
-        _push_on = (self.db.get_policy("notify_attendance_alert_push") or "false") == "true"
-        if not _email_on and not _push_on:
-            return
-
         try:
             pending = self.db.get_pending_attendance_alerts()
         except Exception as e:
@@ -791,7 +785,7 @@ class Aggregator:
                 # 이미 보냄
                 continue
 
-            # 메일 작성/발송
+            # 알림 본문 작성 (기존 톤 유지) → createNotifications 경유로 발송
             name = p.get("name", "")
             status_label = status_kr.get(status, status)
             try:
@@ -799,55 +793,41 @@ class Aggregator:
                 wd_str = f"{work_date.strftime('%Y-%m-%d')}({dow})"
             except Exception:
                 wd_str = str(work_date)
-            subject = "[VanaM 근태관리] 근태 확인 요청"
             body = (
                 f"{name} 님,\n\n"
                 f"{wd_str} 근태가 '{status_label}'(으)로 기록되었습니다.\n"
                 f"확인이 필요하시면 근태 시스템에서 정정을 신청해주세요.\n\n"
                 f"[해당 메일은 자동 전송 되었습니다.]"
             )
-            if _email_on:
-                ok = self.notifier.send(email, subject, body)
-                if ok:
-                    self.logger.info(
-                        f"  [attn-alert] 메일 발송 (emp={emp_id}, name={name}, "
-                        f"email={email}, work_date={work_date}, status={status})"
-                    )
-                else:
-                    # 발송 실패 시 로그는 이미 들어갔으므로 재발송되지 않는다(누락<중복 우선 결정).
-                    self.logger.warning(
-                        f"  [attn-alert] 메일 발송 실패하였으나 로그는 기록됨 "
-                        f"(emp={emp_id}, work_date={work_date})"
-                    )
-            if _push_on:
-                self._send_push(
-                    [emp_id],
-                    "근태 확인 요청",
-                    f"{wd_str} 근태가 '{status_label}'(으)로 기록되었습니다.",
-                    "attendance",
-                    "attendance_alert",
-                )
-                self.logger.info(
-                    f"  [attn-alert] 푸시 발송 (emp={emp_id}, name={name}, "
-                    f"work_date={work_date}, status={status})"
-                )
+            self._notify([emp_id], "attendance_alert", "근태 확인 요청", body, "attendance")
+            self.logger.info(
+                f"  [attn-alert] 알림 발송 (emp={emp_id}, name={name}, "
+                f"work_date={work_date}, status={status})"
+            )
 
-    def _send_push(self, employee_ids, title, body, page, tag):
-        """포털 내부 푸시 API 호출. 환경변수 미설정/실패 시 조용히 스킵."""
-        portal_url = os.environ.get("PORTAL_API_URL")
-        token = os.environ.get("PUSH_INTERNAL_TOKEN")
-        if not portal_url or not token or not employee_ids:
+    def _notify(self, employee_ids, type, title, body, link_page=None):
+        """HR 내부 알림 API(/api/internal/notify) 호출 → createNotifications로 위임.
+
+        HR_INTERNAL_URL/INTERNAL_API_TOKEN 미설정 시 경고 후 return(데몬 중단 금지).
+        모든 예외 흡수하고 error 로그만 남긴다.
+        """
+        hr_url = os.environ.get("HR_INTERNAL_URL")
+        token = os.environ.get("INTERNAL_API_TOKEN")
+        if not hr_url or not token:
+            self.logger.warning(
+                "[notify] HR_INTERNAL_URL 또는 INTERNAL_API_TOKEN 미설정 — 알림 스킵"
+            )
             return
         try:
             payload = json.dumps({
                 "employeeIds": employee_ids,
+                "type": type,
                 "title": title,
                 "body": body,
-                "url": f"/hr/?page={page}",
-                "tag": tag,
+                "linkPage": link_page,
             }).encode("utf-8")
             req = urllib.request.Request(
-                f"{portal_url}/api/internal/push",
+                f"{hr_url}/api/internal/notify",
                 data=payload,
                 headers={
                     "Content-Type": "application/json",
@@ -857,9 +837,9 @@ class Aggregator:
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
                 if resp.status >= 400:
-                    self.logger.error(f"[push] 포털 응답 오류: {resp.status}")
+                    self.logger.error(f"[notify] HR 응답 오류: {resp.status}")
         except Exception as e:
-            self.logger.error(f"[push] 발송 실패: {e}")
+            self.logger.error(f"[notify] 발송 실패: {e}")
 
     def _check_disconnect_alert(
         self,
@@ -883,12 +863,6 @@ class Aggregator:
         - 임계분: hr.policy_settings.disconnect_alert_minutes (기본 30)
         - 점심: lunch_start/lunch_end (기본 12:00/13:00)
         """
-        # 알림 채널 정책 (이메일/푸시 독립). 둘 다 꺼져 있으면 스킵.
-        _email_on = (self.db.get_policy("notify_disconnect_email") or "true") == "true"
-        _push_on = (self.db.get_policy("notify_disconnect_push") or "false") == "true"
-        if not _email_on and not _push_on:
-            return
-
         email = emp.get("email")
         if not email:
             return
@@ -1046,9 +1020,8 @@ class Aggregator:
         if self._disconnect_notified.get(emp_id) == today_str:
             return
 
-        # 9) 메일 발송
+        # 9) 알림 발송 (createNotifications 경유)
         emp_name = emp.get("name", "")
-        subject = "[VanaM 근태관리] WIFI 연결 끊김 알림"
         body_lines = [
             f"{emp_name} 님,",
             "",
@@ -1070,25 +1043,12 @@ class Aggregator:
                 pass
         body = "\n".join(body_lines)
 
-        sent = False
-        if _email_on:
-            if self.notifier.send(email, subject, body):
-                sent = True
-        if _push_on:
-            self._send_push(
-                [emp_id],
-                "근무중 WiFi 끊김",
-                f"사내 WiFi 연결이 {threshold_min}분 이상 확인되지 않았습니다.",
-                "attendance",
-                "disconnect",
-            )
-            sent = True
-        if sent:
-            self._disconnect_notified[emp_id] = today_str
-            self.logger.info(
-                f"  [disconnect] 알림 발송 (emp={emp_id}, name={emp_name}, "
-                f"email={email}, threshold={threshold_min}분)"
-            )
+        self._notify([emp_id], "disconnect", "WIFI 연결 끊김 알림", body, "attendance")
+        self._disconnect_notified[emp_id] = today_str
+        self.logger.info(
+            f"  [disconnect] 알림 발송 (emp={emp_id}, name={emp_name}, "
+            f"email={email}, threshold={threshold_min}분)"
+        )
 
     def run(self):
         """메인 루프. time.monotonic() 기반 fixed-rate scheduling.
