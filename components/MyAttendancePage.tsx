@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import AttendanceCalendarView from "@/components/AttendanceCalendarView";
+import MyShiftModal from "@/components/MyShiftModal";
 
 // 내 근태 화면용 요약 카드 fetch 결과 타입
 // 캘린더 렌더는 AttendanceCalendarView가 담당하므로 여기서는 상단 4개 카드 통계 계산용으로만 사용한다.
@@ -57,6 +58,7 @@ export default function MyAttendancePage() {
   const [dailies, setDailies] = useState<AttendanceDaily[]>([]);
   const [statusLookups, setStatusLookups] = useState<StatusLookup[]>([]);
   const [loading, setLoading] = useState(false);
+  const [showShiftModal, setShowShiftModal] = useState(false);
 
   // ym → 년/월/말일 (요약 카드 fetch 범위 계산용)
   const { year, monthIdx, lastDayNum } = useMemo(() => {
@@ -171,8 +173,24 @@ export default function MyAttendancePage() {
           >
             오늘
           </button>
+          {currentId && (
+            <button
+              onClick={() => setShowShiftModal(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50"
+            >
+              <Clock size={14} />
+              시프트 변경
+            </button>
+          )}
         </div>
       </div>
+
+      {showShiftModal && (
+        <MyShiftModal
+          onClose={() => setShowShiftModal(false)}
+          onChanged={fetchDailies}
+        />
+      )}
 
       {/* 본인 없음 / 로딩 / 본문 */}
       {empLoading ? (
