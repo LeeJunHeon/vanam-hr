@@ -49,7 +49,6 @@ from typing import Optional
 from config import load_config
 from db import Database
 from logger import setup_logger
-from notifier import EmailNotifier
 
 # 한국 시간대 (UTC+9, DST 없음) — 끊김 알림에서 KST 비교용
 KST = timezone(timedelta(hours=9))
@@ -67,15 +66,6 @@ class Aggregator:
             password=self.config.db_password,
         )
         self.running = True
-        # 근무중 끊김 알림 메일 발송기 (SMTP 미설정이면 발송 스킵)
-        self.notifier = EmailNotifier(
-            self.config.smtp_host,
-            self.config.smtp_port,
-            self.config.smtp_user,
-            self.config.smtp_password,
-            self.config.smtp_from,
-            self.logger,
-        )
         # 끊김 알림 중복 발송 방지용 메모리 상태: {emp_id: "YYYY-MM-DD"}
         # - 끊김이면 오늘 날짜 기록(이미 같은 날짜면 재발송 X)
         # - 연결 복귀 시 해당 emp 제거 → 다시 끊기면 같은 날에도 재발송
