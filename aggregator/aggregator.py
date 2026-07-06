@@ -270,6 +270,12 @@ class Aggregator:
         except Exception as e:
             self.logger.error(f"_check_attendance_alerts 예외: {e}")
 
+        # 대리 위임 자동 마감 스윕 — 사이클당 1회 (대리 승인 + 위임창 경과 pending 확정)
+        try:
+            self._sweep_delegations()
+        except Exception as e:
+            self.logger.error(f"_sweep_delegations 예외: {e}")
+
         total = time.time() - cycle_start
         self.logger.info(
             f"=== 사이클 종료: {total:.3f}s "
@@ -830,6 +836,32 @@ class Aggregator:
                     self.logger.error(f"[notify] HR 응답 오류: {resp.status}")
         except Exception as e:
             self.logger.error(f"[notify] 발송 실패: {e}")
+
+    def _sweep_delegations(self):
+        """대리 위임 자동 마감 스윕 — HR 내부 API(/api/internal/sweep-delegations) 호출.
+
+        HR_INTERNAL_URL/INTERNAL_API_TOKEN 미설정 시 return(데몬 중단 금지).
+        모든 예외 흡수하고 error 로그만 남긴다.
+        """
+        hr_url = os.environ.get("HR_INTERNAL_URL")
+        token = os.environ.get("INTERNAL_API_TOKEN")
+        if not hr_url or not token:
+            return
+        try:
+            req = urllib.request.Request(
+                f"{hr_url}/api/internal/sweep-delegations",
+                data=json.dumps({}).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status >= 400:
+                    self.logger.error(f"[sweep] HR 응답 오류: {resp.status}")
+        except Exception as e:
+            self.logger.error(f"[sweep] 발송 실패: {e}")
 
     def _check_disconnect_alert(
         self,
