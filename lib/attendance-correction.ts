@@ -49,23 +49,49 @@ async function loadShiftAndGrace(
   graceOutMinutes: number;
 }> {
   const workDateStr = workDate.toISOString().split("T")[0];
+
+  // shift_patterns는 (cycle_days, schedule Json) 구조.
+  // schedule = [{ dayIndex, type, start:"HH:MM"|null, end:"HH:MM"|null }, ...] (cycle_days개)
+  // aggregator get_employee_shift와 동일 로직으로 해당 날짜의 point를 찾는다.
   const shiftRows = await db.$queryRaw<
-    Array<{ start_time: string | null; end_time: string | null; type: string }>
+    Array<{ start_date: Date; cycle_days: number; schedule: unknown }>
   >`
-    SELECT sp.start_time::text AS start_time, sp.end_time::text AS end_time, sp.type
+    SELECT es.start_date, sp.cycle_days, sp.schedule
     FROM hr.employee_shifts es
     JOIN hr.shift_patterns sp ON sp.id = es.pattern_id
     WHERE es.employee_id = ${employeeId}
       AND es.start_date <= ${workDateStr}::date
       AND (es.end_date IS NULL OR es.end_date >= ${workDateStr}::date)
       AND sp.is_active = true
+    ORDER BY es.start_date DESC
     LIMIT 1
   `;
+
   let shiftStartHHMM: string | null = null;
   let shiftEndHHMM: string | null = null;
-  if (shiftRows.length > 0 && shiftRows[0].type !== "off") {
-    shiftStartHHMM = shiftRows[0].start_time;
-    shiftEndHHMM = shiftRows[0].end_time;
+
+  if (shiftRows.length > 0) {
+    const { start_date, cycle_days, schedule } = shiftRows[0];
+    if (Array.isArray(schedule) && cycle_days >= 1) {
+      // Python weekday(): 월=0..일=6. JS getUTCDay(): 일=0..토=6 → (d+6)%7 로 월=0 맞춤.
+      const startWeekday = (start_date.getUTCDay() + 6) % 7;
+      const anchor = new Date(start_date);
+      anchor.setUTCDate(anchor.getUTCDate() - startWeekday);
+      const dayOffset =
+        Math.floor((workDate.getTime() - anchor.getTime()) / 86400000) % cycle_days;
+
+      const point = (schedule as Array<{
+        dayIndex?: number;
+        type?: string;
+        start?: string | null;
+        end?: string | null;
+      }>).find((p) => p && p.dayIndex === dayOffset);
+
+      if (point && point.type !== "off") {
+        shiftStartHHMM = point.start ?? null;
+        shiftEndHHMM = point.end ?? null;
+      }
+    }
   }
   let graceInMinutes = 10;
   let graceOutMinutes = 0;
