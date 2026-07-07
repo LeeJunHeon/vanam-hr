@@ -206,7 +206,6 @@ export default function FieldTripPage() {
   const tripActiveAll = (ev: TripEventListRow) =>
     ev.status === "active" && ev.endDate >= today;
   const extActiveAll = (x: ExternalRow) =>
-    x.externalSource !== "trip" &&
     ["pending", "approved", "auto_approved"].includes(x.status) &&
     x.endDate >= today;
   const tripUser = (ev: TripEventListRow) =>
@@ -217,8 +216,9 @@ export default function FieldTripPage() {
     userFilter === "all" || x.employeeId === userFilter;
   const tripsActive = trips.filter((ev) => tripUser(ev) && tripActiveAll(ev));
   const tripsHistory = trips.filter((ev) => tripUser(ev) && !tripActiveAll(ev));
-  const extsActive = exts.filter((x) => extUser(x) && extActiveAll(x));
-  const extsHistory = exts.filter((x) => extUser(x) && !extActiveAll(x));
+  const visibleExts = exts.filter((x) => x.externalSource !== "trip");
+  const extsActive = visibleExts.filter((x) => extUser(x) && extActiveAll(x));
+  const extsHistory = visibleExts.filter((x) => extUser(x) && !extActiveAll(x));
   const activeCount = tripsActive.length + extsActive.length;
   const historyCount = tripsHistory.length + extsHistory.length;
   const shownTrips = tab === "active" ? tripsActive : tripsHistory;
