@@ -206,6 +206,7 @@ export default function FieldTripPage() {
   const tripActiveAll = (ev: TripEventListRow) =>
     ev.status === "active" && ev.endDate >= today;
   const extActiveAll = (x: ExternalRow) =>
+    x.externalSource !== "trip" &&
     ["pending", "approved", "auto_approved"].includes(x.status) &&
     x.endDate >= today;
   const tripUser = (ev: TripEventListRow) =>
