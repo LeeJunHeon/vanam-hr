@@ -163,3 +163,47 @@ export async function getPolicy(): Promise<AnnualLeavePolicyValues> {
     firstYearFixedDays: Number(p.firstYearFixedDays),
   };
 }
+
+// 특정 직원·연도의 연차 사용 내역(승인된 연차차감 신청) 목록 + 합계.
+// 계산은 /api/internal/my-leave-detail 라우트와 100% 동일하다 →
+// grants의 systemUsedDays 합계와 이 화면의 totalUsed가 일치한다.
+export async function getLeaveDetailItems(
+  employeeId: number,
+  year: number
+): Promise<{
+  totalUsed: number;
+  items: { startDate: string; endDate: string; categoryName: string | null; usedDays: number }[];
+}> {
+  const yearStart = new Date(Date.UTC(year, 0, 1));
+  const yearEnd = new Date(Date.UTC(year, 11, 31, 23, 59, 59));
+  const reqs = await prisma.attendanceRequest.findMany({
+    where: {
+      employeeId,
+      status: { in: ["approved", "auto_approved", "auto_delegated"] },
+      startDate: { gte: yearStart, lte: yearEnd },
+      category: { annualLeaveDeduct: { gt: 0 } },
+    },
+    orderBy: [{ startDate: "desc" }],
+    select: {
+      startDate: true,
+      endDate: true,
+      category: { select: { name: true, annualLeaveDeduct: true } },
+    },
+  });
+
+  let totalUsed = 0;
+  const items = reqs.map((r) => {
+    const deduct = r.category?.annualLeaveDeduct ? Number(r.category.annualLeaveDeduct) : 0;
+    const days = Math.floor((r.endDate.getTime() - r.startDate.getTime()) / 86400000) + 1;
+    const used = days * deduct;
+    totalUsed += used;
+    return {
+      startDate: r.startDate.toISOString().split("T")[0],
+      endDate: r.endDate.toISOString().split("T")[0],
+      categoryName: r.category?.name ?? null,
+      usedDays: used,
+    };
+  });
+
+  return { totalUsed, items };
+}

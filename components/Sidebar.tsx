@@ -6,7 +6,7 @@ import {
   Home, Calendar, FileText, CheckSquare,
   Users, Building2, Smartphone, Clock,
   Settings, CalendarDays, Plane,
-  LogOut, X, ArrowLeft, BarChart3, IdCard,
+  LogOut, X, ArrowLeft, BarChart3, IdCard, CalendarCheck,
 } from "lucide-react";
 
 export type PageId =
@@ -14,6 +14,7 @@ export type PageId =
   | "field-trip"
   | "attendance-overview"
   | "schedule-overview"
+  | "annual-leave"
   | "employees" | "org" | "devices" | "shifts" | "employee-shifts"
   | "approval-lines"
   | "system-settings"
@@ -40,6 +41,7 @@ const NAV_ITEMS: NavItem[] = [
   // 관리자
   { id: "attendance-overview", label: "전체 근태 조회", icon: BarChart3,   group: "관리자", adminOnly: true },
   { id: "schedule-overview",   label: "전체 일정 조회", icon: CalendarDays, group: "관리자", adminOnly: true },
+  { id: "annual-leave",   label: "연차 관리",      icon: CalendarCheck, group: "관리자", adminOnly: true },
   { id: "employees",      label: "직원 관리",      icon: Users,       group: "관리자", adminOnly: true },
   { id: "org",            label: "부서/직급",      icon: Building2,   group: "관리자", adminOnly: true },
   { id: "devices",        label: "디바이스 관리",  icon: Smartphone,  group: "관리자", adminOnly: true },

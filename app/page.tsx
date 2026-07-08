@@ -21,6 +21,7 @@ import NotMappedNoticePage from "@/components/NotMappedNoticePage";
 import AttendanceOverviewPage from "@/components/AttendanceOverviewPage";
 import ScheduleOverviewPage from "@/components/ScheduleOverviewPage";
 import EmployeeShiftsPage from "@/components/EmployeeShiftsPage";
+import AnnualLeavePage from "@/components/AnnualLeavePage";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 
 const PAGE_TITLES: Record<PageId, string> = {
@@ -31,6 +32,7 @@ const PAGE_TITLES: Record<PageId, string> = {
   approval: "결재함",
   "attendance-overview": "전체 근태 조회",
   "schedule-overview": "전체 일정 조회",
+  "annual-leave": "연차 관리",
   employees: "직원 관리",
   org: "부서/직급",
   devices: "디바이스 관리",
@@ -55,7 +57,7 @@ export default function Home() {
     const p = params.get("page");
     const VALID: PageId[] = [
       "dashboard", "my-attendance", "request", "field-trip", "approval",
-      "attendance-overview", "schedule-overview", "employees", "org",
+      "attendance-overview", "schedule-overview", "annual-leave", "employees", "org",
       "devices", "shifts", "employee-shifts", "approval-lines", "system-settings",
       "personal-info",
     ];
@@ -120,6 +122,7 @@ export default function Home() {
       case "approval":           return <ApprovalPage />;
       case "attendance-overview": return <AttendanceOverviewPage />;
       case "schedule-overview":   return <ScheduleOverviewPage />;
+      case "annual-leave":       return <AnnualLeavePage />;
       case "employees":          return <EmployeesPage />;
       case "org":             return <OrgPage />;
       case "devices":         return <DevicesPage />;
