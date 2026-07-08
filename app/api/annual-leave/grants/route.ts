@@ -16,9 +16,12 @@ export async function GET(request: NextRequest) {
   const policy = await getPolicy();
   const employees = await prisma.employee.findMany({
     where: { isActive: true, isHrOnly: false },
-    select: { id: true, name: true, employeeNo: true, hiredAt: true,
-              department: { select: { name: true } } },
-    orderBy: { id: "asc" },
+    select: {
+      id: true, name: true, employeeNo: true, hiredAt: true,
+      department: { select: { name: true } },
+      position: { select: { name: true } },
+    },
+    orderBy: [{ position: { sortOrder: "asc" } }, { name: "asc" }],
   });
   const grants = await prisma.annualLeaveGrant.findMany({ where: { year } });
   const grantMap = new Map(grants.map((g) => [g.employeeId, g]));
@@ -38,6 +41,7 @@ export async function GET(request: NextRequest) {
       name: e.name,
       employeeNo: e.employeeNo,
       departmentName: e.department?.name ?? null,
+      positionName: e.position?.name ?? null,
       hiredAt: e.hiredAt ? e.hiredAt.toISOString().split("T")[0] : null,
       grantedDays,
       autoGrantedDays: autoGranted,

@@ -9,6 +9,7 @@ interface GrantRow {
   name: string;
   employeeNo: string | null;
   departmentName: string | null;
+  positionName: string | null;
   hiredAt: string | null;
   grantedDays: number;
   autoGrantedDays: number;
@@ -31,6 +32,9 @@ interface DetailResp {
   totalUsed: number;
   items: DetailItem[];
 }
+
+// HR 시스템 도입 연도. 이 이전 연도는 데이터가 없어 연도 선택에 노출하지 않는다.
+const SYSTEM_START_YEAR = 2026;
 
 // 정수면 그대로, 아니면 소수 1자리 (반차 0.5 단위 대응)
 function fmtNum(n: number): string {
@@ -134,7 +138,8 @@ export default function AnnualLeavePage() {
       )
     : rows;
 
-  const years = [thisYear, thisYear - 1, thisYear - 2, thisYear - 3];
+  const years: number[] = [];
+  for (let y = thisYear; y >= SYSTEM_START_YEAR; y--) years.push(y);
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
@@ -147,17 +152,23 @@ export default function AnnualLeavePage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <select
-            value={year}
-            onChange={(e) => setYear(Number(e.target.value))}
-            className="px-3 py-2.5 border border-gray-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            {years.map((y) => (
-              <option key={y} value={y}>
-                {y}년
-              </option>
-            ))}
-          </select>
+          {years.length > 1 ? (
+            <select
+              value={year}
+              onChange={(e) => setYear(Number(e.target.value))}
+              className="px-3 py-2.5 border border-gray-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {years.map((y) => (
+                <option key={y} value={y}>
+                  {y}년
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className="px-3 py-2.5 text-sm font-medium text-gray-700">
+              {thisYear}년
+            </div>
+          )}
           <div className="relative">
             <Search
               size={16}
@@ -216,7 +227,7 @@ export default function AnnualLeavePage() {
                         {r.name}
                       </div>
                       <div className="text-xs text-gray-400 truncate">
-                        {r.departmentName ?? "부서 없음"}
+                        {[r.departmentName, r.positionName].filter(Boolean).join(" · ") || "부서/직급 없음"}
                       </div>
                     </div>
                   </div>
