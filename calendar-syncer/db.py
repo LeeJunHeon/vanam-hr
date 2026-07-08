@@ -254,6 +254,78 @@ class Database:
                 (holiday_date, name),
             )
 
+    def reconcile_month_holidays(self, year: int, month: int, fresh: dict) -> tuple:
+        """KASI 조회 성공한 '한 달'을 실제 공휴일로 맞춘다(reconcile).
+
+        fresh = {'YYYY-MM-DD': 명칭}. 해당 월 범위 [month_start, next_month_start)에서:
+          - source != 'manual' 이고 fresh에 없는 행 삭제
+          - fresh의 각 날짜를 source='kasi'로 upsert (기존이 manual이면 건드리지 않음)
+        반환 (upsert건수, 삭제건수). 삭제/upsert는 반드시 이 월 범위로만.
+
+        조회 실패는 상위(_fetch_kasi_holidays)에서 걸러져 이 메서드가 호출되지 않으므로,
+        여기 도달 = 조회 성공. fresh가 비어 있으면 그 달 non-manual 행을 비운다.
+
+        autocommit=True 기본이므로, 삭제+upsert를 한 트랜잭션으로 묶기 위해
+        일시적으로 autocommit을 끄고 commit 후 원복한다.
+        """
+        self._ensure_connected()
+        month_start = date(year, month, 1)
+        next_month_start = (
+            date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+        )
+        keep = [
+            date(int(k[0:4]), int(k[5:7]), int(k[8:10])) for k in fresh.keys()
+        ]
+
+        self.conn.autocommit = False
+        try:
+            with self.conn.cursor() as c:
+                if keep:
+                    c.execute(
+                        """
+                        DELETE FROM hr.holidays
+                        WHERE holiday_date >= %s AND holiday_date < %s
+                          AND source <> 'manual'
+                          AND holiday_date <> ALL(%s::date[])
+                        """,
+                        (month_start, next_month_start, keep),
+                    )
+                else:
+                    c.execute(
+                        """
+                        DELETE FROM hr.holidays
+                        WHERE holiday_date >= %s AND holiday_date < %s
+                          AND source <> 'manual'
+                        """,
+                        (month_start, next_month_start),
+                    )
+                deleted = c.rowcount
+
+                upserted = 0
+                for ymd, name in fresh.items():
+                    d = date(int(ymd[0:4]), int(ymd[5:7]), int(ymd[8:10]))
+                    c.execute(
+                        """
+                        INSERT INTO hr.holidays
+                            (holiday_date, name, source, created_at, updated_at)
+                        VALUES (%s, %s, 'kasi', NOW(), NOW())
+                        ON CONFLICT (holiday_date) DO UPDATE
+                            SET name = EXCLUDED.name,
+                                source = 'kasi',
+                                updated_at = NOW()
+                            WHERE hr.holidays.source <> 'manual'
+                        """,
+                        (d, name),
+                    )
+                    upserted += c.rowcount
+            self.conn.commit()
+            return upserted, deleted
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            self.conn.autocommit = True
+
     # ========================================================================
     # 데이터 보관기간 정리 (purge) — count/delete 쌍.
     # retention은 호출자가 '3 months' 같은 문자열로 넘기고 retention::interval로 사용.

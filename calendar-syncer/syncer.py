@@ -19,12 +19,14 @@
 체크 주기: 60초 (분 단위로 04:00 도달 감지). CPU 부담 거의 없음.
 """
 
+import os
 import signal
 import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 
+import requests
 from flask import Flask, jsonify, request
 
 from config import load_config
@@ -474,70 +476,74 @@ class Syncer:
 
         return default_category_id, default_category_code, None
 
-    def _sync_holidays(self, now_kst: datetime) -> None:
-        """Phase 6-2L+ B-2: 공휴일 캘린더 → hr.holidays UPSERT.
-
-        - policy_settings의 'holiday_calendar_id'에서 캘린더 ID 읽음 (없으면 skip)
-        - 오늘 ~ +120일 범위의 종일 일정만 대상 (시간 지정은 공휴일 아님)
-        - 다일 종일 일정: end.date는 exclusive(다음날) → start ~ end-1 각 날짜 upsert
-        - 직원 매칭/attendance_request INSERT는 하지 않음 (근태와 분리)
-        """
-        cal_id = self.db.get_holiday_calendar_id()
-        if not cal_id:
-            self.logger.info(
-                "공휴일 캘린더 ID(policy holiday_calendar_id)가 없어 skip"
-            )
-            return
-
-        # 충분히 미래까지 미리 받아둠 (관리자가 다음 분기 공휴일 미리 보고 싶을 수 있음)
-        time_min = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
-        time_max = time_min + timedelta(days=120)
-
-        events = self.client.list_events(cal_id, time_min, time_max)
-        upsert_cnt = 0
-        skip_cnt = 0
-        for event in events:
-            p = self.client.parse_event(event)
-            # 시스템 생성분 스킵 (혹시 모를 무한루프 방지)
-            if p["ext_props"].get("vanam_source"):
-                continue
-            # 시간 지정 일정은 공휴일 아님 → skip
-            if not p["is_all_day"]:
-                skip_cnt += 1
-                continue
-
-            name = (p["summary"] or "").strip()
-            if not name:
-                continue
-
-            # 종일 일정: start.date / end.date (end.date는 exclusive=종료일 다음날)
-            start_raw = p["start_date_or_datetime"]  # "YYYY-MM-DD"
-            end_dict = event.get("end") or {}
-            end_excl_str = end_dict.get("date") or start_raw  # 단일일이면 fallback
-
+    def _fetch_kasi_holidays(self, service_key, year, month):
+        """getRestDeInfo 1개월 조회 → {'YYYY-MM-DD': 명칭} (isHoliday='Y'만).
+           실패(HTTP/파싱/resultCode!=00)는 예외로 올린다(상위가 '이 달 스킵' 처리)."""
+        base = "https://apis.data.go.kr/B090041/openapi/service/SpcdeInfoService/getRestDeInfo"
+        params = {
+            "serviceKey": service_key,
+            "pageNo": 1, "numOfRows": 50,
+            "solYear": year, "solMonth": f"{month:02d}",
+            "_type": "json",
+        }
+        # 일시적 오류 대비 2회까지 재시도
+        last_err = None
+        for attempt in range(2):
             try:
-                start_d = datetime.strptime(start_raw, "%Y-%m-%d").date()
-                end_excl_d = datetime.strptime(end_excl_str, "%Y-%m-%d").date()
-            except ValueError:
-                continue
+                resp = requests.get(base, params=params, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                header = (data.get("response") or {}).get("header") or {}
+                if header.get("resultCode") != "00":
+                    raise RuntimeError(
+                        f"KASI resultCode={header.get('resultCode')} {header.get('resultMsg')}"
+                    )
+                items = ((data["response"].get("body") or {}).get("items"))
+                result = {}
+                if items and items != "":   # 빈 문자열이면 공휴일 0건
+                    item = items.get("item")
+                    rows = item if isinstance(item, list) else [item]
+                    for r in rows:
+                        if str(r.get("isHoliday", "")).strip().upper() == "Y":
+                            s = str(r["locdate"])  # 20260815
+                            ymd = f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+                            result[ymd] = r.get("dateName", "")
+                return result
+            except Exception as e:
+                last_err = e
+                time.sleep(1)
+        raise last_err
 
-            # end_excl은 종료일 다음날 → 마지막 포함일은 end_excl - 1일
-            # 단일일 일정이면 start_d == end_excl_d → 그날 1일만 upsert
-            if end_excl_d <= start_d:
-                # 비정상: start ~ start 하루만
-                self.db.upsert_holiday(start_d, name)
-                upsert_cnt += 1
-                continue
+    def _sync_holidays(self, now_kst: datetime) -> None:
+        """KASI 특일정보 API(getRestDeInfo)로 hr.holidays reconcile.
 
-            cursor = start_d
-            while cursor < end_excl_d:
-                self.db.upsert_holiday(cursor, name)
-                upsert_cnt += 1
-                cursor = cursor + timedelta(days=1)
-
+        - 올해 1월 ~ 내년 12월(24개월)을 월 단위로 조회.
+        - 조회 성공한 달만 reconcile_month_holidays 호출 (실패 달은 기존 유지).
+        - source != 'manual' 행만 KASI 실제 공휴일로 정확히 맞춘다(reconcile).
+        - 직원 매칭/attendance_request INSERT는 하지 않음 (근태와 분리).
+        """
+        service_key = os.environ.get("KASI_SERVICE_KEY")
+        if not service_key:
+            self.logger.warning("KASI_SERVICE_KEY 미설정 → 공휴일 동기화 skip")
+            return
+        this_year = now_kst.year
+        total_up = total_del = total_skip = 0
+        for year in (this_year, this_year + 1):
+            for month in range(1, 13):
+                try:
+                    fresh = self._fetch_kasi_holidays(service_key, year, month)
+                except Exception as e:
+                    total_skip += 1
+                    self.logger.warning(
+                        f"공휴일 조회 실패 {year}-{month:02d}: {e} → 이 달 기존 유지"
+                    )
+                    continue
+                up, deleted = self.db.reconcile_month_holidays(year, month, fresh)
+                total_up += up
+                total_del += deleted
         self.logger.info(
-            f"공휴일 {upsert_cnt}건 동기화 (시간 지정 skip {skip_cnt}건, "
-            f"범위 {time_min.date()} ~ {time_max.date()})"
+            f"공휴일 동기화(KASI): upsert {total_up} / 삭제 {total_del} / "
+            f"스킵 {total_skip}개월"
         )
 
     def sync_once(self):
