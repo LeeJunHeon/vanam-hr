@@ -32,13 +32,46 @@ interface MyShiftResponse {
 
 const WEEKDAY = ["월", "화", "수", "목", "금", "토", "일"];
 
+// @db.Date는 UTC 자정으로 오간다. 날짜 계산은 UTC 메서드로 일관 처리.
+// "YYYY-MM-DD" → 그 주 월요일 Date (백엔드 anchor와 동일: start_date를 그 주 월요일로 내림)
+function mondayOfUTC(ymd: string): Date {
+  const d = new Date(ymd + "T00:00:00.000Z");
+  const dow = (d.getUTCDay() + 6) % 7; // 일=0..토=6 → 월=0..일=6
+  d.setUTCDate(d.getUTCDate() - dow);
+  return d;
+}
+function addDaysUTC(d: Date, n: number): Date {
+  const r = new Date(d);
+  r.setUTCDate(r.getUTCDate() + n);
+  return r;
+}
+function mmddUTC(d: Date): string {
+  return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+}
+// 현재 시프트: 지금 진행 중인 사이클의 1주차 월요일(YYYY-MM-DD) — 첫 사이클의 옛 날짜 대신 현재 반복 날짜를 보여주기 위함
+function currentCycleMonday(
+  startDate: string,
+  cycleDays: number,
+  refYmd: string
+): string {
+  const anchor = mondayOfUTC(startDate);
+  const ref = mondayOfUTC(refYmd);
+  const daysBetween = Math.round((ref.getTime() - anchor.getTime()) / 86400000);
+  const cyclesPassed = cycleDays > 0 ? Math.floor(daysBetween / cycleDays) : 0;
+  const cur = addDaysUTC(anchor, cyclesPassed * cycleDays);
+  return cur.toISOString().split("T")[0];
+}
+
 // 스케줄 그리드 — dayIndex 오름차순, cycleDays>7이면 주차로 묶어 표시.
+// anchorDate가 있으면(멀티위크) 각 주차에 실제 날짜 범위를 병기.
 function ScheduleGrid({
   schedule,
   cycleDays,
+  anchorDate,
 }: {
   schedule: SchedulePoint[];
   cycleDays: number;
+  anchorDate?: string; // 이 시프트가 적용되는(될) 기준 시작일 "YYYY-MM-DD"
 }) {
   if (!Array.isArray(schedule) || schedule.length === 0) {
     return <div className="text-xs text-gray-400">스케줄 정보 없음</div>;
@@ -54,45 +87,60 @@ function ScheduleGrid({
     weeks.get(w)!.push(p);
   }
 
+  const anchorMon = anchorDate ? mondayOfUTC(anchorDate) : null;
+
   return (
     <div className="space-y-2">
-      {[...weeks.entries()].map(([w, pts]) => (
-        <div key={w}>
-          {multiWeek && (
-            <div className="text-[11px] font-semibold text-gray-500 mb-1">
-              {w + 1}주차
-            </div>
-          )}
-          <div className="grid grid-cols-7 gap-1">
-            {pts.map((p) => {
-              const off = p.type === "off";
-              return (
-                <div
-                  key={p.dayIndex}
-                  style={{ gridColumnStart: (p.dayIndex % 7) + 1 }}
-                  className={`rounded-md px-0.5 py-1 text-center ${
-                    off ? "bg-gray-50" : "bg-blue-50"
-                  }`}
-                >
-                  <div className="text-[10px] font-medium text-gray-400">
-                    {WEEKDAY[p.dayIndex % 7]}
+      {[...weeks.entries()].map(([w, pts]) => {
+        let rangeLabel = "";
+        if (multiWeek && anchorMon) {
+          const wStart = addDaysUTC(anchorMon, w * 7);
+          const wEnd = addDaysUTC(wStart, 6);
+          rangeLabel = `${mmddUTC(wStart)}~${mmddUTC(wEnd)}`;
+        }
+        return (
+          <div key={w}>
+            {multiWeek && (
+              <div className="text-[11px] font-semibold text-gray-500 mb-1">
+                {w + 1}주차
+                {rangeLabel && (
+                  <span className="ml-1 font-normal text-gray-400">
+                    ({rangeLabel})
+                  </span>
+                )}
+              </div>
+            )}
+            <div className="grid grid-cols-7 gap-1">
+              {pts.map((p) => {
+                const off = p.type === "off";
+                return (
+                  <div
+                    key={p.dayIndex}
+                    style={{ gridColumnStart: (p.dayIndex % 7) + 1 }}
+                    className={`rounded-md px-0.5 py-1 text-center ${
+                      off ? "bg-gray-50" : "bg-blue-50"
+                    }`}
+                  >
+                    <div className="text-[10px] font-medium text-gray-400">
+                      {WEEKDAY[p.dayIndex % 7]}
+                    </div>
+                    {off ? (
+                      <div className="text-[10px] font-semibold text-gray-400">
+                        휴무
+                      </div>
+                    ) : (
+                      <div className="text-[10px] font-semibold text-blue-700 leading-tight">
+                        <div>{p.start}</div>
+                        <div>~{p.end}</div>
+                      </div>
+                    )}
                   </div>
-                  {off ? (
-                    <div className="text-[10px] font-semibold text-gray-400">
-                      휴무
-                    </div>
-                  ) : (
-                    <div className="text-[10px] font-semibold text-blue-700 leading-tight">
-                      <div>{p.start}</div>
-                      <div>~{p.end}</div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -141,6 +189,10 @@ export default function MyShiftModal({
   const currentId = data?.currentShift?.id ?? null;
   const changeDisabled =
     submitting || selectedId == null || selectedId === currentId;
+  const hasMultiWeek =
+    !!data &&
+    (((data.currentShift?.cycleDays ?? 0) > 7) ||
+      data.patterns.some((p) => p.cycleDays > 7));
 
   const handleChange = async () => {
     if (changeDisabled || selectedId == null) return;
@@ -218,6 +270,11 @@ export default function MyShiftModal({
                   <ScheduleGrid
                     schedule={data.currentShift.schedule}
                     cycleDays={data.currentShift.cycleDays}
+                    anchorDate={currentCycleMonday(
+                      data.currentShift.startDate,
+                      data.currentShift.cycleDays,
+                      data.effectiveDate
+                    )}
                   />
                 </div>
               ) : (
@@ -236,6 +293,14 @@ export default function MyShiftModal({
             ) : (
               <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-sm text-blue-700">
                 선택한 시프트는 오늘({data.effectiveDate})부터 적용됩니다.
+              </div>
+            )}
+
+            {hasMultiWeek && (
+              <div className="text-[11px] leading-relaxed text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+                ※ 교대(순환) 시프트의 <b>1주차는 “적용 시작일이 속한 주(월요일
+                기준)”</b>이며 이후 자동으로 순환합니다. 달력상 몇째 주와 다를
+                수 있으니, 각 주차 옆의 날짜로 확인하세요.
               </div>
             )}
 
@@ -290,6 +355,7 @@ export default function MyShiftModal({
                         <ScheduleGrid
                           schedule={p.schedule}
                           cycleDays={p.cycleDays}
+                          anchorDate={data.effectiveDate}
                         />
                       </button>
                     );
