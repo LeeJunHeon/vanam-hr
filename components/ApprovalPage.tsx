@@ -20,6 +20,11 @@ import {
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import { DatesModal, type ApiDatePayload } from "@/components/FieldTripPage";
 
+// 일수 포맷: 정수면 그대로, 아니면 소수 1자리 (반차 0.5 단위 대응)
+function fmtDays(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
 // Phase 7 3단계: 결재함이 attendance + trip 두 종류를 모두 다룸.
 // 응답에 kind 필드가 추가됨 — 'attendance' or 'trip'.
 // + 출장 초대 응답: kind 'trip_invite' (수락/거부, approval과 무관).
@@ -71,6 +76,12 @@ interface ApprovalItem {
   calendarEventDescription: string | null;
   externalSource: string | null;
   externalEventId: string | null;
+  // 연차 차감 정보 (차감 대상만 서버가 채움)
+  leaveDeductPerDay?: number;
+  leaveGranted?: number | null;
+  leaveRemaining?: number | null;
+  leaveRequestAmount?: number | null;
+  leaveRemainingAfter?: number | null;
 }
 
 // Phase 7 3단계: 출장 결재 항목
@@ -745,6 +756,20 @@ function ApprovalCard({
           </>
         )}
       </div>
+
+      {/* 연차 차감 정보 (차감 대상 신청만) */}
+      {item.leaveRequestAmount != null && (
+        <div className={`px-3 py-1.5 rounded-lg text-xs mb-2 ${
+          (item.leaveRemainingAfter ?? 0) < 0
+            ? "bg-rose-50 border border-rose-200 text-rose-700"
+            : "bg-blue-50 border border-blue-100 text-blue-800"
+        }`}>
+          연차 잔여 <b>{fmtDays(item.leaveRemaining ?? 0)}일</b> · 이번{" "}
+          <b>{fmtDays(item.leaveRequestAmount)}일</b> 차감 → 신청 후{" "}
+          <b>{fmtDays(item.leaveRemainingAfter ?? 0)}일</b>
+          {(item.leaveRemainingAfter ?? 0) < 0 && <span className="ml-1 font-medium">⚠ 초과</span>}
+        </div>
+      )}
 
       {/* 카테고리 + 상태 */}
       <div className="flex items-start justify-between gap-2 mb-3">

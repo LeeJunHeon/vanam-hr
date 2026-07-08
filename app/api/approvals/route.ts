@@ -8,6 +8,7 @@ import {
 import { createNotifications } from "@/lib/notify";
 import { applyCorrectionToDaily } from "@/lib/attendance-correction";
 import { sweepEligibleDelegations } from "@/lib/sweep-delegations";
+import { getRemainingDays, getHolidaySet, countBusinessDays } from "@/lib/annual-leave";
 
 // 결재함 조회 시 위임 자동 마감을 throttle로 트리거(B). 모듈 레벨 상태.
 const DELEGATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 결재함 조회 트리거 throttle
@@ -331,6 +332,7 @@ export async function GET(request: NextRequest) {
             name: true,
             type: true,
             displayColor: true,
+            annualLeaveDeduct: true,
           },
         },
         primaryApprover: { select: { id: true, name: true } },
@@ -443,8 +445,30 @@ export async function GET(request: NextRequest) {
         calendarEventDescription: r.calendarEventDescription ?? null,
         externalSource: r.externalSource ?? null,
         externalEventId: r.externalEventId ?? null,
+        // 연차 차감 정보 (차감 대상만 아래 enrich 루프에서 채움)
+        leaveDeductPerDay: r.category?.annualLeaveDeduct ? Number(r.category.annualLeaveDeduct) : 0,
+        leaveGranted: null as number | null,
+        leaveRemaining: null as number | null,
+        leaveRequestAmount: null as number | null,
+        leaveRemainingAfter: null as number | null,
       };
     });
+
+    // 연차 차감 신청만 잔여/차감량 계산 (미리보기·초과차단과 동일 로직 재사용)
+    for (const it of attendanceItems) {
+      if (it.leaveDeductPerDay > 0) {
+        const startD = new Date(it.startDate + "T00:00:00.000Z");
+        const endD = new Date(it.endDate + "T00:00:00.000Z");
+        const startYear = startD.getUTCFullYear();
+        const { granted, remaining } = await getRemainingDays(it.employeeId, startYear);
+        const holidays = await getHolidaySet(it.startDate, it.endDate);
+        const amount = countBusinessDays(startD, endD, holidays) * it.leaveDeductPerDay;
+        it.leaveGranted = granted;
+        it.leaveRemaining = remaining;
+        it.leaveRequestAmount = amount;
+        it.leaveRemainingAfter = remaining - amount;
+      }
+    }
 
     // ────────────────────────────────────────────────────
     // Phase 7 3단계: 출장(trip) 결재 항목 합치기 (admin/ceo만)
