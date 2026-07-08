@@ -116,10 +116,11 @@ function StatusBadge({ autoStatus }: { autoStatus: string | null | undefined }) 
   );
 }
 
-// Phase 6-2K: 캘린더 시간 비고 라벨 (시간 지정 일정만)
+// 근태정정이면 "근태정정:", 그 외(외근/출장 등 시간 일정)면 "캘린더:"
 function calendarTimeNote(req: CalendarRequest | undefined): string | null {
   if (!req || !req.correctedCheckIn || !req.correctedCheckOut) return null;
-  return `캘린더: ${formatTime(req.correctedCheckIn)}-${formatTime(req.correctedCheckOut)}`;
+  const label = req.categoryCode === "CORRECTION" ? "근태정정" : "캘린더";
+  return `${label}: ${formatTime(req.correctedCheckIn)}-${formatTime(req.correctedCheckOut)}`;
 }
 
 export default function AttendanceCalendarDayModal({
