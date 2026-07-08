@@ -13,6 +13,34 @@ export interface AnnualLeavePolicyValues {
   firstYearFixedDays: number;
 }
 
+// from~to(YYYY-MM-DD, inclusive)의 hr.holidays를 'YYYY-MM-DD' Set으로 반환.
+export async function getHolidaySet(fromYmd: string, toYmd: string): Promise<Set<string>> {
+  const rows = await prisma.holiday.findMany({
+    where: {
+      holidayDate: {
+        gte: new Date(`${fromYmd}T00:00:00.000Z`),
+        lte: new Date(`${toYmd}T00:00:00.000Z`),
+      },
+    },
+    select: { holidayDate: true },
+  });
+  return new Set(rows.map((h) => h.holidayDate.toISOString().split("T")[0]));
+}
+
+// [start, end] inclusive에서 토(6)·일(0)·공휴일을 제외한 근무일 수.
+export function countBusinessDays(start: Date, end: Date, holidays: Set<string>): number {
+  let count = 0;
+  const cur = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
+  const last = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()));
+  while (cur <= last) {
+    const dow = cur.getUTCDay(); // 0=일, 6=토
+    const ymd = cur.toISOString().split("T")[0];
+    if (dow !== 0 && dow !== 6 && !holidays.has(ymd)) count++;
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return count;
+}
+
 // targetYear의 부여량 계산.
 // - grant_basis='fiscal_year': 기준일 = targetYear-01-01. 그 시점 만 근속으로 계산(매년 1/1 초기화).
 // - grant_basis='hire_date': 기준일 = asOf(오늘). 기존 로직.
@@ -88,15 +116,20 @@ export async function computeSystemUsedDays(
       category: { select: { annualLeaveDeduct: true } },
     },
   });
+  if (reqs.length === 0) return 0;
+  const minStart = new Date(Math.min(...reqs.map((r) => r.startDate.getTime())));
+  const maxEnd = new Date(Math.max(...reqs.map((r) => r.endDate.getTime())));
+  const holidays = await getHolidaySet(
+    minStart.toISOString().split("T")[0],
+    maxEnd.toISOString().split("T")[0]
+  );
   let total = 0;
   for (const r of reqs) {
     const deduct = r.category.annualLeaveDeduct
       ? Number(r.category.annualLeaveDeduct)
       : 0;
     if (deduct <= 0) continue;
-    const days =
-      Math.floor((r.endDate.getTime() - r.startDate.getTime()) / 86400000) + 1;
-    total += days * deduct;
+    total += countBusinessDays(r.startDate, r.endDate, holidays) * deduct;
   }
   return total;
 }
@@ -191,11 +224,18 @@ export async function getLeaveDetailItems(
     },
   });
 
+  if (reqs.length === 0) return { totalUsed: 0, items: [] };
+  const minStart = new Date(Math.min(...reqs.map((r) => r.startDate.getTime())));
+  const maxEnd = new Date(Math.max(...reqs.map((r) => r.endDate.getTime())));
+  const holidays = await getHolidaySet(
+    minStart.toISOString().split("T")[0],
+    maxEnd.toISOString().split("T")[0]
+  );
+
   let totalUsed = 0;
   const items = reqs.map((r) => {
     const deduct = r.category?.annualLeaveDeduct ? Number(r.category.annualLeaveDeduct) : 0;
-    const days = Math.floor((r.endDate.getTime() - r.startDate.getTime()) / 86400000) + 1;
-    const used = days * deduct;
+    const used = countBusinessDays(r.startDate, r.endDate, holidays) * deduct;
     totalUsed += used;
     return {
       startDate: r.startDate.toISOString().split("T")[0],
