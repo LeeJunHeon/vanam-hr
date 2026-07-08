@@ -101,6 +101,11 @@ function isoToTimeInput(iso: string | null): string {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
+// 일수 포맷: 정수면 그대로, 아니면 소수 1자리 (반차 0.5 단위 대응)
+function fmtDays(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
 const EMPTY_FORM = {
   categoryId: "" as "" | string,
   startDate: todayYmd(),
@@ -145,6 +150,12 @@ export default function RequestPage() {
   // 본인 연차 현황 (전체/사용/잔여)
   const [leaveInfo, setLeaveInfo] = useState<{
     granted: number; used: number; remaining: number; mapped: boolean;
+  } | null>(null);
+
+  // 신청 폼 연차 차감 미리보기 (선택 항목·기간 기준, 서버 재계산)
+  const [preview, setPreview] = useState<{
+    deductPerDay: number; businessDays: number; requestAmount: number;
+    granted: number; remaining: number; remainingAfter: number;
   } | null>(null);
 
   useEffect(() => {
@@ -503,6 +514,34 @@ export default function RequestPage() {
     [categories, form.categoryId]
   );
 
+  // 연차 차감 미리보기 — 항목/기간 변경 시 debounce로 서버 조회 (서버 초과 차단과 동일 계산)
+  useEffect(() => {
+    const isCorrection = selectedCategory?.type === "correction";
+    if (!form.categoryId || !form.startDate || !form.endDate
+        || form.endDate < form.startDate || isCorrection) {
+      setPreview(null);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `/api/annual-leave/preview?categoryId=${Number(form.categoryId)}` +
+          `&startDate=${form.startDate}&endDate=${form.endDate}`
+        );
+        if (res.ok) {
+          const d = await res.json();
+          if (!cancelled) setPreview(d.mapped ? d : null);
+        } else if (!cancelled) {
+          setPreview(null);
+        }
+      } catch {
+        if (!cancelled) setPreview(null);
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [form.categoryId, form.startDate, form.endDate, selectedCategory?.type]);
+
   const memoHeader = useMemo(
     () =>
       buildMemoHeader({
@@ -603,6 +642,14 @@ export default function RequestPage() {
         );
         return;
       }
+    }
+
+    // 연차 잔여 소프트 가드 (UX용 — 최종 판정은 서버 초과 차단)
+    if (preview && preview.deductPerDay > 0 && preview.remainingAfter < 0) {
+      setFormError(
+        `연차 잔여가 부족합니다. (신청 ${fmtDays(preview.requestAmount)}일 / 잔여 ${fmtDays(preview.remaining)}일)`
+      );
+      return;
     }
 
     setFormError("");
@@ -1022,6 +1069,22 @@ export default function RequestPage() {
                       />
                     </div>
                   </div>
+
+                  {/* 연차 차감 미리보기 (차감 항목만) */}
+                  {preview && preview.deductPerDay > 0 && (
+                    <div className={`px-3 py-2 rounded-xl text-xs ${
+                      preview.remainingAfter < 0
+                        ? "bg-rose-50 border border-rose-200 text-rose-700"
+                        : "bg-emerald-50 border border-emerald-200 text-emerald-800"
+                    }`}>
+                      이번 신청 <b>{fmtDays(preview.requestAmount)}일</b> 차감 · 신청 후 잔여{" "}
+                      <b>{fmtDays(preview.remainingAfter)}일</b>
+                      <span className="opacity-70"> (현재 잔여 {fmtDays(preview.remaining)}일)</span>
+                      {preview.remainingAfter < 0 && (
+                        <div className="mt-1 font-medium">⚠ 잔여를 초과합니다. 이대로는 신청할 수 없습니다.</div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Phase 6-2F: 시간 입력 (연차 제외 카테고리만) */}
                   {categoryAllowsTimeInput(selectedCategory?.code) && (
