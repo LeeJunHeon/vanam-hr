@@ -10,6 +10,10 @@ import {
   Briefcase,
 } from "lucide-react";
 import { todayYmd, ymdFromDate } from "@/lib/dateUtils";
+import {
+  settledProgressLabel,
+  SETTLED_PROGRESS_STYLE,
+} from "@/lib/attendanceProgress";
 
 // 직원 카드 클릭 시 열리는 최근 30일 출퇴근 상세 모달.
 // /api/attendance/overview?employeeId=X&startDate=30일전&endDate=오늘 를 호출한다.
@@ -119,42 +123,21 @@ function renderProgress(row: DetailRow) {
         </span>
       );
     }
-    // notStartedYet === true → 여기서 return 안 하고 아래 autoStatus 로직으로 흐른다.
+    // notStartedYet === true → 여기서 return 안 하고 아래 공용 판정으로 흐른다.
   }
-  if (row.autoStatus === "working") {
-    return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700">
-        <span className="w-2 h-2 rounded-full bg-emerald-500" />
-        근무중
-      </span>
-    );
-  }
-  if (
-    row.autoStatus === "normal" ||
-    row.autoStatus === "late" ||
-    row.autoStatus === "early_leave"
-  ) {
-    return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-700">
-        <span className="w-2 h-2 rounded-full bg-blue-500" />
-        완료
-      </span>
-    );
-  }
-  // autoStatus가 NULL이지만 check_in+check_out 있으면 옛날 데이터 → '완료'
-  if (row.checkIn && row.checkOut) {
-    return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-700">
-        <span className="w-2 h-2 rounded-full bg-blue-500" />
-        완료
-      </span>
-    );
-  }
-  // absent 또는 데이터 없음
+  // 출근/퇴근 존재 + 오늘 여부로만 판정 (완료/근무중/미퇴근/미출근)
+  const label = settledProgressLabel({
+    hasCheckIn: !!row.checkIn,
+    hasCheckOut: !!row.checkOut,
+    isToday: row.workDate === todayYmd(),
+  });
+  const style = SETTLED_PROGRESS_STYLE[label];
   return (
-    <span className="inline-flex items-center gap-1 text-xs font-medium text-gray-500">
-      <span className="w-2 h-2 rounded-full bg-gray-400" />
-      미출근
+    <span
+      className={`inline-flex items-center gap-1 text-xs font-medium ${style.text}`}
+    >
+      <span className={`w-2 h-2 rounded-full ${style.dot}`} />
+      {label}
     </span>
   );
 }

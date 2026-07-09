@@ -279,68 +279,6 @@ function evalColor(autoStatus: string | null, hasCheckOut: boolean): string {
   return "text-emerald-600";
 }
 
-// 진행 라벨 (autoStatus 기준) — 기간별/CSV용
-function progressFromAutoStatus(autoStatus: string | null): string {
-  if (autoStatus === "working") return "근무중";
-  if (
-    autoStatus === "normal" ||
-    autoStatus === "late" ||
-    autoStatus === "early_leave"
-  )
-    return "완료";
-  return "미출근"; // absent 또는 null
-}
-
-/**
- * 진행 상태 판정 — Phase 6-2B 캘린더 보정 우선, 그 외엔 autoStatus + checkIn/Out.
- * - 캘린더 보정(isOverridden + categoryName) → 카테고리 라벨 ("연차" / "외근중" / "외근완료")
- * - autoStatus='working' → '근무중'
- * - check_in + check_out 다 있음 → '완료' (autoStatus 무관, 옛날 데이터 보호)
- * - check_in만 있음 → '근무중'
- * - autoStatus='absent' 또는 데이터 없음 → '미출근'
- */
-function progressFromRow(row: {
-  checkIn: string | null;
-  checkOut: string | null;
-  autoStatus: string | null;
-  categoryId?: number | null;
-  categoryCode?: string | null;
-  categoryName?: string | null;
-  isOverridden?: boolean;
-  correctedCheckIn?: string | null;
-  correctedCheckOut?: string | null;
-}): string {
-  // 캘린더 보정 우선 (Q-A) — 단, 시간형이 아직 시작 전이면 일반 판정으로 흐른다.
-  if (row.isOverridden && row.categoryId && row.categoryName) {
-    if (isVacationCategory(row.categoryCode ?? null)) return row.categoryName;
-    const isTimed = !!(row.correctedCheckIn && row.correctedCheckOut);
-    const now = Date.now();
-    const calIn = row.correctedCheckIn
-      ? new Date(row.correctedCheckIn).getTime()
-      : null;
-    const calOut = row.correctedCheckOut
-      ? new Date(row.correctedCheckOut).getTime()
-      : null;
-    const notStartedYet = isTimed && calIn !== null && now < calIn;
-    if (!notStartedYet) {
-      let ended: boolean;
-      if (isTimed && calOut !== null) {
-        ended = now >= calOut;
-      } else {
-        ended = !!row.checkOut;
-      }
-      return ended ? `${row.categoryName}완료` : `${row.categoryName}중`;
-    }
-    // notStartedYet이면 아래 일반 로직으로 흐른다.
-  }
-  // 기존 로직
-  if (row.autoStatus === "working") return "근무중";
-  if (row.checkIn && row.checkOut) return "완료";
-  if (row.checkIn) return "근무중";
-  if (row.autoStatus === "absent") return "미출근";
-  return "미출근";
-}
-
 // 직원 카드/표의 "마지막 활동" 한 줄 (아이콘 + 정보)
 // Phase 6-2B: 캘린더 보정 우선 표시 → 아이콘 + 카테고리명 + 사유 + 시간/종일
 function renderActivityInfo(r: RealtimeRow): ReactNode {
