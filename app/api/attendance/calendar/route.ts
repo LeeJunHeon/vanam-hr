@@ -160,7 +160,8 @@ export async function GET(request: NextRequest) {
     const requests = await prisma.attendanceRequest.findMany({
       where: {
         employeeId: { in: empIds },
-        status: { in: ["approved", "auto_approved"] },
+        // auto_delegated(자동위임 승인)도 승인 상태 — overview/realtime과 동일 3종으로 통일
+        status: { in: ["approved", "auto_approved", "auto_delegated"] },
         startDate: { lte: monthEnd },
         endDate: { gte: monthStart },
       },
