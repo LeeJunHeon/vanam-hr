@@ -62,6 +62,29 @@ function currentCycleMonday(
   return cur.toISOString().split("T")[0];
 }
 
+// 요일 포함 M/D 표기: "7/9(목)"
+const DOW = ["일", "월", "화", "수", "목", "금", "토"];
+function fmtMdDow(ymd: string): string {
+  const d = new Date(ymd + "T00:00:00.000Z");
+  return `${d.getUTCMonth() + 1}/${d.getUTCDate()}(${DOW[d.getUTCDay()]})`;
+}
+// 새 시프트를 ymd(적용일)부터 시작한다고 할 때 그 날 해당하는 schedule point.
+// 백엔드 anchor 규칙과 동일: start_date(=ymd)가 속한 주 월요일 기준 dayOffset.
+function pointForDate(
+  schedule: SchedulePoint[],
+  cycleDays: number,
+  ymd: string
+): SchedulePoint | null {
+  if (!Array.isArray(schedule) || cycleDays < 1) return null;
+  const d = new Date(ymd + "T00:00:00.000Z");
+  const anchor = mondayOfUTC(ymd);
+  const dayOffset =
+    ((Math.round((d.getTime() - anchor.getTime()) / 86400000) % cycleDays) +
+      cycleDays) %
+    cycleDays;
+  return schedule.find((p) => p.dayIndex === dayOffset) ?? null;
+}
+
 // 스케줄 그리드 — dayIndex 오름차순, cycleDays>7이면 주차로 묶어 표시.
 // anchorDate가 있으면(멀티위크) 각 주차에 실제 날짜 범위를 병기.
 function ScheduleGrid({
@@ -113,13 +136,24 @@ function ScheduleGrid({
             <div className="grid grid-cols-7 gap-1">
               {pts.map((p) => {
                 const off = p.type === "off";
+                const box = off
+                  ? "bg-gray-50"
+                  : p.type === "night"
+                  ? "bg-indigo-50"
+                  : p.type === "half_day"
+                  ? "bg-amber-50"
+                  : "bg-blue-50";
+                const txt =
+                  p.type === "night"
+                    ? "text-indigo-700"
+                    : p.type === "half_day"
+                    ? "text-amber-700"
+                    : "text-blue-700";
                 return (
                   <div
                     key={p.dayIndex}
                     style={{ gridColumnStart: (p.dayIndex % 7) + 1 }}
-                    className={`rounded-md px-0.5 py-1 text-center ${
-                      off ? "bg-gray-50" : "bg-blue-50"
-                    }`}
+                    className={`rounded-md px-0.5 py-1 text-center ${box}`}
                   >
                     <div className="text-[10px] font-medium text-gray-400">
                       {WEEKDAY[p.dayIndex % 7]}
@@ -129,7 +163,9 @@ function ScheduleGrid({
                         휴무
                       </div>
                     ) : (
-                      <div className="text-[10px] font-semibold text-blue-700 leading-tight">
+                      <div
+                        className={`text-[10px] font-semibold ${txt} leading-tight`}
+                      >
                         <div>{p.start}</div>
                         <div>~{p.end}</div>
                       </div>
@@ -193,6 +229,20 @@ export default function MyShiftModal({
     !!data &&
     (((data.currentShift?.cycleDays ?? 0) > 7) ||
       data.patterns.some((p) => p.cycleDays > 7));
+  const hasNight =
+    !!data &&
+    ((data.currentShift?.schedule?.some(
+      (p) => p.type === "night" || p.type === "half_day"
+    ) ??
+      false) ||
+      data.patterns.some((p) =>
+        p.schedule?.some((s) => s.type === "night" || s.type === "half_day")
+      ));
+  const selectedPattern =
+    data?.patterns.find((p) => p.id === selectedId) ??
+    (data?.currentShift && data.currentShift.id === selectedId
+      ? data.currentShift
+      : null);
 
   const handleChange = async () => {
     if (changeDisabled || selectedId == null) return;
@@ -207,7 +257,9 @@ export default function MyShiftModal({
       const json = await res.json().catch(() => ({}));
       if (res.ok && json.ok) {
         setToast(
-          `‘${json.patternName}’ 시프트로 변경되었습니다. ${json.effectiveDate}부터 적용됩니다.`
+          `‘${json.patternName}’ 시프트로 변경되었습니다. ${fmtMdDow(
+            json.effectiveDate
+          )}부터 적용됩니다.`
         );
         setTimeout(() => {
           onChanged?.();
@@ -257,6 +309,26 @@ export default function MyShiftModal({
           </div>
         ) : data ? (
           <div className="p-5 space-y-4">
+            {hasNight && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-gray-500">
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-2.5 h-2.5 rounded bg-blue-50 border border-blue-200" />
+                  주간
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-2.5 h-2.5 rounded bg-indigo-50 border border-indigo-200" />
+                  야간
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-2.5 h-2.5 rounded bg-amber-50 border border-amber-200" />
+                  반일
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-2.5 h-2.5 rounded bg-gray-50 border border-gray-200" />
+                  휴무
+                </span>
+              </div>
+            )}
             {/* 현재 시프트 */}
             <div>
               <div className="text-xs font-semibold text-gray-500 mb-1.5">
@@ -287,12 +359,13 @@ export default function MyShiftModal({
             {/* 적용일 안내 배너 */}
             {data.attendedToday ? (
               <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
-                오늘 이미 출근하셔서, 변경한 시프트는 {data.effectiveDate}부터
-                적용됩니다.
+                오늘 이미 출근하셔서, 변경한 시프트는{" "}
+                {fmtMdDow(data.effectiveDate)}부터 적용됩니다.
               </div>
             ) : (
               <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-sm text-blue-700">
-                선택한 시프트는 오늘({data.effectiveDate})부터 적용됩니다.
+                선택한 시프트는 오늘({fmtMdDow(data.effectiveDate)})부터
+                적용됩니다.
               </div>
             )}
 
@@ -363,6 +436,36 @@ export default function MyShiftModal({
                 </div>
               )}
             </div>
+
+            {selectedPattern && selectedId !== currentId && (
+              <div className="text-xs bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-blue-800">
+                적용일 <b>{fmtMdDow(data.effectiveDate)}</b>은{" "}
+                {(() => {
+                  const pt = pointForDate(
+                    selectedPattern.schedule,
+                    selectedPattern.cycleDays,
+                    data.effectiveDate
+                  );
+                  const wk =
+                    selectedPattern.cycleDays > 7
+                      ? " · 1주차부터 순환 시작"
+                      : "";
+                  if (!pt || pt.type === "off")
+                    return <>휴무입니다.{wk}</>;
+                  const label =
+                    pt.type === "night"
+                      ? "야간"
+                      : pt.type === "half_day"
+                      ? "반일"
+                      : "주간";
+                  return (
+                    <>
+                      {label} {pt.start}~{pt.end}로 시작합니다.{wk}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
 
             {/* 변경 에러 */}
             {formError && (
