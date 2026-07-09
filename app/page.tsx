@@ -16,7 +16,6 @@ import DevicesPage from "@/components/DevicesPage";
 import ShiftsPage from "@/components/ShiftsPage";
 import ApprovalLinesPage from "@/components/ApprovalLinesPage";
 import SystemSettingsPage from "@/components/SystemSettingsPage";
-import PersonalInfoPage from "@/components/PersonalInfoPage";
 import NotMappedNoticePage from "@/components/NotMappedNoticePage";
 import AttendanceOverviewPage from "@/components/AttendanceOverviewPage";
 import ScheduleOverviewPage from "@/components/ScheduleOverviewPage";
@@ -40,7 +39,6 @@ const PAGE_TITLES: Record<PageId, string> = {
   "employee-shifts": "직원별 시프트",
   "approval-lines": "결재라인 설정",
   "system-settings": "시스템 설정",
-  "personal-info": "인사정보 카드",
 };
 
 export default function Home() {
@@ -59,7 +57,6 @@ export default function Home() {
       "dashboard", "my-attendance", "request", "field-trip", "approval",
       "attendance-overview", "schedule-overview", "annual-leave", "employees", "org",
       "devices", "shifts", "employee-shifts", "approval-lines", "system-settings",
-      "personal-info",
     ];
     if (p && (VALID as string[]).includes(p)) {
       setPage(p as PageId);
@@ -83,22 +80,12 @@ export default function Home() {
   const isMapped = me?.isMapped ?? false;
   const showNotMapped = !meLoading && !isAdmin && !isMapped;
 
-  // 개인정보 카드 접근 권한 — CEO 또는 LEE Donghak(employeeId=5)
-  const canAccessPersonalInfo = userRole === "ceo" || me?.id === 5;
-
   // admin이 아닌데 admin 전용 페이지로 가려고 하면 대시보드로 강제 이동
   useEffect(() => {
     if (!isAdmin && isAdminOnlyPage(page)) {
       setPage("dashboard");
     }
   }, [isAdmin, page]);
-
-  // 개인정보 권한 없는데 personal-info로 가면 대시보드로
-  useEffect(() => {
-    if (page === "personal-info" && !canAccessPersonalInfo) {
-      setPage("dashboard");
-    }
-  }, [page, canAccessPersonalInfo]);
 
   const renderPage = () => {
     // 매핑 안 된 일반 사용자 — 모든 페이지 대신 안내 페이지만 표시
@@ -130,7 +117,6 @@ export default function Home() {
       case "employee-shifts": return <EmployeeShiftsPage />;
       case "approval-lines":  return <ApprovalLinesPage />;
       case "system-settings": return <SystemSettingsPage />;
-      case "personal-info":   return canAccessPersonalInfo ? <PersonalInfoPage /> : <DashboardPage onNavigate={setPage} />;
       default:                return <DashboardPage onNavigate={setPage} />;
     }
   };
@@ -144,7 +130,6 @@ export default function Home() {
         onClose={() => setSidebarOpen(false)}
         userName={userName}
         userRole={userRole}
-        canAccessPersonalInfo={canAccessPersonalInfo}
       />
 
       <main className="flex-1 flex flex-col min-w-0">

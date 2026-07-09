@@ -227,9 +227,6 @@ model Employee {
   // 연차 부여 기록
   annualLeaveGrants AnnualLeaveGrant[] @relation("EmployeeAnnualLeaveGrant")
 
-  // 개인정보 카드 (민감정보 추가 필드, 직원당 1행)
-  personalInfo EmployeePersonalInfo? @relation("EmployeePersonalInfo")
-
   @@index([isActive], map: "idx_employees_active")
   @@index([departmentId], map: "idx_employees_department")
   @@index([positionId], map: "idx_employees_position")
@@ -635,33 +632,5 @@ model AnnualLeaveGrant {
   @@unique([employeeId, year], map: "uk_annual_leave_grant")
   @@index([year], map: "idx_annual_leave_grant_year")
   @@map("annual_leave_grant")
-  @@schema("hr")
-}
-
-// 개인정보 카드 — 직원 추가(민감)정보 (직원당 1행, employee_id UNIQUE)
-model EmployeePersonalInfo {
-  id                  Int      @id @default(autoincrement())
-  employeeId          Int      @unique @map("employee_id")
-  researcherNumber    String?  @map("researcher_number") @db.VarChar(50)
-  university          String?  @db.VarChar(200)
-  finalDegree         String?  @map("final_degree") @db.VarChar(100)
-  major               String?  @db.VarChar(200)
-  graduationYearmonth String?  @map("graduation_yearmonth") @db.VarChar(20)
-  degreeNumber        String?  @map("degree_number") @db.VarChar(100)
-  residentNumber      String?  @map("resident_number") @db.VarChar(20)
-  address             String?
-  bankName            String?  @map("bank_name") @db.VarChar(100)
-  accountNumber       String?  @map("account_number") @db.VarChar(50)
-  accountHolder       String?  @map("account_holder") @db.VarChar(100)
-  hrName              String?  @map("hr_name") @db.VarChar(100)
-  hrPosition          String?  @map("hr_position") @db.VarChar(100)
-  hrDepartment        String?  @map("hr_department") @db.VarChar(100)
-  hrPhone             String?  @map("hr_phone") @db.VarChar(50)
-  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt           DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
-
-  employee Employee @relation("EmployeePersonalInfo", fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@map("employee_personal_info")
   @@schema("hr")
 }
