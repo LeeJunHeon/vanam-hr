@@ -417,8 +417,12 @@ export async function PUT(request: NextRequest) {
             }
           }
         } else if (catType === "correction") {
-          // 정정: originalCheckIn/Out이 있으면 복원, 없으면(원래 빈 자리에 정정 채운 경우)
-          //       checkIn/Out 모두 null로. workMinutes는 null로 두고 aggregator에 위임.
+          // 정정: 이 정정이 실제로 바꾼 쪽만 원본(백업)으로 복원하고,
+          //       건드리지 않은 쪽은 현재값(실제 WiFi 값 등)을 그대로 보존한다.
+          //       어느 쪽을 바꿨는지는 요청의 correctedCheckIn/Out(null 여부)로 판정.
+          //       workMinutes는 null로 두고 aggregator에 재계산 위임.
+          const inCorrected = before.correctedCheckIn !== null;
+          const outCorrected = before.correctedCheckOut !== null;
           for (const wd of revertDays) {
             const existing = await tx.attendanceDaily.findUnique({
               where: {
@@ -429,14 +433,13 @@ export async function PUT(request: NextRequest) {
               },
             });
             if (!existing) continue;
-            const hasOriginal =
-              existing.originalCheckIn !== null ||
-              existing.originalCheckOut !== null;
             await tx.attendanceDaily.update({
               where: { id: existing.id },
               data: {
-                checkIn: hasOriginal ? existing.originalCheckIn : null,
-                checkOut: hasOriginal ? existing.originalCheckOut : null,
+                // 출근: 이 정정이 고쳤으면 원본 백업으로 복원, 아니면 현재값 유지
+                checkIn: inCorrected ? existing.originalCheckIn : existing.checkIn,
+                // 퇴근: 이 정정이 고쳤으면 원본 백업으로 복원, 아니면 현재값 유지
+                checkOut: outCorrected ? existing.originalCheckOut : existing.checkOut,
                 originalCheckIn: null,
                 originalCheckOut: null,
                 workMinutes: null, // aggregator 재계산 트리거
