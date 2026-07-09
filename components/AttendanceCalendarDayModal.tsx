@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { X, Download } from "lucide-react";
+import { correctedRangeLabel } from "@/lib/attendanceLabels";
 
 // 응답 row 타입 (AttendanceCalendarView와 공유)
 export interface CalendarEmployee {
@@ -119,7 +120,7 @@ function StatusBadge({ autoStatus }: { autoStatus: string | null | undefined }) 
 // 근태정정이면 "근태정정:", 그 외(외근/출장 등 시간 일정)면 "캘린더:"
 function calendarTimeNote(req: CalendarRequest | undefined): string | null {
   if (!req || !req.correctedCheckIn || !req.correctedCheckOut) return null;
-  const label = req.categoryCode === "CORRECTION" ? "근태정정" : "캘린더";
+  const label = correctedRangeLabel(req.categoryCode, req.categoryName);
   return `${label}: ${formatTime(req.correctedCheckIn)}-${formatTime(req.correctedCheckOut)}`;
 }
 

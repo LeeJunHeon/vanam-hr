@@ -14,6 +14,7 @@ import {
   settledProgressLabel,
   SETTLED_PROGRESS_STYLE,
 } from "@/lib/attendanceProgress";
+import { correctedRangeLabel } from "@/lib/attendanceLabels";
 
 // 직원 카드 클릭 시 열리는 최근 30일 출퇴근 상세 모달.
 // /api/attendance/overview?employeeId=X&startDate=30일전&endDate=오늘 를 호출한다.
@@ -51,6 +52,8 @@ interface DetailRow {
   // 시간대 없는 종일 일정은 둘 다 null.
   correctedCheckIn: string | null;
   correctedCheckOut: string | null;
+  reqCategoryCode: string | null;
+  reqCategoryName: string | null;
 }
 
 // 휴가성(vacation) 카테고리 여부
@@ -406,7 +409,7 @@ export default function EmployeeAttendanceDetailModal({
                                 r.correctedCheckIn &&
                                 r.correctedCheckOut && (
                                   <div className="text-[11px] text-purple-700 font-mono">
-                                    {(r.categoryName ?? "외근")}{" "}
+                                    {correctedRangeLabel(r.reqCategoryCode, r.reqCategoryName)}{" "}
                                     {formatTime(r.correctedCheckIn)}~
                                     {formatTime(r.correctedCheckOut)}
                                   </div>
@@ -449,7 +452,7 @@ export default function EmployeeAttendanceDetailModal({
                           r.correctedCheckIn &&
                           r.correctedCheckOut && (
                             <div className="text-[11px] text-purple-700 font-mono">
-                              {(r.categoryName ?? "외근")}{" "}
+                              {correctedRangeLabel(r.reqCategoryCode, r.reqCategoryName)}{" "}
                               {formatTime(r.correctedCheckIn)}~
                               {formatTime(r.correctedCheckOut)}
                             </div>

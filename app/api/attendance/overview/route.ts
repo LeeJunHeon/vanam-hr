@@ -185,6 +185,7 @@ export async function GET(request: NextRequest) {
               correctedCheckIn: true,
               correctedCheckOut: true,
               requestedAt: true,
+              category: { select: { code: true, name: true } },
             },
             orderBy: { requestedAt: "asc" },
           })
@@ -201,6 +202,10 @@ export async function GET(request: NextRequest) {
     >();
     // 대표 선택용: 키별로 현재 채택된 요청의 "우선순위 점수"와 시작시각 보관
     const pickMeta = new Map<string, { timed: boolean; startMs: number }>();
+    const reqCategoryMap = new Map<
+      string,
+      { code: string | null; name: string | null }
+    >();
 
     for (const req of requests) {
       const isTimed = !!(req.correctedCheckIn && req.correctedCheckOut);
@@ -238,6 +243,10 @@ export async function GET(request: NextRequest) {
             out: req.correctedCheckOut
               ? req.correctedCheckOut.toISOString()
               : null,
+          });
+          reqCategoryMap.set(key, {
+            code: req.category?.code ?? null,
+            name: req.category?.name ?? null,
           });
         }
         d.setDate(d.getDate() + 1);
@@ -330,6 +339,8 @@ export async function GET(request: NextRequest) {
         reason: reasonMap.get(reasonKey) ?? null,
         correctedCheckIn: correctedMap.get(reasonKey)?.in ?? null,
         correctedCheckOut: correctedMap.get(reasonKey)?.out ?? null,
+        reqCategoryCode: reqCategoryMap.get(reasonKey)?.code ?? null,
+        reqCategoryName: reqCategoryMap.get(reasonKey)?.name ?? null,
       };
     });
 
