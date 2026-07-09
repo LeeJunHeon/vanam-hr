@@ -423,6 +423,58 @@ class Database:
             row = c.fetchone()
             return row[0] if row else None
 
+    def get_daily_for_backfill(self, employee_id: int, work_date: date):
+        """부분 백필 판정용 현재 daily 행 조회. 없으면 None."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                SELECT check_in, check_out, original_check_in, original_check_out,
+                       is_overridden, override_source
+                FROM hr.attendance_daily
+                WHERE employee_id = %s AND work_date = %s
+                """,
+                (employee_id, work_date),
+            )
+            row = c.fetchone()
+            if row is None:
+                return None
+            return {
+                "check_in": row[0], "check_out": row[1],
+                "original_check_in": row[2], "original_check_out": row[3],
+                "is_overridden": row[4], "override_source": row[5],
+            }
+
+    def backfill_missing_side_update(
+        self, employee_id: int, work_date: date,
+        check_in, check_out, work_minutes, auto_status,
+    ):
+        """manual 정정 행의 '안 고친 NULL 쪽'만 채우는 좁은 UPDATE.
+        COALESCE로 이미 값이 있는 쪽은 유지, 다중 가드로 정정된 쪽/이미 채워진 쪽은 절대 안 건드림.
+        변경된 행 id 반환, 가드에 막히면 None."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                UPDATE hr.attendance_daily
+                SET check_in = COALESCE(check_in, %s),
+                    check_out = COALESCE(check_out, %s),
+                    work_minutes = %s,
+                    auto_status = %s,
+                    updated_at = NOW()
+                WHERE employee_id = %s AND work_date = %s
+                  AND is_overridden = true AND override_source = 'manual'
+                  AND (
+                        (original_check_out IS NULL AND check_out IS NULL AND check_in IS NOT NULL)
+                     OR (original_check_in  IS NULL AND check_in  IS NULL AND check_out IS NOT NULL)
+                      )
+                RETURNING id
+                """,
+                (check_in, check_out, work_minutes, auto_status, employee_id, work_date),
+            )
+            row = c.fetchone()
+            return row[0] if row else None
+
     def get_holiday(self, work_date: date) -> Optional[str]:
         """Phase 6-2L+ B-3: 해당 날짜의 공휴일 이름 조회 (없으면 None).
 

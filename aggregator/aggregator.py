@@ -73,6 +73,10 @@ class Aggregator:
         self._disconnect_notified: dict[int, str] = {}
         # 대리 위임 자동 마감 스윕 날짜 게이트 (KST 기준 하루 1회)
         self._last_sweep_date = None
+        # 부분 백필: 미설정/false면 dry-run(로그만), true면 실제 UPDATE
+        self.partial_backfill_enabled = os.getenv(
+            "PARTIAL_BACKFILL_ENABLED", "false"
+        ).lower() in ("1", "true", "yes", "on")
 
     def compute_check_in_out(
         self,
@@ -533,11 +537,19 @@ class Aggregator:
         )
 
         if new_id is None:
+            backfilled = self._try_backfill_missing_side(
+                emp_id=emp_id, emp_no=emp_no, emp_name=emp_name, work_date=work_date,
+                computed_check_in=check_in, computed_check_out=check_out,
+                shift_info=shift_info,
+                grace_in_minutes=grace_in_minutes, grace_out_minutes=grace_out_minutes,
+                lunch_deduct_enabled=lunch_deduct_enabled,
+                lunch_start_str=lunch_start_str, lunch_end_str=lunch_end_str,
+            )
             self.logger.debug(
                 f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} "
-                f"— is_overridden=true 로 보호됨, 스킵"
+                f"— is_overridden=true 로 보호됨, 스킵 (backfill={backfilled})"
             )
-            return "overridden"
+            return "backfilled" if backfilled else "overridden"
         else:
             shift_label = (
                 f"shift={shift_info['patternName']}({shift_info['start']}~{shift_info['end']})"
@@ -555,6 +567,72 @@ class Aggregator:
                 f"{shift_label}, id={new_id}{calendar_label}"
             )
             return "upsert"
+
+    def _try_backfill_missing_side(
+        self, emp_id, emp_no, emp_name, work_date,
+        computed_check_in, computed_check_out,
+        shift_info, grace_in_minutes, grace_out_minutes,
+        lunch_deduct_enabled, lunch_start_str, lunch_end_str,
+    ) -> bool:
+        """manual 정정으로 잠긴 행에서 정정하지 않은 NULL 쪽을 raw로 백필 시도(P0-1).
+        정정된 쪽은 안 건드리고 병합값으로 auto_status/work_minutes 재계산.
+        PARTIAL_BACKFILL_ENABLED=false면 dry-run(로그만). 실제로 채웠으면 True."""
+        existing = self.db.get_daily_for_backfill(emp_id, work_date)
+        if not existing:
+            return False
+        if not existing["is_overridden"] or existing["override_source"] != "manual":
+            return False
+
+        ex_in = existing["check_in"]
+        ex_out = existing["check_out"]
+        orig_in = existing["original_check_in"]
+        orig_out = existing["original_check_out"]
+
+        # 채울 수 있는 쪽: 정정 안 됨(original NULL) + 현재 NULL + raw에 값 있음 + 반대쪽 존재
+        fill_out = (orig_out is None and ex_out is None
+                    and computed_check_out is not None and ex_in is not None)
+        fill_in = (orig_in is None and ex_in is None
+                   and computed_check_in is not None and ex_out is not None)
+        if not (fill_out or fill_in):
+            return False
+
+        # 병합값 (정정된 쪽은 기존 DB값 유지 — 재계산의 핵심)
+        final_in = ex_in if ex_in is not None else computed_check_in
+        final_out = ex_out if ex_out is not None else computed_check_out
+
+        new_auto_status = self._determine_auto_status(
+            check_in=final_in, check_out=final_out, shift_info=shift_info,
+            grace_in_minutes=grace_in_minutes, grace_out_minutes=grace_out_minutes,
+            lunch_deduct_enabled=lunch_deduct_enabled,
+            lunch_start_str=lunch_start_str, lunch_end_str=lunch_end_str,
+        )
+        new_work_minutes = None
+        if final_in is not None and final_out is not None:
+            new_work_minutes = int((final_out - final_in).total_seconds() // 60)
+
+        side = "퇴근" if fill_out else "출근"
+        if not self.partial_backfill_enabled:
+            self.logger.info(
+                f"  [부분백필 DRY-RUN] 직원 {emp_id}({emp_no}/{emp_name}) "
+                f"work_date={work_date} — {side} 백필 대상: check_in={final_in}, "
+                f"check_out={final_out}, work_minutes={new_work_minutes}, "
+                f"auto_status={new_auto_status} (PARTIAL_BACKFILL_ENABLED 미설정 → 미적용)"
+            )
+            return False
+
+        new_id = self.db.backfill_missing_side_update(
+            employee_id=emp_id, work_date=work_date,
+            check_in=final_in, check_out=final_out,
+            work_minutes=new_work_minutes, auto_status=new_auto_status,
+        )
+        if new_id is not None:
+            self.logger.info(
+                f"  [부분백필] 직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} "
+                f"— {side} 백필: check_in={final_in}, check_out={final_out}, "
+                f"work_minutes={new_work_minutes}, auto_status={new_auto_status}"
+            )
+            return True
+        return False
 
     def _pick_category_for_now(self, requests, now):
         """현재 시각 기준 대표 카테고리.
