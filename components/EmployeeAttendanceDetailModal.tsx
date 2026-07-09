@@ -44,6 +44,8 @@ interface DetailRow {
   workDate: string;
   checkIn: string | null;
   checkOut: string | null;
+  originalCheckIn: string | null;
+  originalCheckOut: string | null;
   // overview API는 wifi 필드를 계속 반환하지만, 표시 통일(3단계)로 모달은 daily 값을 사용
   workMinutes: number | null;
   autoStatus: string | null;
@@ -128,6 +130,19 @@ function renderProgress(row: DetailRow) {
 }
 
 // 평가 컬럼. Phase 6-2B: 캘린더 보정 시 카테고리명 표시 (Q5c).
+// 출퇴근 셀 — 정정된 경우 원본(취소선) + 정정값(청록). 캘린더 일별 모달과 동일 규칙.
+function renderTimeCell(original: string | null, actual: string | null) {
+  if (original) {
+    return (
+      <>
+        <span className="line-through text-gray-400 mr-1">{formatTime(original)}</span>
+        <span className="text-cyan-600 font-semibold">{formatTime(actual)}</span>
+      </>
+    );
+  }
+  return formatTime(actual) || "-";
+}
+
 function renderEval(row: DetailRow) {
   const c =
     row.autoStatus && row.autoStatus in AUTO_STATUS_META
@@ -359,10 +374,10 @@ export default function EmployeeAttendanceDetailModal({
                               {formatDateLabel(r.workDate)}
                             </td>
                             <td className="px-4 py-2.5 text-sm text-gray-900 font-mono">
-                              {formatTime(r.checkIn)}
+                              {renderTimeCell(r.originalCheckIn, r.checkIn)}
                             </td>
                             <td className="px-4 py-2.5 text-sm text-gray-900 font-mono">
-                              {formatTime(r.checkOut)}
+                              {renderTimeCell(r.originalCheckOut, r.checkOut)}
                             </td>
                             <td className="px-4 py-2.5 text-sm text-gray-900 font-mono text-right">
                               {formatWorkMinutes(r.workMinutes)}
@@ -414,7 +429,7 @@ export default function EmployeeAttendanceDetailModal({
                         </div>
                         <div className="flex items-center justify-between text-xs">
                           <span className="text-gray-900 font-mono">
-                            {formatTime(r.checkIn)} ~ {formatTime(r.checkOut)}
+                            {renderTimeCell(r.originalCheckIn, r.checkIn)} ~ {renderTimeCell(r.originalCheckOut, r.checkOut)}
                           </span>
                           <span className="text-gray-700 font-mono font-semibold">
                             {formatWorkMinutes(r.workMinutes)}
