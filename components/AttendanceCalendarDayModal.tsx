@@ -4,6 +4,7 @@ import { useState } from "react";
 import { X, Download } from "lucide-react";
 import { correctedRangeLabel } from "@/lib/attendanceLabels";
 import { todayYmd } from "@/lib/dateUtils";
+import type { AttendanceRow } from "@/lib/attendance-rows";
 
 // 응답 row 타입 (AttendanceCalendarView와 공유)
 export interface CalendarEmployee {
@@ -47,8 +48,8 @@ export interface CalendarRequest {
 interface ModalProps {
   date: string; // "YYYY-MM-DD"
   employees: CalendarEmployee[];
-  daily: CalendarDaily[];
   requests: CalendarRequest[];
+  rows: AttendanceRow[]; // 공용 조립 rows (일별 표시용)
   holidayName?: string | null; // Phase 6-2L+ B-4: 공휴일이면 이름
   editableEmployeeId?: number; // 이 직원 행이면 본인 사유 입력 가능 (내 근태에서 전달)
   onClose: () => void;
@@ -74,23 +75,6 @@ function autoStatusLabel(s: string | null): string {
       return "근무중";
     default:
       return "-";
-  }
-}
-
-function autoStatusColor(s: string | null): string {
-  switch (s) {
-    case "normal":
-      return "text-emerald-600";
-    case "late":
-      return "text-amber-600";
-    case "early_leave":
-      return "text-orange-600";
-    case "absent":
-      return "text-rose-600";
-    case "working":
-      return "text-blue-600";
-    default:
-      return "text-gray-400";
   }
 }
 
@@ -136,7 +120,8 @@ function StatusBadge({
   );
 }
 
-// 근태정정이면 "근태정정:", 그 외(외근/출장 등 시간 일정)면 "캘린더:"
+// 폴백용(row=daily 없는 미래 일정 등): 요청의 정정/외근 시간대 라벨.
+// 근태정정이면 "근태정정:", 그 외는 카테고리명(correctedRangeLabel).
 function calendarTimeNote(req: CalendarRequest | undefined): string | null {
   if (!req || !req.correctedCheckIn || !req.correctedCheckOut) return null;
   const label = correctedRangeLabel(req.categoryCode, req.categoryName);
@@ -146,8 +131,8 @@ function calendarTimeNote(req: CalendarRequest | undefined): string | null {
 export default function AttendanceCalendarDayModal({
   date,
   employees,
-  daily,
   requests,
+  rows,
   holidayName,
   editableEmployeeId,
   onClose,
@@ -184,15 +169,17 @@ export default function AttendanceCalendarDayModal({
     }
   };
 
-  // 지각/조퇴 사유 영역 렌더 (데스크탑/모바일 공용)
-  const renderReason = (d: CalendarDaily | undefined, empId: number) => {
+  // 지각/조퇴 사유 영역 렌더 (데스크탑/모바일 공용) — row 기반
+  const renderReason = (row: AttendanceRow | undefined, empId: number) => {
     const isLateOrEarly =
-      d?.autoStatus === "late" || d?.autoStatus === "early_leave";
-    if (!isLateOrEarly || d == null) return null;
+      row?.autoStatus === "late" || row?.autoStatus === "early_leave";
+    if (!isLateOrEarly || row == null) return null;
     const canEdit = editableEmployeeId != null && empId === editableEmployeeId;
     const currentReason =
-      d.id in localReasons ? localReasons[d.id] ?? "" : d.statusReason ?? "";
-    const label = d.autoStatus === "late" ? "지각" : "조퇴";
+      row.dailyId in localReasons
+        ? localReasons[row.dailyId] ?? ""
+        : row.statusReason ?? "";
+    const label = row.autoStatus === "late" ? "지각" : "조퇴";
 
     if (canEdit) {
       return (
@@ -205,17 +192,19 @@ export default function AttendanceCalendarDayModal({
               type="text"
               defaultValue={currentReason}
               onChange={(e) =>
-                setReasonEdits((p) => ({ ...p, [d.id]: e.target.value }))
+                setReasonEdits((p) => ({ ...p, [row.dailyId]: e.target.value }))
               }
               placeholder="사유를 입력하세요 (예: 병원 방문)"
               className="flex-1 border border-gray-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
             />
             <button
-              onClick={() => saveReason(d.id, reasonEdits[d.id] ?? currentReason)}
-              disabled={savingId === d.id}
+              onClick={() =>
+                saveReason(row.dailyId, reasonEdits[row.dailyId] ?? currentReason)
+              }
+              disabled={savingId === row.dailyId}
               className="px-2.5 py-1.5 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 shrink-0"
             >
-              {savingId === d.id ? "저장중" : "저장"}
+              {savingId === row.dailyId ? "저장중" : "저장"}
             </button>
           </div>
         </div>
@@ -235,16 +224,18 @@ export default function AttendanceCalendarDayModal({
   // 모달 대상 날짜가 오늘(KST)인지 — 미퇴근/근무중 판정용
   const isToday = date === todayYmd();
 
-  // 해당 날짜 직원별 데이터 추출
+  // 공용 조립 rows에서 해당 날짜 행을 직원별로 매핑
+  const rowMap = new Map<number, AttendanceRow>();
+  for (const r of rows) if (r.workDate === date) rowMap.set(r.employeeId, r);
   const dayData = employees.map((emp) => {
-    const d = daily.find(
-      (x) => x.employeeId === emp.id && x.workDate === date
-    );
-    const req = requests.find(
-      (r) =>
-        r.employeeId === emp.id && r.startDate <= date && r.endDate >= date
-    );
-    return { emp, d, req };
+    const row = rowMap.get(emp.id);
+    // req 는 row(=daily)가 없는 날짜(예: 미래 일정)의 폴백 표시용으로만 사용
+    const req = row
+      ? undefined
+      : requests.find(
+          (r) => r.employeeId === emp.id && r.startDate <= date && r.endDate >= date
+        );
+    return { emp, row, req };
   });
 
   const downloadDayCSV = () => {
@@ -258,39 +249,48 @@ export default function AttendanceCalendarDayModal({
       "상태/카테고리",
       "비고",
     ].join(",");
-    const rows = dayData.map(({ emp, d, req }) => {
+    const csvRows = dayData.map(({ emp, row, req }) => {
+      // 대표요청 존재 여부: 모듈 reasonMap은 요청이 있으면 항상 ""(빈문자열) 이상을 set → null이면 요청 없음
+      const hasReq = row ? row.reason !== null : !!req;
+      const catName = row ? row.reqCategoryName : (req?.categoryName ?? null);
+      // 비고 본문: row.reason은 빈문자열("")일 수 있으므로 || 로 폴백
+      const reasonText = row ? (row.reason || row.note || "") : (req?.reason ?? "");
+      const calNote = row
+        ? (row.correctedCheckIn && row.correctedCheckOut
+            ? `${correctedRangeLabel(row.reqCategoryCode, row.reqCategoryName)}: ${formatTime(row.correctedCheckIn)}-${formatTime(row.correctedCheckOut)}`
+            : null)
+        : calendarTimeNote(req);
+
       let inCell = "";
       let outCell = "";
 
       // 시간 — 카테고리 유무와 무관하게 attendance_daily에 시간이 있으면 표시
-      if (d?.checkIn) {
-        inCell = d.originalCheckIn
-          ? `(${formatTime(d.originalCheckIn)}→)${formatTime(d.checkIn)}`
-          : formatTime(d.checkIn);
+      if (row?.checkIn) {
+        inCell = row.originalCheckIn
+          ? `(${formatTime(row.originalCheckIn)}→)${formatTime(row.checkIn)}`
+          : formatTime(row.checkIn);
       }
-      if (d?.checkOut) {
-        outCell = d.originalCheckOut
-          ? `(${formatTime(d.originalCheckOut)}→)${formatTime(d.checkOut)}`
-          : formatTime(d.checkOut);
+      if (row?.checkOut) {
+        outCell = row.originalCheckOut
+          ? `(${formatTime(row.originalCheckOut)}→)${formatTime(row.checkOut)}`
+          : formatTime(row.checkOut);
       }
 
       // 상태/카테고리 — 카테고리 우선, 없으면 autoStatus
       let statusCell = "";
-      if (req) {
-        statusCell = req.categoryName ?? "";
-      } else if (d?.checkIn && !d?.checkOut) {
+      if (hasReq && catName) {
+        statusCell = catName;
+      } else if (row?.checkIn && !row?.checkOut) {
         statusCell = isToday ? "근무중" : "미퇴근";
-      } else if (d?.autoStatus) {
-        statusCell = autoStatusLabel(d.autoStatus);
+      } else if (row?.autoStatus) {
+        statusCell = autoStatusLabel(row.autoStatus);
       }
-      if (d?.originalCheckIn || d?.originalCheckOut) statusCell += " (정정)";
+      if (row?.originalCheckIn || row?.originalCheckOut) statusCell += " (정정)";
 
-      // 비고 — 캘린더 시간 + 사유 + note
+      // 비고 — 캘린더 시간 + 사유/note
       const noteParts: string[] = [];
-      const calNote = calendarTimeNote(req);
       if (calNote) noteParts.push(calNote);
-      if (req?.reason) noteParts.push(req.reason);
-      if (!req && d?.note) noteParts.push(d.note);
+      if (reasonText) noteParts.push(reasonText);
       const note = noteParts.join(" · ");
 
       const escape = (s: string) =>
@@ -311,7 +311,7 @@ export default function AttendanceCalendarDayModal({
         .join(",");
     });
 
-    const csv = "﻿" + [header, ...rows].join("\n");
+    const csv = "﻿" + [header, ...csvRows].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -369,8 +369,15 @@ export default function AttendanceCalendarDayModal({
               </tr>
             </thead>
             <tbody>
-              {dayData.map(({ emp, d, req }) => {
-                const calNote = calendarTimeNote(req);
+              {dayData.map(({ emp, row, req }) => {
+                const hasReq = row ? row.reason !== null : !!req;
+                const catName = row ? row.reqCategoryName : (req?.categoryName ?? null);
+                const reasonText = row ? (row.reason || row.note || "") : (req?.reason ?? "");
+                const calNote = row
+                  ? (row.correctedCheckIn && row.correctedCheckOut
+                      ? `${correctedRangeLabel(row.reqCategoryCode, row.reqCategoryName)}: ${formatTime(row.correctedCheckIn)}-${formatTime(row.correctedCheckOut)}`
+                      : null)
+                  : calendarTimeNote(req);
                 return (
                   <tr
                     key={emp.id}
@@ -387,42 +394,42 @@ export default function AttendanceCalendarDayModal({
                     </td>
                     {/* Phase 6-2K: 출장/외근도 시간 표시 */}
                     <td className="px-3 py-2.5 font-mono">
-                      {d?.originalCheckIn ? (
+                      {row?.originalCheckIn ? (
                         <>
                           <span className="line-through text-gray-400 mr-1">
-                            {formatTime(d.originalCheckIn)}
+                            {formatTime(row.originalCheckIn)}
                           </span>
                           <span className="text-cyan-600 font-semibold">
-                            {formatTime(d.checkIn)}
+                            {formatTime(row.checkIn)}
                           </span>
                         </>
                       ) : (
-                        formatTime(d?.checkIn ?? null) || "-"
+                        formatTime(row?.checkIn ?? null) || "-"
                       )}
                     </td>
                     <td className="px-3 py-2.5 font-mono">
-                      {d?.originalCheckOut ? (
+                      {row?.originalCheckOut ? (
                         <>
                           <span className="line-through text-gray-400 mr-1">
-                            {formatTime(d.originalCheckOut)}
+                            {formatTime(row.originalCheckOut)}
                           </span>
                           <span className="text-cyan-600 font-semibold">
-                            {formatTime(d.checkOut)}
+                            {formatTime(row.checkOut)}
                           </span>
                         </>
                       ) : (
-                        formatTime(d?.checkOut ?? null) || "-"
+                        formatTime(row?.checkOut ?? null) || "-"
                       )}
                     </td>
                     <td className="px-3 py-2.5">
-                      {req ? (
+                      {hasReq && catName ? (
                         <span className="text-purple-600 font-medium">
-                          {req.categoryName}
+                          {catName}
                         </span>
                       ) : (
-                        <StatusBadge autoStatus={d?.autoStatus ?? null} checkIn={d?.checkIn ?? null} checkOut={d?.checkOut ?? null} isToday={isToday} />
+                        <StatusBadge autoStatus={row?.autoStatus ?? null} checkIn={row?.checkIn ?? null} checkOut={row?.checkOut ?? null} isToday={isToday} />
                       )}
-                      {(d?.originalCheckIn || d?.originalCheckOut) && (
+                      {(row?.originalCheckIn || row?.originalCheckOut) && (
                         <span className="ml-1 text-xs bg-cyan-100 text-cyan-700 px-1.5 py-0.5 rounded-full font-medium">
                           정정
                         </span>
@@ -433,9 +440,9 @@ export default function AttendanceCalendarDayModal({
                       {calNote && (
                         <span className="text-amber-600">{calNote}</span>
                       )}
-                      {calNote && (req?.reason || d?.note) && " · "}
-                      <span>{req?.reason ?? d?.note ?? ""}</span>
-                      {renderReason(d, emp.id)}
+                      {calNote && reasonText && " · "}
+                      <span>{reasonText}</span>
+                      {renderReason(row, emp.id)}
                     </td>
                   </tr>
                 );
@@ -446,9 +453,16 @@ export default function AttendanceCalendarDayModal({
 
         {/* Phase 6-2K: 모바일 카드 리스트 (sm 미만) */}
         <div className="sm:hidden space-y-2 p-3">
-          {dayData.map(({ emp, d, req }) => {
-            const calNote = calendarTimeNote(req);
-            const hasTimes = d?.checkIn || d?.checkOut;
+          {dayData.map(({ emp, row, req }) => {
+            const hasReq = row ? row.reason !== null : !!req;
+            const catName = row ? row.reqCategoryName : (req?.categoryName ?? null);
+            const reasonText = row ? (row.reason || row.note || "") : (req?.reason ?? "");
+            const calNote = row
+              ? (row.correctedCheckIn && row.correctedCheckOut
+                  ? `${correctedRangeLabel(row.reqCategoryCode, row.reqCategoryName)}: ${formatTime(row.correctedCheckIn)}-${formatTime(row.correctedCheckOut)}`
+                  : null)
+              : calendarTimeNote(req);
+            const hasTimes = row?.checkIn || row?.checkOut;
             return (
               <div
                 key={emp.id}
@@ -464,12 +478,12 @@ export default function AttendanceCalendarDayModal({
                     </p>
                   </div>
                   <div className="shrink-0">
-                    {req ? (
+                    {hasReq && catName ? (
                       <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium">
-                        {req.categoryName}
+                        {catName}
                       </span>
                     ) : (
-                      <StatusBadge autoStatus={d?.autoStatus ?? null} checkIn={d?.checkIn ?? null} checkOut={d?.checkOut ?? null} isToday={isToday} />
+                      <StatusBadge autoStatus={row?.autoStatus ?? null} checkIn={row?.checkIn ?? null} checkOut={row?.checkOut ?? null} isToday={isToday} />
                     )}
                   </div>
                 </div>
@@ -478,32 +492,32 @@ export default function AttendanceCalendarDayModal({
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-mono">
                     <span>
                       출근:{" "}
-                      {d?.originalCheckIn ? (
+                      {row?.originalCheckIn ? (
                         <>
                           <span className="line-through text-gray-400">
-                            {formatTime(d.originalCheckIn)}
+                            {formatTime(row.originalCheckIn)}
                           </span>{" "}
                           <span className="text-cyan-600">
-                            {formatTime(d.checkIn)}
+                            {formatTime(row.checkIn)}
                           </span>
                         </>
                       ) : (
-                        formatTime(d?.checkIn ?? null) || "-"
+                        formatTime(row?.checkIn ?? null) || "-"
                       )}
                     </span>
                     <span>
                       퇴근:{" "}
-                      {d?.originalCheckOut ? (
+                      {row?.originalCheckOut ? (
                         <>
                           <span className="line-through text-gray-400">
-                            {formatTime(d.originalCheckOut)}
+                            {formatTime(row.originalCheckOut)}
                           </span>{" "}
                           <span className="text-cyan-600">
-                            {formatTime(d.checkOut)}
+                            {formatTime(row.checkOut)}
                           </span>
                         </>
                       ) : (
-                        formatTime(d?.checkOut ?? null) || "-"
+                        formatTime(row?.checkOut ?? null) || "-"
                       )}
                     </span>
                   </div>
@@ -512,12 +526,10 @@ export default function AttendanceCalendarDayModal({
                 {calNote && (
                   <p className="text-xs text-amber-600">{calNote}</p>
                 )}
-                {(req?.reason || d?.note) && (
-                  <p className="text-xs text-gray-500">
-                    {req?.reason ?? d?.note}
-                  </p>
+                {reasonText && (
+                  <p className="text-xs text-gray-500">{reasonText}</p>
                 )}
-                {renderReason(d, emp.id)}
+                {renderReason(row, emp.id)}
               </div>
             );
           })}

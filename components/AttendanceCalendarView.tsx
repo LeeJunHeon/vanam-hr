@@ -14,6 +14,7 @@ import AttendanceCalendarDayModal, {
   type CalendarRequest,
 } from "@/components/AttendanceCalendarDayModal";
 import MonthPicker from "@/components/MonthPicker";
+import type { AttendanceRow } from "@/lib/attendance-rows";
 
 // 카테고리 → 기호/색상/라벨
 const CATEGORY_ICONS: Record<
@@ -57,6 +58,7 @@ interface CalendarResponse {
   daily: CalendarDaily[];
   requests: CalendarRequest[];
   holidays?: CalendarHoliday[];
+  rows?: AttendanceRow[];
 }
 
 function thisMonthYm(): string {
@@ -515,8 +517,8 @@ export default function AttendanceCalendarView({
         <AttendanceCalendarDayModal
           date={selectedDate}
           employees={data.employees}
-          daily={data.daily}
           requests={data.requests}
+          rows={data.rows ?? []}
           holidayName={holidayMap.get(selectedDate) ?? null}
           editableEmployeeId={employeeId}
           onClose={() => setSelectedDate(null)}

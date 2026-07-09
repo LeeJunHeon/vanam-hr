@@ -33,6 +33,12 @@ export type AttendanceRow = {
   correctedCheckOut: string | null;
   reqCategoryCode: string | null;
   reqCategoryName: string | null;
+  // 2단계 additive — 일별 모달용 (overview 응답에도 실리지만 30일 모달은 읽지 않아 무해)
+  dailyId: number;
+  originalCheckIn: string | null;
+  originalCheckOut: string | null;
+  note: string | null;
+  statusReason: string | null;
 };
 
 export async function assembleAttendanceRows(params: {
@@ -54,14 +60,19 @@ export async function assembleAttendanceRows(params: {
             },
           },
           select: {
+            id: true,
             employeeId: true,
             workDate: true,
             checkIn: true,
             checkOut: true,
+            originalCheckIn: true,
+            originalCheckOut: true,
             workMinutes: true,
             autoStatus: true,
             isOverridden: true,
             categoryId: true,
+            note: true,
+            statusReason: true,
             category: {
               select: {
                 code: true,
@@ -249,6 +260,11 @@ export async function assembleAttendanceRows(params: {
       correctedCheckOut: correctedMap.get(reasonKey)?.out ?? null,
       reqCategoryCode: reqCategoryMap.get(reasonKey)?.code ?? null,
       reqCategoryName: reqCategoryMap.get(reasonKey)?.name ?? null,
+      dailyId: a.id,
+      originalCheckIn: a.originalCheckIn ? a.originalCheckIn.toISOString() : null,
+      originalCheckOut: a.originalCheckOut ? a.originalCheckOut.toISOString() : null,
+      note: a.note ?? null,
+      statusReason: a.statusReason ?? null,
     };
   });
 

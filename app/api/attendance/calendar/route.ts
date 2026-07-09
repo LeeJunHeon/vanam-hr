@@ -4,6 +4,7 @@ import {
   canViewAllEmployees,
 } from "@/lib/auth-helpers";
 import { prisma } from "@/lib/prisma";
+import { assembleAttendanceRows } from "@/lib/attendance-rows";
 
 // GET /api/attendance/calendar?yearMonth=2026-06[&employeeId=123]
 //
@@ -121,6 +122,7 @@ export async function GET(request: NextRequest) {
         employees: [],
         daily: [],
         requests: [],
+        rows: [],
       });
     }
 
@@ -187,9 +189,23 @@ export async function GET(request: NextRequest) {
       orderBy: { holidayDate: "asc" },
     });
 
+    // 공용 조립 rows — 일별 모달용 (월 셀 집계는 기존 daily/requests 사용)
+    const rows = await assembleAttendanceRows({
+      employees: employees.map((e) => ({
+        id: e.id,
+        employeeNo: e.employeeNo,
+        name: e.name,
+        departmentName: e.department?.name ?? null,
+        positionName: e.position?.name ?? null,
+      })),
+      startDate: `${yearMonth}-01`,
+      endDate: monthEnd.toISOString().split("T")[0],
+    });
+
     return NextResponse.json({
       yearMonth,
       employees,
+      rows,
       holidays: holidays.map((h) => ({
         date: h.holidayDate.toISOString().split("T")[0],
         name: h.name,
