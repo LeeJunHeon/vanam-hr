@@ -22,7 +22,6 @@ import {
   isVacationCategory,
   isLabelOnlyCategory,
   evalLabel,
-  evalColor,
   progressLabel,
   type ProgressStatus,
 } from "@/lib/attendanceLabels";
