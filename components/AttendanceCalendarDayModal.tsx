@@ -2,7 +2,11 @@
 
 import { useState } from "react";
 import { X, Download } from "lucide-react";
-import { correctedRangeLabel } from "@/lib/attendanceLabels";
+import {
+  correctedRangeLabel,
+  formatTime as libFormatTime,
+  AUTO_STATUS_META,
+} from "@/lib/attendanceLabels";
 import { todayYmd } from "@/lib/dateUtils";
 import type { AttendanceRow } from "@/lib/attendance-rows";
 
@@ -55,27 +59,14 @@ interface ModalProps {
   onClose: () => void;
 }
 
-function formatTime(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
+// 이 파일의 기존 폴백은 ""(빈문자열) — 출력 보존 위해 lib formatTime에 "" 전달
+const formatTime = (iso: string | null) => libFormatTime(iso, "");
 
 function autoStatusLabel(s: string | null): string {
-  switch (s) {
-    case "normal":
-      return "정상";
-    case "late":
-      return "지각";
-    case "early_leave":
-      return "조퇴";
-    case "absent":
-      return "결근";
-    case "working":
-      return "근무중";
-    default:
-      return "-";
-  }
+  if (s && s in AUTO_STATUS_META)
+    return AUTO_STATUS_META[s as keyof typeof AUTO_STATUS_META].label;
+  if (s === "working") return "근무중";
+  return "-";
 }
 
 // Phase 6-2K: 한국어 날짜 라벨 ("2026년 6월 1일 (월)")

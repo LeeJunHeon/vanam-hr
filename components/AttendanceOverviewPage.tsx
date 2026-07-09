@@ -16,6 +16,16 @@ import {
 } from "lucide-react";
 import EmployeeAttendanceDetailModal from "@/components/EmployeeAttendanceDetailModal";
 import AttendanceCalendarView from "@/components/AttendanceCalendarView";
+import {
+  formatTime,
+  formatWorkMinutes,
+  isVacationCategory,
+  isLabelOnlyCategory,
+  evalLabel,
+  evalColor,
+  progressLabel,
+  type ProgressStatus,
+} from "@/lib/attendanceLabels";
 
 // ───────────────────────── 타입 ─────────────────────────
 
@@ -58,14 +68,6 @@ interface EmployeeOption {
   departmentId: number | null;
   departmentName: string | null;
 }
-
-type ProgressStatus =
-  | "working"
-  | "away"
-  | "completed"
-  | "absent_today"
-  | "category_working"
-  | "category_completed";
 
 interface RealtimeRow {
   employeeId: number;
@@ -122,25 +124,8 @@ interface SelectedEmployee {
 }
 
 // ───────────────────────── 유틸 함수 ─────────────────────────
-
-// HH:MM (없으면 '-')
-function formatTime(iso: string | null): string {
-  if (!iso) return "-";
-  const d = new Date(iso);
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
-}
-
-// 근무시간 (분 → "N시간 M분")
-function formatWorkMinutes(min: number | null): string {
-  if (min === null || min === undefined) return "-";
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  if (h === 0) return `${m}분`;
-  if (m === 0) return `${h}시간`;
-  return `${h}시간 ${m}분`;
-}
+// formatTime / formatWorkMinutes / isVacationCategory / isLabelOnlyCategory /
+// evalLabel / evalColor / progressLabel 는 lib/attendanceLabels로 이동(3단계 dedupe).
 
 // 상대 시각 ("9분 전")
 function formatRelativeTime(iso: string | null): string {
@@ -179,46 +164,6 @@ function categoryIcon(code: string | null): string {
   }
 }
 
-// 휴가성(vacation) 카테고리 여부 — 종일이라 "진행/완료" 구분 없이 카테고리명만 표시
-function isVacationCategory(code: string | null): boolean {
-  if (!code) return false;
-  return ["ANNUAL", "HALF_AM", "HALF_PM", "SICK", "FAMILY_EVENT"].includes(code);
-}
-
-// "진행/완료" 접미사를 붙이지 않고 카테고리명만 표시할 카테고리.
-// = 휴가류 + 기타(ETC). ETC는 "기타중/기타완료" 어색해서 "기타"로만 노출.
-function isLabelOnlyCategory(code: string | null): boolean {
-  return isVacationCategory(code) || code === "ETC";
-}
-
-// 진행 상태 라벨. 카테고리 분기에서는 row를 통해 categoryName/CategoryCode 사용.
-function progressLabel(s: ProgressStatus, row?: RealtimeRow): string {
-  switch (s) {
-    case "working":
-      return "근무중";
-    case "away":
-      return "자리비움";
-    case "completed":
-      return "완료";
-    case "absent_today":
-      return "미출근";
-    case "category_working":
-      if (row?.todayCategoryName) {
-        return isLabelOnlyCategory(row.todayCategoryCode)
-          ? row.todayCategoryName // "연차"/"병가"/"기타" 등 (접미사 X)
-          : `${row.todayCategoryName}중`; // "외근중"
-      }
-      return "부재중";
-    case "category_completed":
-      if (row?.todayCategoryName) {
-        return isLabelOnlyCategory(row.todayCategoryCode)
-          ? row.todayCategoryName // "연차"/"기타" 등 (접미사 X)
-          : `${row.todayCategoryName}완료`; // "외근완료"
-      }
-      return "부재중";
-  }
-}
-
 // 진행 상태 점 색상 (category 분기는 categoryColor 없을 때 fallback purple)
 function progressDotColor(s: ProgressStatus): string {
   switch (s) {
@@ -253,30 +198,6 @@ function progressBadgeClass(s: ProgressStatus): string {
     case "category_completed":
       return `${base} bg-purple-50 text-purple-700`;
   }
-}
-
-// 평가 라벨.
-// - check_out이 없으면 평가 보류 ('–')
-// - autoStatus가 NULL이지만 check_out 있으면 '정상' 추정 (옛날 데이터 보호)
-function evalLabel(autoStatus: string | null, hasCheckOut: boolean): string {
-  if (!hasCheckOut) return "–";
-  if (autoStatus === "normal") return "정상";
-  if (autoStatus === "late") return "지각";
-  if (autoStatus === "early_leave") return "조퇴";
-  if (autoStatus === "absent") return "결근";
-  // NULL이지만 check_out 있음 → autoStatus 도입 전 옛날 데이터로 추정, '정상'으로 표시
-  return "정상";
-}
-
-// 평가 텍스트 색상 (evalLabel과 동일한 분기)
-function evalColor(autoStatus: string | null, hasCheckOut: boolean): string {
-  if (!hasCheckOut) return "text-gray-400"; // 평가 보류 '–'
-  if (autoStatus === "normal") return "text-emerald-600";
-  if (autoStatus === "late") return "text-amber-600";
-  if (autoStatus === "early_leave") return "text-orange-600";
-  if (autoStatus === "absent") return "text-rose-600";
-  // NULL이지만 check_out 있음 → 정상 색상으로
-  return "text-emerald-600";
 }
 
 // 직원 카드/표의 "마지막 활동" 한 줄 (아이콘 + 정보)
@@ -784,7 +705,7 @@ export default function AttendanceOverviewPage() {
                       : undefined
                   }
                 >
-                  {progressLabel(r.progressStatus, r)}
+                  {progressLabel(r.progressStatus, r.todayCategoryName ?? null, r.todayCategoryCode ?? null)}
                 </span>
               </button>
             ))}

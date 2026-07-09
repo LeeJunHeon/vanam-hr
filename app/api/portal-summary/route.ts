@@ -1,16 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
+import { progressLabel, type ProgressStatus } from "@/lib/attendanceLabels";
 
 export const dynamic = "force-dynamic";
-
-type ProgressStatus =
-  | "working"
-  | "away"
-  | "completed"
-  | "absent_today"
-  | "category_working"
-  | "category_completed";
 
 // 미인증/직원 미매핑 공통 빈 응답 (포털에서 조용히 처리)
 function emptyResponse() {
@@ -24,48 +17,9 @@ function emptyResponse() {
   );
 }
 
-// 휴가류 카테고리 — AttendanceOverviewPage와 동일
-function isVacationCategory(code: string | null): boolean {
-  if (!code) return false;
-  return ["ANNUAL", "HALF_AM", "HALF_PM", "SICK", "FAMILY_EVENT"].includes(code);
-}
-
-// "진행/완료" 접미사 없이 카테고리명만 표시 = 휴가류 + 기타(ETC)
-function isLabelOnlyCategory(code: string | null): boolean {
-  return isVacationCategory(code) || code === "ETC";
-}
-
-// 진행 상태 한글 라벨 — AttendanceOverviewPage의 progressLabel과 동일 규칙
-function progressLabel(
-  s: ProgressStatus,
-  categoryName: string | null,
-  categoryCode: string | null
-): string {
-  switch (s) {
-    case "working":
-      return "근무중";
-    case "away":
-      return "자리비움";
-    case "completed":
-      return "완료";
-    case "absent_today":
-      return "미출근";
-    case "category_working":
-      if (categoryName) {
-        return isLabelOnlyCategory(categoryCode)
-          ? categoryName // "연차"/"병가"/"기타" 등 (접미사 X)
-          : `${categoryName}중`; // "외근중"
-      }
-      return "부재중";
-    case "category_completed":
-      if (categoryName) {
-        return isLabelOnlyCategory(categoryCode)
-          ? categoryName // "연차"/"기타" 등 (접미사 X)
-          : `${categoryName}완료`; // "외근완료"
-      }
-      return "완료";
-  }
-}
+// isVacationCategory / isLabelOnlyCategory / progressLabel 은 lib/attendanceLabels로 통합(3단계 dedupe).
+// ⚠ 의도된 미세 통일: category_completed에서 카테고리명이 없을 때 폴백이 기존 "완료" → lib(OverviewPage 규칙) "부재중".
+//    (category_* 상태는 카테고리 존재 시에만 세팅되어 실제로는 도달 불가능한 분기.)
 
 // GET /api/portal-summary — 포털 근태 카드용. 본인 오늘 진행상태(realtime과 동일) + 이번주 집계.
 export async function GET() {

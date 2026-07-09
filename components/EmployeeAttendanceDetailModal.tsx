@@ -14,7 +14,13 @@ import {
   settledProgressLabel,
   SETTLED_PROGRESS_STYLE,
 } from "@/lib/attendanceProgress";
-import { correctedRangeLabel } from "@/lib/attendanceLabels";
+import {
+  correctedRangeLabel,
+  formatTime,
+  formatWorkMinutes,
+  isVacationCategory,
+  AUTO_STATUS_META,
+} from "@/lib/attendanceLabels";
 
 // 직원 카드 클릭 시 열리는 최근 30일 출퇴근 상세 모달.
 // /api/attendance/overview?employeeId=X&startDate=30일전&endDate=오늘 를 호출한다.
@@ -38,8 +44,7 @@ interface DetailRow {
   workDate: string;
   checkIn: string | null;
   checkOut: string | null;
-  wifiCheckIn: string | null;
-  wifiCheckOut: string | null;
+  // overview API는 wifi 필드를 계속 반환하지만, 표시 통일(3단계)로 모달은 daily 값을 사용
   workMinutes: number | null;
   autoStatus: string | null;
   isOverridden: boolean;
@@ -56,30 +61,7 @@ interface DetailRow {
   reqCategoryName: string | null;
 }
 
-// 휴가성(vacation) 카테고리 여부
-function isVacationCategory(code: string | null): boolean {
-  if (!code) return false;
-  return ["ANNUAL", "HALF_AM", "HALF_PM", "SICK", "FAMILY_EVENT"].includes(code);
-}
-
-// HH:MM (없으면 '-')
-function formatTime(iso: string | null): string {
-  if (!iso) return "-";
-  const d = new Date(iso);
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
-}
-
-// 근무시간 (분 → "N시간 M분")
-function formatWorkMinutes(min: number | null): string {
-  if (min === null || min === undefined) return "-";
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  if (h === 0) return `${m}분`;
-  if (m === 0) return `${h}시간`;
-  return `${h}시간 ${m}분`;
-}
+// isVacationCategory / formatTime / formatWorkMinutes 는 lib/attendanceLabels로 이동(3단계 dedupe).
 
 // YYYY-MM-DD → "MM-DD (요일)"
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
@@ -147,13 +129,10 @@ function renderProgress(row: DetailRow) {
 
 // 평가 컬럼. Phase 6-2B: 캘린더 보정 시 카테고리명 표시 (Q5c).
 function renderEval(row: DetailRow) {
-  const config: Record<string, { label: string; cls: string }> = {
-    normal: { label: "정상", cls: "text-emerald-600" },
-    late: { label: "지각", cls: "text-amber-600" },
-    early_leave: { label: "조퇴", cls: "text-orange-600" },
-    absent: { label: "결근", cls: "text-rose-600" },
-  };
-  const c = row.autoStatus ? config[row.autoStatus] : undefined;
+  const c =
+    row.autoStatus && row.autoStatus in AUTO_STATUS_META
+      ? AUTO_STATUS_META[row.autoStatus as keyof typeof AUTO_STATUS_META]
+      : undefined;
   if (c) {
     return <span className={`text-xs font-medium ${c.cls}`}>{c.label}</span>;
   }
@@ -244,12 +223,6 @@ export default function EmployeeAttendanceDetailModal({
     () => [...rows].sort((a, b) => b.workDate.localeCompare(a.workDate)),
     [rows]
   );
-
-  // "오늘" 행만 WiFi 첫연결/마지막끊김으로 표시(과거 행은 기존 융합값 유지)
-  const dispCheckIn = (r: DetailRow) =>
-    r.workDate === todayYmd() ? r.wifiCheckIn : r.checkIn;
-  const dispCheckOut = (r: DetailRow) =>
-    r.workDate === todayYmd() ? r.wifiCheckOut : r.checkOut;
 
   return (
     <div
@@ -386,10 +359,10 @@ export default function EmployeeAttendanceDetailModal({
                               {formatDateLabel(r.workDate)}
                             </td>
                             <td className="px-4 py-2.5 text-sm text-gray-900 font-mono">
-                              {formatTime(dispCheckIn(r))}
+                              {formatTime(r.checkIn)}
                             </td>
                             <td className="px-4 py-2.5 text-sm text-gray-900 font-mono">
-                              {formatTime(dispCheckOut(r))}
+                              {formatTime(r.checkOut)}
                             </td>
                             <td className="px-4 py-2.5 text-sm text-gray-900 font-mono text-right">
                               {formatWorkMinutes(r.workMinutes)}
@@ -441,7 +414,7 @@ export default function EmployeeAttendanceDetailModal({
                         </div>
                         <div className="flex items-center justify-between text-xs">
                           <span className="text-gray-900 font-mono">
-                            {formatTime(dispCheckIn(r))} ~ {formatTime(dispCheckOut(r))}
+                            {formatTime(r.checkIn)} ~ {formatTime(r.checkOut)}
                           </span>
                           <span className="text-gray-700 font-mono font-semibold">
                             {formatWorkMinutes(r.workMinutes)}
