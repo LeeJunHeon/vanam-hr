@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { X, Download } from "lucide-react";
 import { correctedRangeLabel } from "@/lib/attendanceLabels";
+import { todayYmd } from "@/lib/dateUtils";
 
 // 응답 row 타입 (AttendanceCalendarView와 공유)
 export interface CalendarEmployee {
@@ -102,7 +103,25 @@ function formatDateKorean(ymd: string): string {
 }
 
 // Phase 6-2K: 🔵 근무중 포함 상태 배지
-function StatusBadge({ autoStatus }: { autoStatus: string | null | undefined }) {
+function StatusBadge({
+  autoStatus,
+  checkIn,
+  checkOut,
+  isToday,
+}: {
+  autoStatus: string | null | undefined;
+  checkIn: string | null;
+  checkOut: string | null;
+  isToday: boolean;
+}) {
+  // 출근O·퇴근X — 오늘이면 근무중, 과거면 미퇴근 (30일 모달과 동일 규칙)
+  if (checkIn && !checkOut) {
+    return isToday ? (
+      <span className="text-xs font-medium text-blue-600">🔵 근무중</span>
+    ) : (
+      <span className="text-xs font-medium text-amber-600">🟠 미퇴근</span>
+    );
+  }
   const map: Record<string, { label: string; cls: string }> = {
     working: { label: "🔵 근무중", cls: "text-blue-600" },
     normal: { label: "🟢 정상", cls: "text-emerald-600" },
@@ -213,6 +232,9 @@ export default function AttendanceCalendarDayModal({
     );
   };
 
+  // 모달 대상 날짜가 오늘(KST)인지 — 미퇴근/근무중 판정용
+  const isToday = date === todayYmd();
+
   // 해당 날짜 직원별 데이터 추출
   const dayData = employees.map((emp) => {
     const d = daily.find(
@@ -256,6 +278,8 @@ export default function AttendanceCalendarDayModal({
       let statusCell = "";
       if (req) {
         statusCell = req.categoryName ?? "";
+      } else if (d?.checkIn && !d?.checkOut) {
+        statusCell = isToday ? "근무중" : "미퇴근";
       } else if (d?.autoStatus) {
         statusCell = autoStatusLabel(d.autoStatus);
       }
@@ -396,7 +420,7 @@ export default function AttendanceCalendarDayModal({
                           {req.categoryName}
                         </span>
                       ) : (
-                        <StatusBadge autoStatus={d?.autoStatus ?? null} />
+                        <StatusBadge autoStatus={d?.autoStatus ?? null} checkIn={d?.checkIn ?? null} checkOut={d?.checkOut ?? null} isToday={isToday} />
                       )}
                       {(d?.originalCheckIn || d?.originalCheckOut) && (
                         <span className="ml-1 text-xs bg-cyan-100 text-cyan-700 px-1.5 py-0.5 rounded-full font-medium">
@@ -445,7 +469,7 @@ export default function AttendanceCalendarDayModal({
                         {req.categoryName}
                       </span>
                     ) : (
-                      <StatusBadge autoStatus={d?.autoStatus ?? null} />
+                      <StatusBadge autoStatus={d?.autoStatus ?? null} checkIn={d?.checkIn ?? null} checkOut={d?.checkOut ?? null} isToday={isToday} />
                     )}
                   </div>
                 </div>
