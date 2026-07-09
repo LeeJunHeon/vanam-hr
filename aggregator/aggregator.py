@@ -73,10 +73,6 @@ class Aggregator:
         self._disconnect_notified: dict[int, str] = {}
         # 대리 위임 자동 마감 스윕 날짜 게이트 (KST 기준 하루 1회)
         self._last_sweep_date = None
-        # 부분 백필: 미설정/false면 dry-run(로그만), true면 실제 UPDATE
-        self.partial_backfill_enabled = os.getenv(
-            "PARTIAL_BACKFILL_ENABLED", "false"
-        ).lower() in ("1", "true", "yes", "on")
 
     def compute_check_in_out(
         self,
@@ -576,7 +572,7 @@ class Aggregator:
     ) -> bool:
         """manual 정정으로 잠긴 행에서 정정하지 않은 NULL 쪽을 raw로 백필 시도(P0-1).
         정정된 쪽은 안 건드리고 병합값으로 auto_status/work_minutes 재계산.
-        PARTIAL_BACKFILL_ENABLED=false면 dry-run(로그만). 실제로 채웠으면 True."""
+        실제로 채웠으면 True."""
         existing = self.db.get_daily_for_backfill(emp_id, work_date)
         if not existing:
             return False
@@ -611,15 +607,6 @@ class Aggregator:
             new_work_minutes = int((final_out - final_in).total_seconds() // 60)
 
         side = "퇴근" if fill_out else "출근"
-        if not self.partial_backfill_enabled:
-            self.logger.info(
-                f"  [부분백필 DRY-RUN] 직원 {emp_id}({emp_no}/{emp_name}) "
-                f"work_date={work_date} — {side} 백필 대상: check_in={final_in}, "
-                f"check_out={final_out}, work_minutes={new_work_minutes}, "
-                f"auto_status={new_auto_status} (PARTIAL_BACKFILL_ENABLED 미설정 → 미적용)"
-            )
-            return False
-
         new_id = self.db.backfill_missing_side_update(
             employee_id=emp_id, work_date=work_date,
             check_in=final_in, check_out=final_out,
