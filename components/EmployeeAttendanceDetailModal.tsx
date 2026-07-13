@@ -220,14 +220,16 @@ export default function EmployeeAttendanceDetailModal({
     fetchDetail();
   }, [fetchDetail]);
 
-  // ESC 키로 닫기
+  // ESC 키로 닫기 — 기간 선택 모달이 열려 있으면 그쪽이 먼저 닫혀야 하므로 무시
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      if (exportOpen) return; // 하위 모달 우선
+      onClose();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, [onClose, exportOpen]);
 
   // 통계 (autoStatus + 카테고리 보정 기준 집계)
   const stats = useMemo(() => {

@@ -98,14 +98,16 @@ export default function AttendanceExportModal({
       [thisYm]
     );
 
-  // ESC 닫기
+  // ESC 닫기 — MonthPicker 가 열려 있으면 그쪽이 먼저 닫혀야 하므로 무시
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      if (startPickerOpen || endPickerOpen) return; // 하위 피커 우선
+      onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, startPickerOpen, endPickerOpen]);
 
   // 직원 목록 (셀렉터 노출 시에만) — 퇴사자 정산 대비 includeInactive=true
   useEffect(() => {
@@ -127,7 +129,10 @@ export default function AttendanceExportModal({
     };
   }, [showEmployeeSelect]);
 
-  const invalidRange = startYm != null && startYm > endYm;
+  // 종료가 미래 월이면 서버 clamp 로 결과가 하루로 눌리므로 아예 막는다.
+  const futureEnd = endYm > thisYm;
+  const reversedRange = startYm != null && startYm > endYm;
+  const invalidRange = futureEnd || reversedRange;
 
   const isPresetActive = (p: { start: string | null; end: string }) =>
     p.start === startYm && p.end === endYm;
@@ -228,7 +233,12 @@ export default function AttendanceExportModal({
             </div>
           </div>
 
-          {invalidRange && (
+          {futureEnd && (
+            <p className="text-xs text-rose-600">
+              종료는 이번 달({labelYm(thisYm)})까지만 선택할 수 있습니다.
+            </p>
+          )}
+          {!futureEnd && reversedRange && (
             <p className="text-xs text-rose-600">시작이 종료보다 뒤입니다.</p>
           )}
 
