@@ -517,7 +517,11 @@ export default function AttendanceCalendarDayModal({
 
         <div className="sticky bottom-0 bg-white border-t border-gray-100 px-4 sm:px-5 py-3 flex justify-end">
           {/* 일별 근태 Excel 다운로드 */}
-          <ExcelButton onClick={handleExportExcel} size="sm" />
+          <ExcelButton
+            onClick={handleExportExcel}
+            disabled={dayData.length === 0}
+            size="sm"
+          />
         </div>
       </div>
     </div>
