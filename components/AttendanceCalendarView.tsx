@@ -235,7 +235,7 @@ export default function AttendanceCalendarView({
     <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5 space-y-4">
       {/* Phase 6-2K: 헤더 — 모바일에서 2줄로.
           내 근태처럼 부모가 월 네비를 제공하면 hideHeader로 숨김.
-          단 CSV 버튼은 헤더 숨겨도 노출되어야 하므로 별도 분기에 둠. */}
+          단 Excel 버튼은 헤더 숨겨도 노출되어야 하므로 별도 분기에 둠. */}
       {!hideHeader ? (
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div className="flex items-center gap-2">

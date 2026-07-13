@@ -264,7 +264,7 @@ export function buildAttendanceWorkbook(p: {
           rsCell.value = reasonCell(row);
         }
 
-        // 정렬: 기본 center, 사유만 left + wrap
+        // 정렬: 기본 center, 사유만 left (wrapText 는 행 높이 폭주로 제거)
         inCell.alignment = { horizontal: "center", vertical: "middle" };
         outCell.alignment = { horizontal: "center", vertical: "middle" };
         evCell.alignment = { horizontal: "center", vertical: "middle" };
