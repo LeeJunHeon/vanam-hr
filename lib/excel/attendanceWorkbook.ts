@@ -130,7 +130,10 @@ export function buildAttendanceWorkbook(p: {
   const holidayMap = new Map<string, string>();
   for (const h of holidays) holidayMap.set(h.date, h.name);
 
-  // 마지막 달 블록은 endDate(=보통 오늘) 일자까지만 그려 미래 빈 열이 붙지 않게 한다.
+  // 첫 달 블록은 startDate 일자부터, 마지막 달 블록은 endDate(=보통 오늘) 일자까지만 그려
+  // 앞뒤로 빈 열이 붙지 않게 한다.
+  const startYm = startDate.slice(0, 7); // "2026-05"
+  const startDay = Number(startDate.slice(8, 10)); // 21
   const endYm = endDate.slice(0, 7); // "2026-07"
   const endDay = Number(endDate.slice(8, 10)); // 13
 
@@ -168,9 +171,10 @@ export function buildAttendanceWorkbook(p: {
     for (const ym of months) {
       const [yy, mm] = ym.split("-").map(Number);
       const daysInMonth = new Date(Date.UTC(yy, mm, 0)).getUTCDate();
-      // 첫 달은 1일부터 전체 표시(기록 없는 날은 빈칸이 정상). 마지막 달만 endDate 일자까지 자른다.
+      // 첫 달은 startDate 일자부터, 마지막 달은 endDate 일자까지만 그린다.
       const lastDayToRender =
         ym === endYm ? Math.min(daysInMonth, endDay) : daysInMonth;
+      const firstDayToRender = ym === startYm ? startDay : 1;
 
       const headerRowIdx = r;
       const inRowIdx = r + 1;
@@ -209,9 +213,11 @@ export function buildAttendanceWorkbook(p: {
         c.alignment = { horizontal: "center", vertical: "middle" };
       }
 
-      // 날짜 열
-      for (let d = 1; d <= lastDayToRender; d++) {
-        const col = d + 1; // B열부터
+      // 날짜 열 — 블록 내 순번으로 채워 항상 B열(2)부터 시작한다.
+      // (firstDayToRender 가 21이어도 첫 데이터는 B열에 온다. 날짜 숫자는 실제 일자를 표기)
+      let col = 1;
+      for (let d = firstDayToRender; d <= lastDayToRender; d++) {
+        col++; // B열(2)부터 시작
         const ymd = `${ym}-${pad2(d)}`;
         const dow = dowOf(ymd);
         const isWeekend = dow === 0 || dow === 6;

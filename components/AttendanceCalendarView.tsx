@@ -14,7 +14,7 @@ import AttendanceCalendarDayModal, {
 } from "@/components/AttendanceCalendarDayModal";
 import MonthPicker from "@/components/MonthPicker";
 import ExcelButton from "@/components/ExcelButton";
-import { downloadFile } from "@/lib/download";
+import AttendanceExportModal from "@/components/AttendanceExportModal";
 import type { AttendanceRow } from "@/lib/attendance-rows";
 
 // 카테고리 → 기호/색상/라벨
@@ -108,6 +108,7 @@ export default function AttendanceCalendarView({
   const [error, setError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [monthPickerOpen, setMonthPickerOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -219,14 +220,6 @@ export default function AttendanceCalendarView({
   const goNext = () => applyYm(shiftMonth(effectiveYm, 1));
   const goThisMonth = () => applyYm(thisMonthYm());
 
-  // 월 근태 엑셀 (서버 생성). employeeId가 있으면 본인 것만 나온다.
-  const handleExportExcel = async () => {
-    await downloadFile(
-      `/api/attendance/export?scope=month&yearMonth=${effectiveYm}` +
-        (employeeId != null ? `&employeeId=${employeeId}` : "")
-    );
-  };
-
   // 헤더용: "YYYY-MM" → "YYYY년 M월"
   const [hYearStr, hMonthStr] = effectiveYm.split("-");
   const headerLabel = `${hYearStr}년 ${Number(hMonthStr)}월`;
@@ -274,9 +267,9 @@ export default function AttendanceCalendarView({
             >
               오늘
             </button>
-            {/* 월 근태 Excel 다운로드 */}
+            {/* 월 근태 Excel 다운로드 (기간 선택 모달 경유) */}
             <ExcelButton
-              onClick={handleExportExcel}
+              onClick={() => setExportOpen(true)}
               disabled={!data || loading}
               size="sm"
               className="ml-2"
@@ -287,7 +280,7 @@ export default function AttendanceCalendarView({
         // 헤더 숨김 모드 (내 근태 등 부모가 월 네비 제공) — Excel 버튼만 우측 정렬로 노출
         <div className="flex justify-end">
           <ExcelButton
-            onClick={handleExportExcel}
+            onClick={() => setExportOpen(true)}
             disabled={!data || loading}
             size="sm"
           />
@@ -453,6 +446,17 @@ export default function AttendanceCalendarView({
           value={effectiveYm}
           onChange={(yM) => applyYm(yM)}
           onClose={() => setMonthPickerOpen(false)}
+        />
+      )}
+
+      {/* 근태 Excel 기간 선택 모달 */}
+      {exportOpen && (
+        <AttendanceExportModal
+          defaultStartYm={effectiveYm}
+          defaultEndYm={effectiveYm}
+          employeeId={employeeId}
+          showEmployeeSelect={employeeId == null}
+          onClose={() => setExportOpen(false)}
         />
       )}
     </div>
