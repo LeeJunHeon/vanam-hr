@@ -8,10 +8,10 @@ import {
   Trash2,
   Loader2,
   X,
-  Download,
   Clock,
 } from "lucide-react";
-import { exportCSV } from "@/lib/csvUtils";
+import { exportExcel } from "@/lib/excelUtils";
+import ExcelButton from "@/components/ExcelButton";
 import { todayYmd } from "@/lib/dateUtils";
 import TimePicker, {
   normalizeTimeForDb,
@@ -366,9 +366,9 @@ export default function ShiftsPage() {
     }
   };
 
-  const handleExportCSV = () => {
+  const handleExportExcel = async () => {
     if (!patterns || patterns.length === 0) return;
-    exportCSV(
+    await exportExcel(
       ["이름", "설명", "사이클일수", "활성", "schedule(JSON)"],
       patterns.map((p) => [
         p.name,
@@ -377,7 +377,8 @@ export default function ShiftsPage() {
         p.isActive ? "Y" : "N",
         JSON.stringify(p.schedule),
       ]),
-      `시프트패턴_${todayYmd()}.csv`
+      `시프트패턴_${todayYmd()}.xlsx`,
+      "시프트패턴"
     );
   };
 
@@ -401,14 +402,10 @@ export default function ShiftsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleExportCSV}
+          <ExcelButton
+            onClick={handleExportExcel}
             disabled={!patterns || patterns.length === 0}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            <Download size={15} />
-            CSV
-          </button>
+          />
           <button
             onClick={openCreate}
             disabled={typeLookups.length === 0}

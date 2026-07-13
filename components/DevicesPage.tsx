@@ -8,11 +8,11 @@ import {
   Trash2,
   Loader2,
   X,
-  Download,
   Smartphone,
   Wifi,
 } from "lucide-react";
-import { exportCSV } from "@/lib/csvUtils";
+import { exportExcel } from "@/lib/excelUtils";
+import ExcelButton from "@/components/ExcelButton";
 import { todayYmd } from "@/lib/dateUtils";
 import { normalizeMacAddress, formatMacAddress } from "@/lib/macAddress";
 
@@ -262,9 +262,9 @@ export default function DevicesPage() {
     }
   };
 
-  const handleExportCSV = () => {
+  const handleExportExcel = async () => {
     if (!devices || devices.length === 0) return;
-    exportCSV(
+    await exportExcel(
       [
         "직원사번",
         "직원명",
@@ -291,7 +291,8 @@ export default function DevicesPage() {
         d.isActive ? "Y" : "N",
         new Date(d.registeredAt).toLocaleString("ko-KR"),
       ]),
-      `디바이스_${todayYmd()}.csv`
+      `디바이스_${todayYmd()}.xlsx`,
+      "디바이스"
     );
   };
 
@@ -315,14 +316,10 @@ export default function DevicesPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleExportCSV}
+          <ExcelButton
+            onClick={handleExportExcel}
             disabled={!devices || devices.length === 0}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            <Download size={15} />
-            CSV
-          </button>
+          />
           <button
             onClick={openCreate}
             disabled={employees.length === 0}

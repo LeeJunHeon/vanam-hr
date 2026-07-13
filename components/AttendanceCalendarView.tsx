@@ -4,7 +4,6 @@ import { useState, useEffect, useMemo } from "react";
 import {
   ChevronLeft,
   ChevronRight,
-  Download,
   Calendar,
   Loader2,
 } from "lucide-react";
@@ -14,6 +13,8 @@ import AttendanceCalendarDayModal, {
   type CalendarRequest,
 } from "@/components/AttendanceCalendarDayModal";
 import MonthPicker from "@/components/MonthPicker";
+import ExcelButton from "@/components/ExcelButton";
+import { downloadFile } from "@/lib/download";
 import type { AttendanceRow } from "@/lib/attendance-rows";
 
 // 카테고리 → 기호/색상/라벨
@@ -70,12 +71,6 @@ function shiftMonth(ym: string, delta: number): string {
   const [yy, mm] = ym.split("-").map(Number);
   const d = new Date(yy, mm - 1 + delta, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
-
-function formatTime(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 // Phase 6-2L+ 내근태 통일: 옵션 props로 일반화. 미지정 시 기존 동작 100% 동일.
@@ -224,80 +219,12 @@ export default function AttendanceCalendarView({
   const goNext = () => applyYm(shiftMonth(effectiveYm, 1));
   const goThisMonth = () => applyYm(thisMonthYm());
 
-  // 월 CSV (wide format: 행=직원, 열=날짜)
-  const downloadMonthCSV = () => {
-    if (!data) return;
-    const [yy, mm] = effectiveYm.split("-").map(Number);
-    const lastDay = new Date(yy, mm, 0).getDate();
-    const dateCols = Array.from(
-      { length: lastDay },
-      (_, i) =>
-        `${yy}-${String(mm).padStart(2, "0")}-${String(i + 1).padStart(2, "0")}`
+  // 월 근태 엑셀 (서버 생성). employeeId가 있으면 본인 것만 나온다.
+  const handleExportExcel = async () => {
+    await downloadFile(
+      `/api/attendance/export?scope=month&yearMonth=${effectiveYm}` +
+        (employeeId != null ? `&employeeId=${employeeId}` : "")
     );
-
-    const escape = (s: string) =>
-      s.includes(",") || s.includes('"') || s.includes("\n")
-        ? `"${s.replace(/"/g, '""')}"`
-        : s;
-
-    const headerCols = [
-      "직원번호",
-      "이름",
-      "부서",
-      "직급",
-      ...dateCols,
-    ].map(escape);
-    const header = headerCols.join(",");
-
-    const rows = data.employees.map((emp) => {
-      const cells = dateCols.map((ymd) => {
-        const d = data.daily.find(
-          (x) => x.employeeId === emp.id && x.workDate === ymd
-        );
-        const req = data.requests.find(
-          (r) =>
-            r.employeeId === emp.id &&
-            r.startDate <= ymd &&
-            r.endDate >= ymd
-        );
-
-        // Phase 6-2K: 출퇴근 시간이 있으면 시간 + 카테고리 함께 (출장/외근도 시간 표시)
-        if (d?.checkIn && d?.checkOut) {
-          const inT = formatTime(d.checkIn);
-          const outT = formatTime(d.checkOut);
-          const mark = d.originalCheckIn || d.originalCheckOut ? "*" : "";
-          if (req) return `${inT}-${outT}${mark} (${req.categoryName ?? ""})`;
-          return `${inT}-${outT}${mark}`;
-        }
-        // 시간 없고 카테고리만 있으면 카테고리명
-        if (req) return req.categoryName ?? "";
-        if (d?.autoStatus === "absent") return "결근";
-        if (d?.autoStatus === "working") return "근무중";
-        return "";
-      });
-
-      const cols = [
-        emp.employeeNo,
-        emp.name,
-        emp.department?.name ?? "",
-        emp.position?.name ?? "",
-        ...cells,
-      ].map(escape);
-      return cols.join(",");
-    });
-
-    const csv = "﻿" + [header, ...rows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    // 표준 안전 패턴: a를 body에 붙여 click → remove. revokeObjectURL은 다운로드
-    // 시작 후 정리(즉시 revoke하면 일부 브라우저에서 빈 파일/실패).
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `근태_${effectiveYm}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   // 헤더용: "YYYY-MM" → "YYYY년 M월"
@@ -347,28 +274,23 @@ export default function AttendanceCalendarView({
             >
               오늘
             </button>
-            {/* Phase 6-2K: CSV 버튼 — RequestPage 패턴으로 통일 */}
-            <button
-              onClick={downloadMonthCSV}
+            {/* 월 근태 Excel 다운로드 */}
+            <ExcelButton
+              onClick={handleExportExcel}
               disabled={!data || loading}
-              className="ml-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 bg-white text-gray-700 rounded-xl hover:bg-gray-50 disabled:opacity-50"
-            >
-              <Download size={14} />
-              CSV
-            </button>
+              size="sm"
+              className="ml-2"
+            />
           </div>
         </div>
       ) : (
-        // 헤더 숨김 모드 (내 근태 등 부모가 월 네비 제공) — CSV 버튼만 우측 정렬로 노출
+        // 헤더 숨김 모드 (내 근태 등 부모가 월 네비 제공) — Excel 버튼만 우측 정렬로 노출
         <div className="flex justify-end">
-          <button
-            onClick={downloadMonthCSV}
+          <ExcelButton
+            onClick={handleExportExcel}
             disabled={!data || loading}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 bg-white text-gray-700 rounded-xl hover:bg-gray-50 disabled:opacity-50"
-          >
-            <Download size={14} />
-            CSV
-          </button>
+            size="sm"
+          />
         </div>
       )}
 

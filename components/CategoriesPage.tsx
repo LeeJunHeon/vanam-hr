@@ -8,10 +8,10 @@ import {
   Trash2,
   Loader2,
   X,
-  Download,
   Shield,
 } from "lucide-react";
-import { exportCSV } from "@/lib/csvUtils";
+import { exportExcel } from "@/lib/excelUtils";
+import ExcelButton from "@/components/ExcelButton";
 import { todayYmd } from "@/lib/dateUtils";
 
 interface Category {
@@ -235,9 +235,9 @@ export default function CategoriesPage() {
     }
   };
 
-  const handleExportCSV = () => {
+  const handleExportExcel = async () => {
     if (!categories || categories.length === 0) return;
-    exportCSV(
+    await exportExcel(
       ["코드", "이름", "유형", "연차차감", "결재필요", "색상", "정렬", "시스템", "활성", "설명"],
       categories.map((c) => [
         c.code,
@@ -251,7 +251,8 @@ export default function CategoriesPage() {
         c.isActive ? "Y" : "N",
         c.description ?? "",
       ]),
-      `근태항목_${todayYmd()}.csv`
+      `근태항목_${todayYmd()}.xlsx`,
+      "근태항목"
     );
   };
 
@@ -275,14 +276,10 @@ export default function CategoriesPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleExportCSV}
+          <ExcelButton
+            onClick={handleExportExcel}
             disabled={!categories || categories.length === 0}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            <Download size={15} />
-            CSV
-          </button>
+          />
           <button
             onClick={openCreate}
             disabled={typeLookups.length === 0}

@@ -12,7 +12,6 @@ import {
   Loader2,
   CheckCircle,
   XCircle,
-  Download,
   FileText,
   CalendarDays,
   CheckCircle2,
@@ -20,7 +19,8 @@ import {
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import { buildMemoHeader, extractMemoNotes, composeMemo } from "@/lib/calendar-memo";
-import { exportCSV } from "@/lib/csvUtils";
+import { exportExcel } from "@/lib/excelUtils";
+import ExcelButton from "@/components/ExcelButton";
 import DatePicker from "@/components/DatePicker";
 import TimePicker from "@/components/TimePicker";
 import { todayYmd } from "@/lib/dateUtils";
@@ -767,9 +767,9 @@ export default function RequestPage() {
     (r) => !HIDDEN_REQUEST_CATEGORY_CODES.has(r.categoryCode)
   );
 
-  const handleExportCSV = () => {
+  const handleExportExcel = async () => {
     if (visibleRequests.length === 0) return;
-    exportCSV(
+    await exportExcel(
       ["근태항목", "유형", "시작일", "종료일", "사유", "상태", "결재자", "등록일"],
       visibleRequests.map((r) => [
         r.categoryName,
@@ -783,7 +783,8 @@ export default function RequestPage() {
           (r.status === "auto_approved" ? "자동 승인" : ""),
         new Date(r.requestedAt).toLocaleString("ko-KR"),
       ]),
-      `결재요청_${todayYmd()}.csv`
+      `결재요청_${todayYmd()}.xlsx`,
+      "결재요청"
     );
   };
 
@@ -827,14 +828,10 @@ export default function RequestPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleExportCSV}
+          <ExcelButton
+            onClick={handleExportExcel}
             disabled={visibleRequests.length === 0}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            <Download size={15} />
-            CSV
-          </button>
+          />
           <button
             onClick={openCreate}
             disabled={!canRequest || categories.length === 0}

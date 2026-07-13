@@ -8,10 +8,10 @@ import {
   Trash2,
   Loader2,
   X,
-  Download,
   Shield,
 } from "lucide-react";
-import { exportCSV } from "@/lib/csvUtils";
+import { exportExcel } from "@/lib/excelUtils";
+import ExcelButton from "@/components/ExcelButton";
 import { todayYmd } from "@/lib/dateUtils";
 
 interface Lookup {
@@ -194,9 +194,9 @@ export default function LookupsPage() {
     }
   };
 
-  const handleExportCSV = () => {
+  const handleExportExcel = async () => {
     if (!lookups || lookups.length === 0) return;
-    exportCSV(
+    await exportExcel(
       ["카테고리", "코드", "라벨", "색상", "정렬", "시스템", "활성", "설명"],
       lookups.map((l) => [
         l.category,
@@ -208,7 +208,8 @@ export default function LookupsPage() {
         l.isActive ? "Y" : "N",
         l.description ?? "",
       ]),
-      `코드룩업_${todayYmd()}.csv`
+      `코드룩업_${todayYmd()}.xlsx`,
+      "코드룩업"
     );
   };
 
@@ -232,14 +233,10 @@ export default function LookupsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleExportCSV}
+          <ExcelButton
+            onClick={handleExportExcel}
             disabled={!lookups || lookups.length === 0}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            <Download size={15} />
-            CSV
-          </button>
+          />
           <button
             onClick={openCreate}
             className="flex items-center gap-2 px-4 py-2.5 text-sm font-bold text-white bg-blue-500 rounded-xl hover:bg-blue-600 shadow-sm"

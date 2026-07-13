@@ -1,13 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { X, Download } from "lucide-react";
+import { X } from "lucide-react";
 import {
   correctedRangeLabel,
   formatTime as libFormatTime,
   AUTO_STATUS_META,
 } from "@/lib/attendanceLabels";
 import { todayYmd } from "@/lib/dateUtils";
+import { exportExcel } from "@/lib/excelUtils";
+import ExcelButton from "@/components/ExcelButton";
 import type { AttendanceRow } from "@/lib/attendance-rows";
 
 // 응답 row 타입 (AttendanceCalendarView와 공유)
@@ -229,9 +231,9 @@ export default function AttendanceCalendarDayModal({
     return { emp, row, req };
   });
 
-  const downloadDayCSV = () => {
+  const handleExportExcel = async () => {
     // Phase 6-2K: 출장/외근도 출퇴근 시간 함께 표시. 비고에 캘린더 시간 포함.
-    const header = [
+    const headers = [
       "직원번호",
       "이름",
       "부서",
@@ -239,8 +241,8 @@ export default function AttendanceCalendarDayModal({
       "퇴근",
       "상태/카테고리",
       "비고",
-    ].join(",");
-    const csvRows = dayData.map(({ emp, row, req }) => {
+    ];
+    const excelRows = dayData.map(({ emp, row, req }) => {
       // 대표요청 존재 여부: 모듈 reasonMap은 요청이 있으면 항상 ""(빈문자열) 이상을 set → null이면 요청 없음
       const hasReq = row ? row.reason !== null : !!req;
       const catName = row ? row.reqCategoryName : (req?.categoryName ?? null);
@@ -284,32 +286,19 @@ export default function AttendanceCalendarDayModal({
       if (reasonText) noteParts.push(reasonText);
       const note = noteParts.join(" · ");
 
-      const escape = (s: string) =>
-        s.includes(",") || s.includes('"') || s.includes("\n")
-          ? `"${s.replace(/"/g, '""')}"`
-          : s;
-
+      // 모든 셀 null 안전 처리
       return [
-        emp.employeeNo,
-        emp.name,
-        emp.department?.name ?? "",
-        inCell,
-        outCell,
-        statusCell,
-        note,
-      ]
-        .map(escape)
-        .join(",");
+        String(emp.employeeNo ?? ""),
+        String(emp.name ?? ""),
+        String(emp.department?.name ?? ""),
+        String(inCell ?? ""),
+        String(outCell ?? ""),
+        String(statusCell ?? ""),
+        String(note ?? ""),
+      ];
     });
 
-    const csv = "﻿" + [header, ...csvRows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `근태_${date}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    await exportExcel(headers, excelRows, `근태_${date}.xlsx`, date);
   };
 
   return (
@@ -527,14 +516,8 @@ export default function AttendanceCalendarDayModal({
         </div>
 
         <div className="sticky bottom-0 bg-white border-t border-gray-100 px-4 sm:px-5 py-3 flex justify-end">
-          {/* Phase 6-2K: CSV 버튼 RequestPage 패턴으로 통일 */}
-          <button
-            onClick={downloadDayCSV}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 bg-white text-gray-700 rounded-xl hover:bg-gray-50"
-          >
-            <Download size={14} />
-            CSV
-          </button>
+          {/* 일별 근태 Excel 다운로드 */}
+          <ExcelButton onClick={handleExportExcel} size="sm" />
         </div>
       </div>
     </div>

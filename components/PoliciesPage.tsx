@@ -6,7 +6,6 @@ import {
   Edit,
   Loader2,
   X,
-  Download,
   Eye,
   EyeOff,
   Settings,
@@ -15,7 +14,8 @@ import {
   Bell,
   Globe,
 } from "lucide-react";
-import { exportCSV } from "@/lib/csvUtils";
+import { exportExcel } from "@/lib/excelUtils";
+import ExcelButton from "@/components/ExcelButton";
 import { todayYmd } from "@/lib/dateUtils";
 
 interface Policy {
@@ -117,9 +117,9 @@ export default function PoliciesPage() {
     });
   };
 
-  const handleExportCSV = () => {
+  const handleExportExcel = async () => {
     if (!policies || policies.length === 0) return;
-    exportCSV(
+    await exportExcel(
       ["키", "값", "설명", "수정 일시"],
       policies.map((p) => [
         p.key,
@@ -128,7 +128,8 @@ export default function PoliciesPage() {
         p.description ?? "",
         new Date(p.updatedAt).toLocaleString("ko-KR"),
       ]),
-      `정책설정_${todayYmd()}.csv`
+      `정책설정_${todayYmd()}.xlsx`,
+      "정책설정"
     );
   };
 
@@ -160,14 +161,10 @@ export default function PoliciesPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleExportCSV}
+          <ExcelButton
+            onClick={handleExportExcel}
             disabled={!policies || policies.length === 0}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            <Download size={15} />
-            CSV
-          </button>
+          />
         </div>
       </div>
 

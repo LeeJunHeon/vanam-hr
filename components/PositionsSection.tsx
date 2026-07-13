@@ -8,10 +8,10 @@ import {
   Trash2,
   Loader2,
   X,
-  Download,
   Briefcase,
 } from "lucide-react";
-import { exportCSV } from "@/lib/csvUtils";
+import { exportExcel } from "@/lib/excelUtils";
+import ExcelButton from "@/components/ExcelButton";
 import { todayYmd } from "@/lib/dateUtils";
 
 interface Position {
@@ -169,9 +169,9 @@ export default function PositionsSection() {
     }
   };
 
-  const handleExportCSV = () => {
+  const handleExportExcel = async () => {
     if (!positions || positions.length === 0) return;
-    exportCSV(
+    await exportExcel(
       ["코드", "이름", "정렬", "활성"],
       positions.map((p) => [
         p.code,
@@ -179,7 +179,8 @@ export default function PositionsSection() {
         p.sortOrder,
         p.isActive ? "Y" : "N",
       ]),
-      `직급_${todayYmd()}.csv`
+      `직급_${todayYmd()}.xlsx`,
+      "직급"
     );
   };
 
@@ -194,14 +195,10 @@ export default function PositionsSection() {
 
       {/* 액션 */}
       <div className="flex items-center justify-end gap-2">
-        <button
-          onClick={handleExportCSV}
+        <ExcelButton
+          onClick={handleExportExcel}
           disabled={!positions || positions.length === 0}
-          className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          <Download size={15} />
-          CSV
-        </button>
+        />
         <button
           onClick={openCreate}
           className="flex items-center gap-2 px-4 py-2.5 text-sm font-bold text-white bg-blue-500 rounded-xl hover:bg-blue-600 shadow-sm"

@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Search, Plus, Edit, Trash2, Loader2, X, Download, Users, UserCog } from "lucide-react";
-import { exportCSV } from "@/lib/csvUtils";
+import { Search, Plus, Edit, Trash2, Loader2, X, Users, UserCog } from "lucide-react";
+import { exportExcel } from "@/lib/excelUtils";
+import ExcelButton from "@/components/ExcelButton";
 import { todayYmd } from "@/lib/dateUtils";
 
 interface ApproverBrief { id: number; employeeNo: string | null; name: string | null; }
@@ -213,9 +214,9 @@ export default function ApprovalLinesPage() {
     finally { setFbSaving(false); }
   };
 
-  const handleExportCSV = () => {
+  const handleExportExcel = async () => {
     if (!lines || lines.length === 0) return;
-    exportCSV(
+    await exportExcel(
       ["부서코드", "부서명", "결재자", "승인방식", "대리결재자", "자동위임(h)"],
       lines.map((l) => [
         l.departmentCode,
@@ -225,7 +226,8 @@ export default function ApprovalLinesPage() {
         l.deputyApproverName ?? "",
         String(l.autoDelegateHours ?? ""),
       ]),
-      `결재선_${todayYmd()}.csv`
+      `결재선_${todayYmd()}.xlsx`,
+      "결재선"
     );
   };
 
@@ -242,10 +244,7 @@ export default function ApprovalLinesPage() {
           <p className="text-sm text-gray-500 mt-0.5">부서별 · 항목별 결재선을 관리합니다 (부서 기본 + 항목별)</p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={handleExportCSV} disabled={!lines || lines.length === 0}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-            <Download size={15} /> CSV
-          </button>
+          <ExcelButton onClick={handleExportExcel} disabled={!lines || lines.length === 0} />
           <button onClick={openCreate} disabled={!canAdd || employees.length === 0}
             className="flex items-center gap-2 px-4 py-2.5 text-sm font-bold text-white bg-blue-500 rounded-xl hover:bg-blue-600 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
             title={employees.length === 0 ? "먼저 직원을 등록하세요" : !canAdd ? "모든 활성 부서에 결재선이 등록되어 있습니다" : ""}>

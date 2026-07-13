@@ -21,6 +21,8 @@ import {
   isVacationCategory,
   AUTO_STATUS_META,
 } from "@/lib/attendanceLabels";
+import { downloadFile } from "@/lib/download";
+import ExcelButton from "@/components/ExcelButton";
 
 // 직원 카드 클릭 시 열리는 최근 30일 출퇴근 상세 모달.
 // /api/attendance/overview?employeeId=X&startDate=30일전&endDate=오늘 를 호출한다.
@@ -208,6 +210,13 @@ export default function EmployeeAttendanceDetailModal({
     fetchDetail();
   }, [fetchDetail]);
 
+  // 전체 기간 근태 엑셀 다운로드 (화면 표는 최근 30일이지만 엑셀은 전체 기간)
+  const handleExportExcel = async () => {
+    await downloadFile(
+      `/api/attendance/export?scope=employee&employeeId=${employeeId}`
+    );
+  };
+
   // ESC 키로 닫기
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -258,15 +267,23 @@ export default function EmployeeAttendanceDetailModal({
               {departmentName ?? "(부서 없음)"}
               {positionName ? ` · ${positionName}` : ""}
               <span className="text-gray-300"> · 최근 30일</span>
+              <span className="text-gray-300"> (엑셀은 전체 기간)</span>
             </p>
           </div>
-          <button
-            onClick={onClose}
-            className="shrink-0 ml-3 p-1.5 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-            aria-label="닫기"
-          >
-            <X size={18} />
-          </button>
+          <div className="shrink-0 ml-3 flex items-center gap-2">
+            <ExcelButton
+              onClick={handleExportExcel}
+              size="sm"
+              title="전체 기간 근태 Excel 다운로드"
+            />
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              aria-label="닫기"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         {/* 본문 */}

@@ -8,13 +8,13 @@ import {
   Trash2,
   Loader2,
   X,
-  Download,
   User,
   Link as LinkIcon,
   Info,
   CalendarDays,
 } from "lucide-react";
-import { exportCSV } from "@/lib/csvUtils";
+import { exportExcel } from "@/lib/excelUtils";
+import ExcelButton from "@/components/ExcelButton";
 import DatePicker from "@/components/DatePicker";
 import { todayYmd } from "@/lib/dateUtils";
 import EmployeeAnnualLeaveModal from "@/components/EmployeeAnnualLeaveModal";
@@ -298,9 +298,9 @@ export default function EmployeesPage() {
     }
   };
 
-  const handleExportCSV = () => {
+  const handleExportExcel = async () => {
     if (!employees || employees.length === 0) return;
-    exportCSV(
+    await exportExcel(
       [
         "사번",
         "이름",
@@ -331,7 +331,8 @@ export default function EmployeesPage() {
         e.isActive ? "Y" : "N",
         e.note ?? "",
       ]),
-      `직원_${todayYmd()}.csv`
+      `직원_${todayYmd()}.xlsx`,
+      "직원"
     );
   };
 
@@ -361,14 +362,10 @@ export default function EmployeesPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleExportCSV}
+          <ExcelButton
+            onClick={handleExportExcel}
             disabled={!employees || employees.length === 0}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-white border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            <Download size={15} />
-            CSV
-          </button>
+          />
           <button
             onClick={openCreate}
             className="flex items-center gap-2 px-4 py-2.5 text-sm font-bold text-white bg-blue-500 rounded-xl hover:bg-blue-600 shadow-sm"
