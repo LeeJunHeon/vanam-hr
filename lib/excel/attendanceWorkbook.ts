@@ -20,11 +20,13 @@ const KST = "Asia/Seoul";
 // 이 파일 안에서 KST 강제 변환을 직접 구현한다.
 function hhmmKst(iso: string | null): string {
   if (!iso) return "";
+  // hour12 를 명시하면 ICU 구현에 따라 h24 로 해석돼 자정 퇴근이 "24:05"로 나올 수 있다.
+  // 야간 시프트가 있어 실제 리스크이므로 hourCycle "h23"을 직접 명시한다 (hour12 는 제거).
   return new Intl.DateTimeFormat("en-GB", {
     timeZone: KST,
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
+    hourCycle: "h23",
   }).format(new Date(iso)); // "09:02"
 }
 
@@ -128,6 +130,10 @@ export function buildAttendanceWorkbook(p: {
   const holidayMap = new Map<string, string>();
   for (const h of holidays) holidayMap.set(h.date, h.name);
 
+  // 마지막 달 블록은 endDate(=보통 오늘) 일자까지만 그려 미래 빈 열이 붙지 않게 한다.
+  const endYm = endDate.slice(0, 7); // "2026-07"
+  const endDay = Number(endDate.slice(8, 10)); // 13
+
   const months = monthsInRange(startDate, endDate);
 
   const wb = new ExcelJS.Workbook();
@@ -162,6 +168,9 @@ export function buildAttendanceWorkbook(p: {
     for (const ym of months) {
       const [yy, mm] = ym.split("-").map(Number);
       const daysInMonth = new Date(Date.UTC(yy, mm, 0)).getUTCDate();
+      // 첫 달은 1일부터 전체 표시(기록 없는 날은 빈칸이 정상). 마지막 달만 endDate 일자까지 자른다.
+      const lastDayToRender =
+        ym === endYm ? Math.min(daysInMonth, endDay) : daysInMonth;
 
       const headerRowIdx = r;
       const inRowIdx = r + 1;
@@ -201,7 +210,7 @@ export function buildAttendanceWorkbook(p: {
       }
 
       // 날짜 열
-      for (let d = 1; d <= daysInMonth; d++) {
+      for (let d = 1; d <= lastDayToRender; d++) {
         const col = d + 1; // B열부터
         const ymd = `${ym}-${pad2(d)}`;
         const dow = dowOf(ymd);
@@ -259,11 +268,8 @@ export function buildAttendanceWorkbook(p: {
         inCell.alignment = { horizontal: "center", vertical: "middle" };
         outCell.alignment = { horizontal: "center", vertical: "middle" };
         evCell.alignment = { horizontal: "center", vertical: "middle" };
-        rsCell.alignment = {
-          horizontal: "left",
-          vertical: "middle",
-          wrapText: true,
-        };
+        // wrapText 는 열 너비 9에서 행 높이를 폭주시키므로 제거 (전문은 셀 클릭 시 수식줄에서 확인).
+        rsCell.alignment = { horizontal: "left", vertical: "middle" };
 
         // 토/일·공휴일 열 배경 (4개 데이터 행)
         const bg = holidayName

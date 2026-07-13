@@ -1,5 +1,18 @@
 import ExcelJS from "exceljs";
 
+// 한글/한자/전각은 폭 2로 계산 (Excel 열 너비 근사)
+function displayLen(s: string): number {
+  // U+1100–11FF, U+3130–318F, U+AC00–D7A3(한글) / U+4E00–9FFF(한자)
+  // / U+3000–303F, U+FF00–FFEF(전각) 은 폭 2로 계산.
+  const wide =
+    /[ᄀ-ᇿ㄰-㆏가-힣一-鿿　-〿＀-￯]/;
+  let n = 0;
+  for (const ch of s) {
+    n += wide.test(ch) ? 2 : 1;
+  }
+  return n;
+}
+
 // 서버 전용 범용 단순표 워크북 생성기.
 // 모든 셀은 String(v ?? "")로 강제해 null 안전을 보장한다 (CSV escape 버그의 근본 방지).
 export function buildSimpleWorkbook(p: {
@@ -30,15 +43,15 @@ export function buildSimpleWorkbook(p: {
   // 1행 고정
   ws.views = [{ state: "frozen", ySplit: 1 }];
 
-  // 열 너비 = 열별 내용 최대 길이 기준 (min 8, max 40)
+  // 열 너비 = 열별 내용 최대 표시폭 기준 (한글 폭 2, min 8, max 50)
   const colCount = p.headers.length;
   for (let c = 0; c < colCount; c++) {
-    let maxLen = String(p.headers[c] ?? "").length;
+    let maxLen = displayLen(String(p.headers[c] ?? ""));
     for (const row of p.rows) {
-      const len = String(row[c] ?? "").length;
+      const len = displayLen(String(row[c] ?? ""));
       if (len > maxLen) maxLen = len;
     }
-    ws.getColumn(c + 1).width = Math.min(40, Math.max(8, maxLen + 2));
+    ws.getColumn(c + 1).width = Math.min(50, Math.max(8, maxLen + 2));
   }
 
   return wb;

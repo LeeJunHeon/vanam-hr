@@ -44,6 +44,15 @@ export async function POST(request: Request) {
     );
   }
 
+  // 셀 총량 가드 (서버 OOM 방어) — headers×rows 가 과도하면 거부
+  const MAX_CELLS = 200_000;
+  if (headers.length * rows.length > MAX_CELLS) {
+    return NextResponse.json(
+      { error: `데이터가 너무 큽니다 (최대 ${MAX_CELLS.toLocaleString()}셀).` },
+      { status: 413 }
+    );
+  }
+
   const safeSheetName =
     typeof sheetName === "string" && sheetName.trim() ? sheetName : "Sheet1";
   const rawName =
