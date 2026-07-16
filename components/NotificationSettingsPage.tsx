@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Loader2, Bell } from "lucide-react";
 
-// 알림 종류 정의 (정책 키 prefix ↔ 라벨). DB의 24개 키와 1:1 (앱/이메일/푸시).
+// 알림 종류 정의 (정책 키 prefix ↔ 라벨). DB의 27개 키와 1:1 (앱/이메일/푸시).
 const NOTIFY_TYPES: { type: string; label: string; desc: string; channels: ("app" | "email" | "push")[] }[] = [
   { type: "approval_request", label: "새 결재 요청", desc: "휴가/근태 신청 시 결재자에게", channels: ["app", "email", "push"] },
   { type: "trip_request", label: "새 외근 결재 요청", desc: "외근 참여(결재 필요) 시 부서 결재자에게", channels: ["app", "email", "push"] },
@@ -14,6 +14,7 @@ const NOTIFY_TYPES: { type: string; label: string; desc: string; channels: ("app
   { type: "trip_remove", label: "외근 참석자 제외", desc: "참석자에서 제외 시 대상에게", channels: ["app", "email", "push"] },
   { type: "cancel", label: "결재 취소", desc: "승인된 신청 취소 시 결재자에게", channels: ["app", "email", "push"] },
   { type: "disconnect", label: "근무중 WiFi 끊김", desc: "근무 시간 중 WiFi가 끊긴 본인에게", channels: ["app", "email", "push"] },
+  { type: "no_show", label: "당일 출근 미감지", desc: "출근 예정 시각까지 WiFi 미감지 시 본인에게", channels: ["app", "email", "push"] },
   { type: "attendance_alert", label: "근태 확인 요청", desc: "결근/지각/조퇴 기록 시 본인에게", channels: ["app", "email", "push"] },
 ];
 

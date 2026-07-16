@@ -11,7 +11,7 @@ is_overridden=true 인 row는 건드리지 않음.
 - 진행 중인 오늘·시프트 미배정·휴무·공휴일에는 생성하지 않음.
 
 당일 출근 미감지(no-show) 실시간 알림:
-- 오늘 시프트 출근시각 + 유예분(no_show_alert_minutes, 기본 30)이 지나도 출근
+- 오늘 시프트 출근시각 + 유예분(no_show_alert_minutes, 기본 0(정시))이 지나도 출근
   기록(check_in)이 없으면 본인에게 당일 1회 알림 발송.
 - 공휴일·시프트 미배정·휴무·휴가/외근 등록자·이미 출근한 직원은 제외.
   (직전 근무일 알림과 달리 '다음 날'이 아닌 '당일' 실시간)
@@ -949,7 +949,7 @@ class Aggregator:
           a) 오늘 이미 발송함
           b) 공휴일
           c) 시프트 없음/휴무(off)/시작시각 없음
-          d) 아직 시프트 시작 + 유예분(no_show_alert_minutes, 기본 30) 전
+          d) 아직 시프트 시작 + 유예분(no_show_alert_minutes, 기본 0(정시)) 전
           e) 승인된 휴가/출장/외근/정정 등록(active_requests)이 있음
           f) 이미 출근 기록(check_in) 있음
         """
@@ -975,11 +975,11 @@ class Aggregator:
         if not shift or shift.get("type") == "off" or not shift.get("start"):
             return
 
-        # d) 유예분 정책 (기본 30) — 시프트 시작 + 유예분 전이면 다음 사이클 재시도
+        # d) 유예분 정책 (기본 0(정시)) — 시프트 시작 + 유예분 전이면 다음 사이클 재시도
         try:
-            threshold = int(self.db.get_policy("no_show_alert_minutes") or 30)
+            threshold = int(self.db.get_policy("no_show_alert_minutes") or 0)
         except (TypeError, ValueError):
-            threshold = 30
+            threshold = 0
 
         now_kst = now.astimezone(KST)
         try:
@@ -1029,10 +1029,19 @@ class Aggregator:
         except Exception:
             wd_str = str(today)
         shift_start_str = f"{sh_h:02d}:{sh_m:02d}"
+        if threshold == 0:
+            no_show_line = (
+                f"{wd_str} 출근 예정 시각({shift_start_str})이 지났지만 "
+                f"아직 출근 기록이 감지되지 않았습니다.\n"
+            )
+        else:
+            no_show_line = (
+                f"{wd_str} 출근 예정 시각({shift_start_str})에서 {threshold}분이 지났지만 "
+                f"아직 출근 기록이 감지되지 않았습니다.\n"
+            )
         body = (
             f"{name} 님,\n\n"
-            f"{wd_str} 출근 예정 시각({shift_start_str})에서 {threshold}분이 지났지만 "
-            f"아직 출근 기록이 감지되지 않았습니다.\n"
+            f"{no_show_line}"
             f"출근하셨다면 휴대폰의 Wi-Fi 연결 상태와 사설 Wi-Fi 주소(MAC) 설정을 "
             f"확인해주세요. 휴가·외근은 근태 시스템에 등록되어 있으면 이 알림이 "
             f"발송되지 않습니다.\n\n"
