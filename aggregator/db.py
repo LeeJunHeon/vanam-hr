@@ -445,6 +445,21 @@ class Database:
                 "is_overridden": row[4], "override_source": row[5],
             }
 
+    def get_daily_check_in(self, employee_id: int, work_date: date) -> Optional[datetime]:
+        """해당 (employee_id, work_date) attendance_daily 행의 check_in 반환. 없으면 None."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                SELECT check_in
+                FROM hr.attendance_daily
+                WHERE employee_id = %s AND work_date = %s
+                """,
+                (employee_id, work_date),
+            )
+            row = c.fetchone()
+            return row[0] if row else None
+
     def backfill_missing_side_update(
         self, employee_id: int, work_date: date,
         check_in, check_out, work_minutes, auto_status,

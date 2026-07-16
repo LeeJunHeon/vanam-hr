@@ -10,6 +10,12 @@ is_overridden=true 인 row는 건드리지 않음.
 - 무단 미출근일이 근태 조회에 남고, 직전 근무일 비정상 알림의 대상이 된다.
 - 진행 중인 오늘·시프트 미배정·휴무·공휴일에는 생성하지 않음.
 
+당일 출근 미감지(no-show) 실시간 알림:
+- 오늘 시프트 출근시각 + 유예분(no_show_alert_minutes, 기본 30)이 지나도 출근
+  기록(check_in)이 없으면 본인에게 당일 1회 알림 발송.
+- 공휴일·시프트 미배정·휴무·휴가/외근 등록자·이미 출근한 직원은 제외.
+  (직전 근무일 알림과 달리 '다음 날'이 아닌 '당일' 실시간)
+
 출퇴근 정의 (employee 단위 통합 timeline, location 무관):
 - 출근: 그날 첫 'online'의 checked_at
 - 퇴근: 마지막 record가 offline이고 그 후 grace 동안 재연결 없을 때만 확정
@@ -77,6 +83,11 @@ class Aggregator:
         # - 연결 복귀 시 해당 emp 제거 → 다시 끊기면 같은 날에도 재발송
         # - 날짜가 바뀌면 기록값이 오늘과 달라 자동으로 재발송 허용
         self._disconnect_notified: dict[int, str] = {}
+        # 출근 미감지(no-show) 알림 중복 발송 방지용 메모리 상태: {emp_id: "YYYY-MM-DD"}
+        # - 출근시각+유예분 경과 후 출근 기록 없으면 오늘 날짜 기록(같은 날 재발송 X)
+        # - 날짜가 바뀌면 기록값이 오늘과 달라 자동으로 재발송 허용
+        # - 데몬 재시작 시 최악 1회 중복 발송 tradeoff 허용 (끊김 알림과 동일한 결정)
+        self._no_show_notified: dict[int, str] = {}
         # 대리 위임 자동 마감 스윕 날짜 게이트 (KST 기준 하루 1회)
         self._last_sweep_date = None
 
@@ -271,6 +282,17 @@ class Aggregator:
                 # 알림 로직 어떤 예외도 메인 루프 절대 중단시키지 않음
                 self.logger.error(
                     f"_check_disconnect_alert 예외 (emp_id={emp.get('id')}): {e}"
+                )
+
+            # 당일 출근 미감지(no-show) 알림 — 오늘 work_date 기준
+            try:
+                self._check_no_show_alert(
+                    emp, today, holiday_cache.get(today), now
+                )
+            except Exception as e:
+                # 알림 로직 어떤 예외도 메인 루프 절대 중단시키지 않음
+                self.logger.error(
+                    f"_check_no_show_alert 예외 (emp_id={emp.get('id')}): {e}"
                 )
 
         # 직전 근무일 비정상 알림 — 직원 루프 밖에서 사이클당 1회 (대상은 DB가 추림)
@@ -917,6 +939,110 @@ class Aggregator:
                 f"  [attn-alert] 알림 발송 (emp={emp_id}, name={name}, "
                 f"work_date={work_date}, status={status})"
             )
+
+    def _check_no_show_alert(self, emp: dict, today, holiday_name, now: datetime) -> None:
+        """당일 출근 미감지(no-show) 알림 — 오늘 work_date 기준.
+
+        시프트 출근시각 + 유예분이 지나도 출근 기록(check_in)이 없으면 본인에게
+        당일 1회 발송. 직전 근무일 알림(_check_attendance_alerts)과 달리 '당일' 실시간.
+        아래 조건 중 하나라도 걸리면 return(발송 안 함):
+          a) 오늘 이미 발송함
+          b) 공휴일
+          c) 시프트 없음/휴무(off)/시작시각 없음
+          d) 아직 시프트 시작 + 유예분(no_show_alert_minutes, 기본 30) 전
+          e) 승인된 휴가/출장/외근/정정 등록(active_requests)이 있음
+          f) 이미 출근 기록(check_in) 있음
+        """
+        emp_id = emp["id"]
+
+        # a) 오늘 이미 보냄
+        today_str = today.isoformat()
+        if self._no_show_notified.get(emp_id) == today_str:
+            return
+
+        # b) 공휴일 제외
+        if holiday_name:
+            return
+
+        # c) 시프트 조회 — 없음/휴무/시작시각 없음이면 제외
+        try:
+            shift = self.db.get_employee_shift(emp_id, today)
+        except Exception as e:
+            self.logger.debug(
+                f"  [no-show] get_employee_shift 실패 (emp={emp_id}): {e}"
+            )
+            return
+        if not shift or shift.get("type") == "off" or not shift.get("start"):
+            return
+
+        # d) 유예분 정책 (기본 30) — 시프트 시작 + 유예분 전이면 다음 사이클 재시도
+        try:
+            threshold = int(self.db.get_policy("no_show_alert_minutes") or 30)
+        except (TypeError, ValueError):
+            threshold = 30
+
+        now_kst = now.astimezone(KST)
+        try:
+            sh_h, sh_m = map(int, str(shift["start"]).split(":"))
+        except (ValueError, AttributeError):
+            return
+        shift_start_dt = now_kst.replace(
+            hour=sh_h, minute=sh_m, second=0, microsecond=0
+        )
+        if now_kst < shift_start_dt + timedelta(minutes=threshold):
+            return
+
+        # e) 승인된 휴가/출장/외근/정정 등록자 제외 (종일 외근 등 check_in NULL 오발송 방지)
+        try:
+            active_requests = self.db.get_active_requests(emp_id, today)
+        except Exception as e:
+            self.logger.debug(
+                f"  [no-show] get_active_requests 실패 (emp={emp_id}): {e}"
+            )
+            return
+        if active_requests:
+            return
+
+        # f) 이미 출근 기록 있으면 제외
+        try:
+            check_in = self.db.get_daily_check_in(emp_id, today)
+        except Exception as e:
+            self.logger.debug(
+                f"  [no-show] get_daily_check_in 실패 (emp={emp_id}): {e}"
+            )
+            return
+        if check_in is not None:
+            return
+
+        # g) 전부 통과 → '먼저 기록' 후 발송 (중복 차단). email 없으면 발송 생략.
+        self._no_show_notified[emp_id] = today_str
+
+        email = emp.get("email")
+        if not email:
+            return
+
+        name = emp.get("name", "")
+        weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
+        try:
+            dow = weekday_kr[today.weekday()]
+            wd_str = f"{today.strftime('%Y-%m-%d')}({dow})"
+        except Exception:
+            wd_str = str(today)
+        shift_start_str = f"{sh_h:02d}:{sh_m:02d}"
+        body = (
+            f"{name} 님,\n\n"
+            f"{wd_str} 출근 예정 시각({shift_start_str})에서 {threshold}분이 지났지만 "
+            f"아직 출근 기록이 감지되지 않았습니다.\n"
+            f"출근하셨다면 휴대폰의 Wi-Fi 연결 상태와 사설 Wi-Fi 주소(MAC) 설정을 "
+            f"확인해주세요. 휴가·외근은 근태 시스템에 등록되어 있으면 이 알림이 "
+            f"발송되지 않습니다.\n\n"
+            f"[해당 메일은 자동 전송 되었습니다.]"
+        )
+        self._notify([emp_id], "no_show", "출근 미감지 알림", body, "attendance")
+        self.logger.info(
+            f"  [no-show] 알림 발송 (emp={emp_id}, name={name}, "
+            f"work_date={today}, threshold={threshold}분)"
+        )
 
     def _notify(self, employee_ids, type, title, body, link_page=None):
         """HR 내부 알림 API(/api/internal/notify) 호출 → createNotifications로 위임.
