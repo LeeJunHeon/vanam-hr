@@ -4,6 +4,12 @@
 출퇴근 시각을 계산하고 attendance_daily에 UPSERT.
 is_overridden=true 인 row는 건드리지 않음.
 
+무기록 결근(absent) 자동 생성:
+- 캘린더 없음 + presence 없음 + 어제(마감된 날) + 근무 시프트일(type != 'off',
+  start·end 존재) + 공휴일 아님 → auto_status='absent' 행을 UPSERT.
+- 무단 미출근일이 근태 조회에 남고, 직전 근무일 비정상 알림의 대상이 된다.
+- 진행 중인 오늘·시프트 미배정·휴무·공휴일에는 생성하지 않음.
+
 출퇴근 정의 (employee 단위 통합 timeline, location 무관):
 - 출근: 그날 첫 'online'의 checked_at
 - 퇴근: 마지막 record가 offline이고 그 후 grace 동안 재연결 없을 때만 확정
@@ -243,6 +249,7 @@ class Aggregator:
                     grace_in_minutes,
                     grace_out_minutes,
                     now,
+                    cycle_today=today,
                     holiday_name=holiday_cache.get(work_date),
                     timed_trip_exempt=timed_trip_exempt,
                     lunch_deduct_enabled=lunch_deduct_enabled,
@@ -293,6 +300,7 @@ class Aggregator:
         grace_in_minutes: int,
         grace_out_minutes: int,
         now: datetime,
+        cycle_today=None,
         holiday_name: Optional[str] = None,
         timed_trip_exempt: bool = False,
         lunch_deduct_enabled: bool = False,
@@ -305,13 +313,20 @@ class Aggregator:
         Phase 6-2B: presence_raw가 없어도 캘린더에 휴가/외근 등록되어 있으면 처리.
         Phase 6-2L+ B-3: 공휴일이면 결근(absent) 면제 — 출근기록 없으면 daily 행을
                        만들지 않고(no_data), 출근기록 있으면 평소대로 처리.
+        무기록 결근: 캘린더 없음 + presence 없음 + 어제(마감된 날) + 근무 시프트일
+                    (type != 'off' & start/end 존재) + 공휴일 아님 → absent 행 생성.
+                    무단 미출근일을 근태 조회에 남기고, 직전 근무일 비정상 알림
+                    (get_pending_attendance_alerts)의 대상이 되게 한다.
+                    cycle_today(진행 중인 오늘)에는 절대 생성하지 않는다.
         흐름:
           1) presence_raw → check_in/out 계산 (없으면 None, None)
           2) 캘린더 보정 확인 (get_auto_approved_request)
           3) 캘린더 있음 → category_id 적용, auto_status='normal',
              is_overridden=true, override_source='calendar'
-          4) 캘린더 없음 + presence_raw도 없음 → no_data
-             (공휴일이든 평일이든 동일)
+          4) 캘린더 없음 + presence_raw도 없음:
+             - work_date < cycle_today(어제) + 근무 시프트일 + 공휴일 아님
+               → 무기록 결근(absent) 행 생성 ('upsert'/'overridden')
+             - 그 외(오늘·시프트 미배정·휴무·공휴일) → no_data
           5) 캘린더 없음 + presence_raw 있음 → _determine_auto_status
              - 공휴일 + auto_status='absent' → no_data (daily 행 만들지 않음)
              - 그 외 → 평소대로 INSERT
@@ -486,8 +501,43 @@ class Aggregator:
             else:
                 auto_status = "normal"
         else:
-            # 4) 캘린더 없음 + presence_raw 없음 → INSERT 의미 없음
+            # 4) 캘린더 없음 + presence_raw 없음 → 원칙적으로 INSERT 의미 없음.
             if not raw or (check_in is None and check_out is None):
+                # 다만 '어제(마감된 날)' + '근무 시프트일' + '공휴일 아님'이면
+                # 무기록 결근(absent) 행을 남긴다 (무단 미출근 기록 + 직전 근무일 알림 연동).
+                # 진행 중인 오늘(cycle_today)·시프트 미배정·휴무(off)·공휴일에는 생성 금지.
+                # (active_requests 없음은 이 분기 진입 조건상 이미 보장됨)
+                is_work_shift = bool(
+                    shift_info is not None
+                    and shift_info.get("type") != "off"
+                    and shift_info.get("start")
+                    and shift_info.get("end")
+                )
+                if (
+                    cycle_today is not None
+                    and work_date < cycle_today
+                    and is_work_shift
+                    and holiday_name is None
+                ):
+                    new_id = self.db.upsert_attendance_daily(
+                        employee_id=emp_id,
+                        work_date=work_date,
+                        check_in=None,
+                        check_out=None,
+                        work_minutes=None,
+                        auto_status="absent",
+                        category_id=None,
+                        is_overridden=False,
+                        override_source=None,
+                    )
+                    if new_id is not None:
+                        self.logger.info(
+                            f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} "
+                            f"— 무기록 결근(absent) 행 생성, id={new_id}"
+                        )
+                        return "upsert"
+                    # None → 수동 정정으로 보호된 행. 백필할 raw가 없으므로 그대로 둔다.
+                    return "overridden"
                 return "no_data"
 
             # 5) 캘린더 없음 + presence_raw 있음 → 기존 로직
