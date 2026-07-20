@@ -277,7 +277,10 @@ class Aggregator:
 
             # 근무중 끊김 알림 — 오늘 work_date 에 대해서만 점검
             try:
-                self._check_disconnect_alert(emp, today, cutoff_hour, now)
+                self._check_disconnect_alert(
+                    emp, today, cutoff_hour, now,
+                    holiday_name=holiday_cache.get(today),
+                )
             except Exception as e:
                 # 알림 로직 어떤 예외도 메인 루프 절대 중단시키지 않음
                 self.logger.error(
@@ -287,7 +290,7 @@ class Aggregator:
             # 당일 출근 미감지(no-show) 알림 — 오늘 work_date 기준
             try:
                 self._check_no_show_alert(
-                    emp, today, holiday_cache.get(today), now
+                    emp, today, holiday_cache.get(today), cutoff_hour, now
                 )
             except Exception as e:
                 # 알림 로직 어떤 예외도 메인 루프 절대 중단시키지 않음
@@ -297,7 +300,7 @@ class Aggregator:
 
         # 직전 근무일 비정상 알림 — 직원 루프 밖에서 사이클당 1회 (대상은 DB가 추림)
         try:
-            self._check_attendance_alerts(today, now)
+            self._check_attendance_alerts(today, now, holiday_name=holiday_cache.get(today))
         except Exception as e:
             self.logger.error(f"_check_attendance_alerts 예외: {e}")
 
@@ -517,6 +520,7 @@ class Aggregator:
                     lunch_end_str=lunch_end_str,
                     trip_minutes=trip_minutes,
                     margin_hours=timed_event_margin_hours,
+                    is_holiday=(holiday_name is not None),
                 )
             elif check_in is not None:
                 auto_status = "working"
@@ -529,6 +533,7 @@ class Aggregator:
                 # 무기록 결근(absent) 행을 남긴다 (무단 미출근 기록 + 직전 근무일 알림 연동).
                 # 진행 중인 오늘(cycle_today)·시프트 미배정·휴무(off)·공휴일에는 생성 금지.
                 # (active_requests 없음은 이 분기 진입 조건상 이미 보장됨)
+                # 예외: 그날 내내 연결 유지(전환 0건)였던 기기는 무단결근이 아니므로 스킵.
                 is_work_shift = bool(
                     shift_info is not None
                     and shift_info.get("type") != "off"
@@ -541,6 +546,18 @@ class Aggregator:
                     and is_work_shift
                     and holiday_name is None
                 ):
+                    try:
+                        from datetime import datetime as _dt2, time as _time2, timedelta as _td2
+                        _day_end = _dt2.combine(work_date, _time2(hour=cutoff_hour), tzinfo=KST) + _td2(days=1)
+                        _last = self.db.get_last_presence_status(emp_id, before=_day_end)
+                    except Exception as e:
+                        self.logger.debug(
+                            f"  [absent] get_last_presence_status 실패 (emp={emp_id}): {e}"
+                        )
+                        _last = None
+                    if _last and _last["status"] == "online":
+                        # 그날 내내 연결 유지(전환 0건)였던 기기 → 무단결근 아님, 행 생성 스킵
+                        return "no_data"
                     new_id = self.db.upsert_attendance_daily(
                         employee_id=emp_id,
                         work_date=work_date,
@@ -575,6 +592,7 @@ class Aggregator:
                 lunch_deduct_enabled=lunch_deduct_enabled,
                 lunch_start_str=lunch_start_str,
                 lunch_end_str=lunch_end_str,
+                is_holiday=(holiday_name is not None),
             )
 
             # Phase 6-2L+ B-3: 공휴일이면 결근(absent) 면제 → daily 행 만들지 않음.
@@ -731,15 +749,17 @@ class Aggregator:
         lunch_end_str: str = "13:00",
         trip_minutes: int = 0,
         margin_hours: float = 0.0,
+        is_holiday: bool = False,
     ) -> Optional[str]:
         """
         정책 A 기반 auto_status 판정.
 
         규칙:
-        1) 시프트 정보 없거나 휴무:
+        1) 시프트 정보 없거나 휴무이거나 공휴일(is_holiday):
            - check_in + check_out 둘 다 → normal
            - check_in만 → working (근무 중)
            - 둘 다 NULL → absent
+           (공휴일이면 시프트가 있어도 규칙 1로 판정: 지각/조퇴 판정 없음)
         2) 시프트 있음 + 둘 다 NULL → absent
         3) 시프트 있음 + check_out만 → None (판정 보류, 이론상 거의 없음)
         4) 시프트 있음 + check_in 있음 (check_out 유무 무관):
@@ -750,12 +770,13 @@ class Aggregator:
         """
         from datetime import timedelta
 
-        # 시프트 없거나 휴무 → 단순 판정
+        # 시프트 없거나 휴무이거나 공휴일 → 단순 판정
         if (
             shift_info is None
             or shift_info.get("type") == "off"
             or not shift_info.get("start")
             or not shift_info.get("end")
+            or is_holiday
         ):
             if check_in is not None and check_out is not None:
                 return "normal"
@@ -858,17 +879,23 @@ class Aggregator:
             return "early_leave"
         return "normal"
 
-    def _check_attendance_alerts(self, today, now: datetime) -> None:
+    def _check_attendance_alerts(self, today, now: datetime, holiday_name=None) -> None:
         """직전 근무일이 비정상인 직원에게 '근태 확인 요청' 메일 발송.
 
         - 직원 루프 밖에서 사이클당 1회 호출.
+        - 오늘이 공휴일이면 발송을 연기(return). '로그-먼저' 방식이라 스킵해도
+          다음 근무일에 자연히 발송된다.
         - 발송 대상은 get_pending_attendance_alerts()가 DB에서 추려준다(보통 0명).
+          공휴일 work_date는 직전 근무일 탐색에서 제외된다.
         - 각 대상에 대해 '오늘 시프트 출근시각'을 지났을 때만 발송.
           · 시프트 없음/휴무(off)/시작시각 없음 → 발송 안 함(스킵).
           · 아직 출근시각 전 → 스킵(다음 사이클에 재시도).
         - 중복 방지: try_log_attendance_alert로 '로그 먼저' 성공 시에만 발송.
         - 메일 형식은 기존 끊김 알림과 동일 톤. 날짜는 실제 직전 근무일을 표기.
         """
+        if holiday_name:
+            # 공휴일 → 발송 연기. 로그-먼저 방식이므로 다음 근무일에 자연 발송.
+            return
         try:
             pending = self.db.get_pending_attendance_alerts()
         except Exception as e:
@@ -940,7 +967,7 @@ class Aggregator:
                 f"work_date={work_date}, status={status})"
             )
 
-    def _check_no_show_alert(self, emp: dict, today, holiday_name, now: datetime) -> None:
+    def _check_no_show_alert(self, emp: dict, today, holiday_name, cutoff_hour: int, now: datetime) -> None:
         """당일 출근 미감지(no-show) 알림 — 오늘 work_date 기준.
 
         시프트 출근시각 + 유예분이 지나도 출근 기록(check_in)이 없으면 본인에게
@@ -952,6 +979,8 @@ class Aggregator:
           d) 아직 시프트 시작 + 유예분(no_show_alert_minutes, 기본 0(정시)) 전
           e) 승인된 휴가/출장/외근/정정 등록(active_requests)이 있음
           f) 이미 출근 기록(check_in) 있음
+          g) 기기가 지금 연결 중이거나 오늘(cutoff 이후) 네트워크에 잡힌 적 있음
+             (04:00 경계 넘어 연결 유지 중인 기기 오탐 방지 — 기록은 남기지 않음)
         """
         emp_id = emp["id"]
 
@@ -1014,7 +1043,23 @@ class Aggregator:
         if check_in is not None:
             return
 
-        # g) 전부 통과 → '먼저 기록' 후 발송 (중복 차단). email 없으면 발송 생략.
+        # g) 기기가 지금 연결 중이거나 오늘(cutoff 이후) 네트워크에 잡힌 적 있으면 제외.
+        #    (04:00 경계를 넘어 연결이 유지된 기기 오탐 방지. 기록은 남기지 않아 재평가.)
+        try:
+            last = self.db.get_last_presence_status(emp_id)
+        except Exception as e:
+            self.logger.debug(
+                f"  [no-show] get_last_presence_status 실패 (emp={emp_id}): {e}"
+            )
+            last = None
+        if last is not None:
+            day_start = now.astimezone(KST).replace(
+                hour=cutoff_hour, minute=0, second=0, microsecond=0)
+            last_kst = last["checked_at"].astimezone(KST)
+            if last["status"] == "online" or last_kst >= day_start:
+                return  # 기기가 지금 연결 중이거나 오늘 네트워크에 있었음 → 미출근 아님
+
+        # h) 전부 통과 → '먼저 기록' 후 발송 (중복 차단). email 없으면 발송 생략.
         self._no_show_notified[emp_id] = today_str
 
         email = emp.get("email")
@@ -1128,16 +1173,19 @@ class Aggregator:
         today,
         cutoff_hour: int,
         now: datetime,
+        holiday_name=None,
     ) -> None:
         """근무중 끊김 알림 점검 — 오늘 work_date 기준.
 
         조건이 모두 맞으면 메일 1통 발송하고 self._disconnect_notified에 기록.
         - 알림 안 함 조건(아래 중 하나라도 해당):
           · 직원 이메일 없음
+          · 오늘이 공휴일
           · 오늘 시프트가 휴무/미배정
           · 현재 시각이 시프트 [start, end] 밖
           · 현재 시각이 점심시간 [lunch_start, lunch_end] 안
           · 오늘 presence_raw 마지막이 'online' (연결됨)
+          · 오늘 전환 기록 0건이나 마지막 전환이 'online' (경계 넘어 연결 유지 중)
         - 끊김 판정:
           A) raw 마지막 'offline' + (now - 마지막.checked_at) >= 임계분
           B) raw 비어있음 + (시프트 start + 임계분) <= now
@@ -1149,6 +1197,11 @@ class Aggregator:
             return
 
         emp_id = emp["id"]
+
+        # 공휴일이면 끊김 알림 스킵 (근무일이 아니므로) — 상태도 리셋.
+        if holiday_name:
+            self._disconnect_notified.pop(emp_id, None)
+            return
 
         # 0) 오늘 승인된 부재(휴가/외근/출장/재택)가 있으면 알림 자체를 스킵.
         #    회사 WiFi에 안 잡히는 게 정상인 날이므로 상태도 리셋.
@@ -1254,6 +1307,19 @@ class Aggregator:
         last_seen: Optional[datetime] = None  # 마지막으로 online이었던 시각
 
         if not raw:
+            # 오늘 전환 기록이 0건이어도, 마지막 전환이 'online'이면 04:00 경계를 넘어
+            # 연결이 유지된 기기(전환이 안 일어나 침묵)일 뿐 미감지가 아니다 → 스킵.
+            try:
+                last = self.db.get_last_presence_status(emp_id)
+            except Exception as e:
+                self.logger.debug(
+                    f"  [disconnect] get_last_presence_status 실패 (emp={emp_id}): {e}"
+                )
+                last = None
+            if last and last["status"] == "online":
+                self._disconnect_notified.pop(emp_id, None)
+                return
+
             # B) 오늘 한 번도 안 잡힘 — 시프트 시작 + 임계분이 지났는지 확인
             #     비교는 같은 timezone 기준(now_kst aware vs shift_start_dt aware → OK)
             _eff_sec_b = (now_kst - shift_start_dt).total_seconds()

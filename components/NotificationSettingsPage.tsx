@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Loader2, Bell } from "lucide-react";
 
-// 알림 종류 정의 (정책 키 prefix ↔ 라벨). DB의 27개 키와 1:1 (앱/이메일/푸시).
+// 알림 종류 정의 (정책 키 prefix ↔ 라벨). DB의 33개 키와 1:1 (앱/이메일/푸시).
 const NOTIFY_TYPES: { type: string; label: string; desc: string; channels: ("app" | "email" | "push")[] }[] = [
   { type: "approval_request", label: "새 결재 요청", desc: "휴가/근태 신청 시 결재자에게", channels: ["app", "email", "push"] },
   { type: "trip_request", label: "새 외근 결재 요청", desc: "외근 참여(결재 필요) 시 부서 결재자에게", channels: ["app", "email", "push"] },

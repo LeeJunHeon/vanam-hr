@@ -233,6 +233,7 @@ class Database:
         반환: [{id, name, email, work_date(date), auto_status}, ...]
         - work_date < CURRENT_DATE (오늘 이전; CURRENT_DATE는 KST 날짜)
         - 직전 근무일 = category_id IS NULL AND auto_status IS NOT NULL 인 가장 최근 일자
+        - 공휴일(hr.holidays)은 직전 근무일 탐색에서 제외
         - daily_attendance_alert_log에 (employee_id, work_date)가 이미 있으면 제외
         """
         self._ensure_connected()
@@ -249,6 +250,10 @@ class Database:
                       AND d.category_id IS NULL
                       AND d.auto_status IS NOT NULL
                       AND d.work_date < CURRENT_DATE
+                      AND NOT EXISTS (
+                          SELECT 1 FROM hr.holidays h
+                          WHERE h.holiday_date = d.work_date
+                      )
                     ORDER BY d.work_date DESC
                     LIMIT 1
                 ) sub ON true
@@ -459,6 +464,33 @@ class Database:
             )
             row = c.fetchone()
             return row[0] if row else None
+
+    def get_last_presence_status(self, employee_id: int, before=None) -> Optional[dict]:
+        """직원의 가장 최근 presence_raw 전환 1건 {status, checked_at} 반환. 없으면 None.
+        before(tz-aware datetime)가 주어지면 checked_at < before 범위에서 조회.
+        용도: 04:00 경계를 넘어 연결이 유지된 기기(당일 전환 기록 0건) 감지."""
+        self._ensure_connected()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as c:
+            if before is None:
+                c.execute(
+                    """
+                    SELECT status, checked_at FROM hr.presence_raw
+                    WHERE employee_id = %s
+                    ORDER BY checked_at DESC LIMIT 1
+                    """,
+                    (employee_id,),
+                )
+            else:
+                c.execute(
+                    """
+                    SELECT status, checked_at FROM hr.presence_raw
+                    WHERE employee_id = %s AND checked_at < %s
+                    ORDER BY checked_at DESC LIMIT 1
+                    """,
+                    (employee_id, before),
+                )
+            row = c.fetchone()
+            return dict(row) if row else None
 
     def backfill_missing_side_update(
         self, employee_id: int, work_date: date,
