@@ -322,7 +322,7 @@ export default function AttendanceCalendarDayModal({
             {/* Phase 6-2L+ B-4: 공휴일 라벨 (있을 때만) */}
             {holidayName && (
               <span className="text-xs font-semibold bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full">
-                🎌 {holidayName}
+                {holidayName}
               </span>
             )}
           </h3>

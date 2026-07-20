@@ -268,7 +268,7 @@ export default function ScheduleOverviewPage() {
             {/* Phase 6-2L+ B-4: 오늘이 공휴일이면 라벨 */}
             {data.holiday && (
               <span className="text-xs font-semibold bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full">
-                🎌 {data.holiday}
+                {data.holiday}
               </span>
             )}
           </h2>
