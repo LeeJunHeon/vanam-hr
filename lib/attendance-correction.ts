@@ -3,14 +3,24 @@ import type { Prisma } from "@/app/generated/prisma/client";
 
 // 정정/결재용 auto_status 재계산 (approvals/route.ts의 동일 로직을 이동).
 // 시프트 시각(HH:MM)과 grace로 normal/late/early_leave/absent/null 판정.
+// 공휴일은 지각/조퇴 판정 없음(aggregator와 동일 정책).
 export function determineAutoStatus(
   checkIn: Date | null,
   checkOut: Date | null,
   startHHMM: string | null,
   endHHMM: string | null,
   graceIn: number,
-  graceOut: number
+  graceOut: number,
+  isHoliday: boolean = false
 ): string | null {
+  // 공휴일 → 시프트가 있어도 단순 판정 (지각/조퇴 판정 없음)
+  // Python _determine_auto_status의 is_holiday 규칙 1과 동일
+  if (isHoliday) {
+    if (checkIn && checkOut) return "normal";
+    if (checkIn && !checkOut) return "working";
+    if (!checkIn && !checkOut) return "absent";
+    return null;
+  }
   // 시프트 없음 → 단순 판정
   if (!startHHMM || !endHHMM) {
     if (checkIn && checkOut) return "normal";
@@ -144,13 +154,19 @@ export async function applyCorrectionToDaily(
     );
   }
 
+  // 공휴일이면 지각/조퇴 판정 없이 단순 판정 (aggregator와 동일 정책)
+  const holidayRow = await tx.holiday.findUnique({
+    where: { holidayDate: workDate },
+  });
+
   const newAutoStatus = determineAutoStatus(
     newCheckIn,
     newCheckOut,
     shiftStartHHMM,
     shiftEndHHMM,
     graceInMinutes,
-    graceOutMinutes
+    graceOutMinutes,
+    !!holidayRow
   );
 
   // 실제로 정정한 항목만 original에 백업한다.
