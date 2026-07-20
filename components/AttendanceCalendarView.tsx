@@ -151,7 +151,9 @@ export default function AttendanceCalendarView({
     const reqCounted = new Map<string, Set<number>>();
     for (const r of data.requests) {
       const code = r.categoryCode;
-      if (!code) continue;
+      if (!code || code === "CORRECTION") continue;
+      // 정정은 2) daily 루프의 originalCheckIn/Out 기준으로만 1인 1회 집계
+      // (requests와 daily 양쪽에서 세면 인원의 2배로 표시되는 버그)
       const start = new Date(r.startDate + "T00:00:00Z");
       const end = new Date(r.endDate + "T00:00:00Z");
       const cursor = new Date(start);
