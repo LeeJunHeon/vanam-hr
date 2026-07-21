@@ -1,6 +1,15 @@
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/app/generated/prisma/client";
 
+// 분 단위 절삭 — 화면 표시(HH:MM)와 동일 기준으로 판정/계산
+// (aggregator의 _floor_minute와 동일 정책. setSeconds는 초/밀리초만 조작하므로 TZ 무관)
+function floorMinute(d: Date | null): Date | null {
+  if (!d) return null;
+  const c = new Date(d);
+  c.setSeconds(0, 0);
+  return c;
+}
+
 // 정정/결재용 auto_status 재계산 (approvals/route.ts의 동일 로직을 이동).
 // 시프트 시각(HH:MM)과 grace로 normal/late/early_leave/absent/null 판정.
 // 공휴일은 지각/조퇴 판정 없음(aggregator와 동일 정책).
@@ -13,6 +22,8 @@ export function determineAutoStatus(
   graceOut: number,
   isHoliday: boolean = false
 ): string | null {
+  checkIn = floorMinute(checkIn);
+  checkOut = floorMinute(checkOut);
   // 공휴일 → 시프트가 있어도 단순 판정 (지각/조퇴 판정 없음)
   // Python _determine_auto_status의 is_holiday 규칙 1과 동일
   if (isHoliday) {
@@ -144,8 +155,8 @@ export async function applyCorrectionToDaily(
     where: { employeeId_workDate: { employeeId, workDate } },
   });
 
-  const newCheckIn = correctedCheckIn ?? existing?.checkIn ?? null;
-  const newCheckOut = correctedCheckOut ?? existing?.checkOut ?? null;
+  const newCheckIn = floorMinute(correctedCheckIn ?? existing?.checkIn ?? null);
+  const newCheckOut = floorMinute(correctedCheckOut ?? existing?.checkOut ?? null);
 
   let newWorkMinutes: number | null = null;
   if (newCheckIn && newCheckOut) {

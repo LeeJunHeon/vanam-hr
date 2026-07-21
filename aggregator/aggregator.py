@@ -66,6 +66,11 @@ from logger import setup_logger
 KST = timezone(timedelta(hours=9))
 
 
+def _floor_minute(dt: Optional[datetime]) -> Optional[datetime]:
+    """분 단위 절삭 — 화면 표시(HH:MM)와 동일 기준으로 판정/계산하기 위함."""
+    return dt.replace(second=0, microsecond=0) if dt is not None else None
+
+
 class Aggregator:
     def __init__(self):
         self.config = load_config()
@@ -366,6 +371,10 @@ class Aggregator:
             check_in, check_out = self.compute_check_in_out(raw, grace_minutes, now)
         else:
             check_in, check_out = None, None
+
+        # 초 단위 절삭 — 폴링 사이클 오프셋(초)이 판정/근무시간에 섞이지 않도록 원천 차단
+        check_in = _floor_minute(check_in)
+        check_out = _floor_minute(check_out)
 
         # WiFi 단독 산출값 보존(아래 cal_in 융합이 check_in을 변형하므로 라이브 변수 말고 이 값 사용).
         wifi_check_in, wifi_check_out = check_in, check_out
@@ -685,6 +694,9 @@ class Aggregator:
         # 병합값 (정정된 쪽은 기존 DB값 유지 — 재계산의 핵심)
         final_in = ex_in if ex_in is not None else computed_check_in
         final_out = ex_out if ex_out is not None else computed_check_out
+        # DB 기존값(과거 데이터)에 초가 남아있을 수 있어 병합 후에도 절삭
+        final_in = _floor_minute(final_in)
+        final_out = _floor_minute(final_out)
 
         new_auto_status = self._determine_auto_status(
             check_in=final_in, check_out=final_out, shift_info=shift_info,
@@ -769,6 +781,10 @@ class Aggregator:
            - 그 외 → normal
         """
         from datetime import timedelta
+
+        # 방어적 분 절삭 — 백필 병합 등 어떤 호출자가 초 포함 값을 넘겨도 판정 기준 일관
+        check_in = _floor_minute(check_in)
+        check_out = _floor_minute(check_out)
 
         # 시프트 없거나 휴무이거나 공휴일 → 단순 판정
         if (
