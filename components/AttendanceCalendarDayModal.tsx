@@ -367,15 +367,15 @@ export default function AttendanceCalendarDayModal({
 
         {/* Phase 6-2K: 데스크탑 테이블 (sm 이상) */}
         <div className="hidden sm:block overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm min-w-[820px]">
             <thead className="bg-gray-50 text-xs">
               <tr>
-                <th className="px-3 py-2 text-left">직원</th>
-                <th className="px-3 py-2 text-left">부서</th>
-                <th className="px-3 py-2 text-left">출근</th>
-                <th className="px-3 py-2 text-left">퇴근</th>
-                <th className="px-3 py-2 text-left">상태/카테고리</th>
-                <th className="px-3 py-2 text-left">비고</th>
+                <th className="px-3 py-2 text-left whitespace-nowrap">직원</th>
+                <th className="px-3 py-2 text-left whitespace-nowrap">부서</th>
+                <th className="px-3 py-2 text-left whitespace-nowrap">출근</th>
+                <th className="px-3 py-2 text-left whitespace-nowrap">퇴근</th>
+                <th className="px-3 py-2 text-left whitespace-nowrap">상태/카테고리</th>
+                <th className="px-3 py-2 text-left whitespace-nowrap">비고</th>
               </tr>
             </thead>
             <tbody>
@@ -403,7 +403,7 @@ export default function AttendanceCalendarDayModal({
                       {emp.department?.name ?? "-"}
                     </td>
                     {/* Phase 6-2K: 출장/외근도 시간 표시 */}
-                    <td className="px-3 py-2.5 font-mono">
+                    <td className="px-3 py-2.5 font-mono whitespace-nowrap">
                       {row?.originalCheckIn ? (
                         <>
                           <span className="line-through text-gray-400 mr-1">
@@ -417,7 +417,7 @@ export default function AttendanceCalendarDayModal({
                         formatTime(row?.checkIn ?? null) || "-"
                       )}
                     </td>
-                    <td className="px-3 py-2.5 font-mono">
+                    <td className="px-3 py-2.5 font-mono whitespace-nowrap">
                       {row?.originalCheckOut ? (
                         <>
                           <span className="line-through text-gray-400 mr-1">
@@ -446,7 +446,7 @@ export default function AttendanceCalendarDayModal({
                       )}
                     </td>
                     {/* Phase 6-2K: 비고에 캘린더 시간 포함 */}
-                    <td className="px-3 py-2.5 text-xs text-gray-500 max-w-xs">
+                    <td className="px-3 py-2.5 text-xs text-gray-500 w-full max-w-0">
                       {calNote && (
                         <span className="text-amber-600">{calNote}</span>
                       )}

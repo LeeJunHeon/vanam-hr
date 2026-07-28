@@ -360,28 +360,28 @@ export default function EmployeeAttendanceDetailModal({
                 <>
                   {/* 데스크탑 표 */}
                   <div className="hidden md:block overflow-x-auto border border-gray-100 rounded-xl">
-                    <table className="w-full">
+                    <table className="w-full min-w-[860px]">
                       <thead>
                         <tr className="bg-gray-50 border-b border-gray-100">
-                          <th className="text-left text-xs font-semibold text-gray-500 px-4 py-2.5">
+                          <th className="text-left text-xs font-semibold text-gray-500 px-4 py-2.5 whitespace-nowrap">
                             날짜
                           </th>
-                          <th className="text-left text-xs font-semibold text-gray-500 px-4 py-2.5">
+                          <th className="text-left text-xs font-semibold text-gray-500 px-4 py-2.5 whitespace-nowrap">
                             출근
                           </th>
-                          <th className="text-left text-xs font-semibold text-gray-500 px-4 py-2.5">
+                          <th className="text-left text-xs font-semibold text-gray-500 px-4 py-2.5 whitespace-nowrap">
                             퇴근
                           </th>
-                          <th className="text-right text-xs font-semibold text-gray-500 px-4 py-2.5">
+                          <th className="text-right text-xs font-semibold text-gray-500 px-4 py-2.5 whitespace-nowrap">
                             근무
                           </th>
-                          <th className="text-center text-xs font-semibold text-gray-500 px-4 py-2.5">
+                          <th className="text-center text-xs font-semibold text-gray-500 px-4 py-2.5 whitespace-nowrap">
                             진행
                           </th>
-                          <th className="text-center text-xs font-semibold text-gray-500 px-4 py-2.5">
+                          <th className="text-center text-xs font-semibold text-gray-500 px-4 py-2.5 whitespace-nowrap">
                             평가
                           </th>
-                          <th className="text-left text-xs font-semibold text-gray-500 px-4 py-2.5">
+                          <th className="text-left text-xs font-semibold text-gray-500 px-4 py-2.5 whitespace-nowrap">
                             사유
                           </th>
                         </tr>
@@ -392,16 +392,16 @@ export default function EmployeeAttendanceDetailModal({
                             key={r.workDate}
                             className="border-b border-gray-50 last:border-0 hover:bg-blue-50/30"
                           >
-                            <td className="px-4 py-2.5 text-sm text-gray-700 font-mono">
+                            <td className="px-4 py-2.5 text-sm text-gray-700 font-mono whitespace-nowrap">
                               {formatDateLabel(r.workDate)}
                             </td>
-                            <td className="px-4 py-2.5 text-sm text-gray-900 font-mono">
+                            <td className="px-4 py-2.5 text-sm text-gray-900 font-mono whitespace-nowrap">
                               {renderTimeCell(r.originalCheckIn, r.checkIn)}
                             </td>
-                            <td className="px-4 py-2.5 text-sm text-gray-900 font-mono">
+                            <td className="px-4 py-2.5 text-sm text-gray-900 font-mono whitespace-nowrap">
                               {renderTimeCell(r.originalCheckOut, r.checkOut)}
                             </td>
-                            <td className="px-4 py-2.5 text-sm text-gray-900 font-mono text-right">
+                            <td className="px-4 py-2.5 text-sm text-gray-900 font-mono text-right whitespace-nowrap">
                               {formatWorkMinutes(r.workMinutes)}
                             </td>
                             <td className="px-4 py-2.5 text-center">
@@ -411,14 +411,14 @@ export default function EmployeeAttendanceDetailModal({
                               {renderEval(r)}
                             </td>
                             <td
-                              className="px-4 py-2.5 text-sm text-gray-600 max-w-xs"
+                              className="px-4 py-2.5 text-sm text-gray-600 w-full max-w-0"
                               title={r.reason ?? ""}
                             >
                               {/* 외근/출장 등 시간대 일정 — 출퇴근 시각과 별개로 일정 시간대 표시 */}
                               {r.isOverridden &&
                                 r.correctedCheckIn &&
                                 r.correctedCheckOut && (
-                                  <div className="text-[11px] text-purple-700 font-mono">
+                                  <div className="text-[11px] text-purple-700 font-mono truncate">
                                     {correctedRangeLabel(r.reqCategoryCode, r.reqCategoryName)}{" "}
                                     {formatTime(r.correctedCheckIn)}~
                                     {formatTime(r.correctedCheckOut)}
