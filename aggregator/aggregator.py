@@ -698,6 +698,15 @@ class Aggregator:
         if check_in is not None and check_out is not None:
             delta = check_out - check_in
             work_minutes = int(delta.total_seconds() // 60)
+            if work_minutes < 0:
+                # 출근 > 퇴근 역전. 음수를 저장하면 화면·월간합계가 오염되므로
+                # None으로 두고 경고만 남긴다.
+                self.logger.warning(
+                    f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} "
+                    f"— 근무시간 음수({work_minutes}분) 차단: "
+                    f"check_in={check_in}, check_out={check_out}"
+                )
+                work_minutes = None
 
         new_id = self.db.upsert_attendance_daily(
             employee_id=emp_id,
@@ -787,6 +796,14 @@ class Aggregator:
         new_work_minutes = None
         if final_in is not None and final_out is not None:
             new_work_minutes = int((final_out - final_in).total_seconds() // 60)
+            if new_work_minutes < 0:
+                # 수동 정정값 + 계산값 조합에서 역전이 생긴 경우. 음수는 저장하지 않는다.
+                self.logger.warning(
+                    f"  [backfill] 직원 {emp_id}({emp_no}/{emp_name}) "
+                    f"work_date={work_date} — 근무시간 음수({new_work_minutes}분) 차단: "
+                    f"in={final_in}, out={final_out}"
+                )
+                new_work_minutes = None
 
         side = "퇴근" if fill_out else "출근"
         new_id = self.db.backfill_missing_side_update(
