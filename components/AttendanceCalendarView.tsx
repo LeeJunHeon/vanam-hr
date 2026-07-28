@@ -16,6 +16,7 @@ import MonthPicker from "@/components/MonthPicker";
 import ExcelButton from "@/components/ExcelButton";
 import AttendanceExportModal from "@/components/AttendanceExportModal";
 import type { AttendanceRow } from "@/lib/attendance-rows";
+import { EVAL_STATUS, PROGRESS_WORKING } from "@/lib/attendanceLabels";
 
 // 카테고리 → 기호/색상/라벨
 const CATEGORY_ICONS: Record<
@@ -37,12 +38,12 @@ const STATUS_ICONS: Record<
   string,
   { icon: string; color: string; label: string }
 > = {
-  // Phase 6-2K: 근무중(working) 추가
-  working: { icon: "🔵", color: "#3b82f6", label: "근무중" },
-  normal: { icon: "🟢", color: "#10b981", label: "정상" },
-  late: { icon: "🟡", color: "#f59e0b", label: "지각" },
-  early_leave: { icon: "🟠", color: "#f97316", label: "조퇴" },
-  absent: { icon: "🔴", color: "#ef4444", label: "결근" },
+  // Phase 6-2K: 근무중(working) 추가 — 진행 축이라 EVAL_STATUS와 별도 소스
+  working:     { icon: PROGRESS_WORKING.icon,        color: PROGRESS_WORKING.hex,        label: PROGRESS_WORKING.label },
+  normal:      { icon: EVAL_STATUS.normal.icon,      color: EVAL_STATUS.normal.hex,      label: EVAL_STATUS.normal.label },
+  late:        { icon: EVAL_STATUS.late.icon,        color: EVAL_STATUS.late.hex,        label: EVAL_STATUS.late.label },
+  early_leave: { icon: EVAL_STATUS.early_leave.icon, color: EVAL_STATUS.early_leave.hex, label: EVAL_STATUS.early_leave.label },
+  absent:      { icon: EVAL_STATUS.absent.icon,      color: EVAL_STATUS.absent.hex,      label: EVAL_STATUS.absent.label },
 };
 
 const CORRECTION_ICON = { icon: "✏️", color: "#06b6d4", label: "정정" };

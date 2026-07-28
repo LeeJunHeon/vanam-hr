@@ -6,6 +6,7 @@ import {
   correctedRangeLabel,
   formatTime as libFormatTime,
   AUTO_STATUS_META,
+  EVAL_STATUS,
 } from "@/lib/attendanceLabels";
 import { todayYmd } from "@/lib/dateUtils";
 import { exportExcel } from "@/lib/excelUtils";
@@ -82,10 +83,10 @@ function formatDateKorean(ymd: string): string {
 // 평가 축(정상/지각/조퇴/결근)과 진행 축(근무중/미퇴근)은 서로 다른 축이므로
 // 한쪽이 다른 쪽을 덮어쓰지 않고 함께 표시한다. 예: "🟡 지각 · 미퇴근"
 const EVAL_BADGE: Record<string, { label: string; cls: string }> = {
-  normal: { label: "🟢 정상", cls: "text-emerald-600" },
-  late: { label: "🟡 지각", cls: "text-amber-600" },
-  early_leave: { label: "🟠 조퇴", cls: "text-orange-600" },
-  absent: { label: "🔴 결근", cls: "text-rose-600" },
+  normal:      { label: `${EVAL_STATUS.normal.icon} ${EVAL_STATUS.normal.label}`,           cls: EVAL_STATUS.normal.cls },
+  late:        { label: `${EVAL_STATUS.late.icon} ${EVAL_STATUS.late.label}`,               cls: EVAL_STATUS.late.cls },
+  early_leave: { label: `${EVAL_STATUS.early_leave.icon} ${EVAL_STATUS.early_leave.label}`, cls: EVAL_STATUS.early_leave.cls },
+  absent:      { label: `${EVAL_STATUS.absent.icon} ${EVAL_STATUS.absent.label}`,           cls: EVAL_STATUS.absent.cls },
 };
 
 function StatusBadge({

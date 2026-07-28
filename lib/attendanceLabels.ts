@@ -41,15 +41,35 @@ export function isLabelOnlyCategory(code: string | null): boolean {
   return isVacationCategory(code) || code === "ETC";
 }
 
-// auto_status 4종 공통 매핑 (라벨/텍스트색 — 세 화면 모두 동일 값 사용 중)
+// ── 상태 라벨 단일 소스 ────────────────────────────────────────────
+// 라벨/이모지/색은 여기서만 정의한다. 다른 파일의 배지·아이콘 맵은
+// 전부 이 값에서 파생시킬 것. 색을 바꾸려면 여기 한 줄만 고치면 된다.
+//
+// ⚠ Tailwind 주의: 빌드 시 소스를 문자열로 스캔하므로 `text-${x}-600` 같은
+//   동적 조합은 클래스가 통째로 사라진다. 반드시 완성된 문자열로 적을 것.
+export const EVAL_STATUS = {
+  normal:      { label: "정상", icon: "🟢", cls: "text-emerald-600", hex: "#10b981" },
+  late:        { label: "지각", icon: "🟡", cls: "text-amber-600",   hex: "#f59e0b" },
+  early_leave: { label: "조퇴", icon: "🟠", cls: "text-orange-600",  hex: "#f97316" },
+  absent:      { label: "결근", icon: "🔴", cls: "text-rose-600",    hex: "#ef4444" },
+} as const;
+
+export type EvalStatusKey = keyof typeof EVAL_STATUS;
+
+// 진행 축 '근무중' — 평가는 아니지만 캘린더 아이콘 맵에서 함께 쓰인다.
+export const PROGRESS_WORKING = {
+  label: "근무중", icon: "🔵", cls: "text-blue-600", hex: "#3b82f6",
+} as const;
+
+// auto_status 4종 공통 매핑 — EVAL_STATUS에서 파생 (값은 기존과 동일)
 export const AUTO_STATUS_META: Record<
-  "normal" | "late" | "early_leave" | "absent",
+  EvalStatusKey,
   { label: string; cls: string }
 > = {
-  normal: { label: "정상", cls: "text-emerald-600" },
-  late: { label: "지각", cls: "text-amber-600" },
-  early_leave: { label: "조퇴", cls: "text-orange-600" },
-  absent: { label: "결근", cls: "text-rose-600" },
+  normal:      { label: EVAL_STATUS.normal.label,      cls: EVAL_STATUS.normal.cls },
+  late:        { label: EVAL_STATUS.late.label,        cls: EVAL_STATUS.late.cls },
+  early_leave: { label: EVAL_STATUS.early_leave.label, cls: EVAL_STATUS.early_leave.cls },
+  absent:      { label: EVAL_STATUS.absent.label,      cls: EVAL_STATUS.absent.cls },
 };
 
 // 평가 라벨.
