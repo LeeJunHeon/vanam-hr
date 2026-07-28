@@ -184,23 +184,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 근태정정 시각 유효성 — 출근 >= 퇴근이면 근무시간이 음수가 된다.
-    // 자정을 넘기는 야간 정정은 correctedCheckOut이 다음날 타임스탬프이므로 통과한다.
-    if (correctedCheckIn && correctedCheckOut) {
-      const _ci = new Date(correctedCheckIn);
-      const _co = new Date(correctedCheckOut);
-      if (
-        !Number.isNaN(_ci.getTime()) &&
-        !Number.isNaN(_co.getTime()) &&
-        _ci >= _co
-      ) {
-        return NextResponse.json(
-          { error: "퇴근 시각은 출근 시각보다 뒤여야 합니다." },
-          { status: 400 }
-        );
-      }
-    }
-
     const employeeIdNum = Number(employeeId);
     const categoryIdNum = Number(categoryId);
 

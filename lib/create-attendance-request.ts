@@ -130,6 +130,28 @@ export async function createAttendanceRequest(
     if (cciDate && ccoDate && ccoDate <= cciDate) {
       return { ok: false, error: "정정 퇴근 시각은 정정 출근 시각 이후여야 합니다.", status: 400 };
     }
+    // 한쪽만 정정하는 경우 반대쪽은 기존 attendance_daily 값과 병합된다.
+    // 병합된 최종값이 역전이면 work_minutes가 음수가 되므로 여기서 막는다.
+    // (2026-07-24 사례: 출근만 21:00으로 정정 → 기존 퇴근 14:36과 합쳐져 -384분)
+    if (!cciDate || !ccoDate) {
+      const existingDaily = await prisma.attendanceDaily.findUnique({
+        where: {
+          employeeId_workDate: { employeeId: employeeIdNum, workDate: startD },
+        },
+        select: { checkIn: true, checkOut: true },
+      });
+      const finalIn = cciDate ?? existingDaily?.checkIn ?? null;
+      const finalOut = ccoDate ?? existingDaily?.checkOut ?? null;
+      if (finalIn && finalOut && finalOut <= finalIn) {
+        return {
+          ok: false,
+          error:
+            "기존 근태 기록과 합치면 퇴근 시각이 출근 시각보다 빠릅니다. " +
+            "출근과 퇴근을 함께 정정해주세요.",
+          status: 400,
+        };
+      }
+    }
   } else {
     // Phase 6-2F: 정정 외 카테고리(휴가/외근/출장/재택/기타)
     // — correctedCheckIn/Out이 둘 다 비어 있으면 종일 (NULL).

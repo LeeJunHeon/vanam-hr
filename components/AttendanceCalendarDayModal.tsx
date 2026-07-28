@@ -342,7 +342,7 @@ export default function AttendanceCalendarDayModal({
         </div>
       )}
       <div
-        className="bg-white rounded-2xl max-w-5xl w-full max-h-[85vh] overflow-y-auto"
+        className="bg-white rounded-2xl max-w-6xl w-full max-h-[85vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="sticky top-0 bg-white border-b border-gray-100 px-4 sm:px-5 py-3 flex items-center justify-between z-10">
