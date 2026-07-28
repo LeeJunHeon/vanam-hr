@@ -20,6 +20,9 @@ export function formatTime(iso: string | null, fallback = "-"): string {
 // 근무시간 (분 → "N시간 M분")
 export function formatWorkMinutes(min: number | null): string {
   if (min === null || min === undefined) return "-";
+  // 음수 방어 — Math.floor / % 가 시·분 양쪽에 부호를 붙여 "-7시간 -24분" 같은
+  // 깨진 문자열을 만든다. 정상 데이터가 아니므로 값이 아니라 표식을 보여준다.
+  if (min < 0) return "오류";
   const h = Math.floor(min / 60);
   const m = min % 60;
   if (h === 0) return `${m}분`;

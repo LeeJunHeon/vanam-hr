@@ -160,9 +160,22 @@ export async function applyCorrectionToDaily(
 
   let newWorkMinutes: number | null = null;
   if (newCheckIn && newCheckOut) {
-    newWorkMinutes = Math.floor(
+    const diffMinutes = Math.floor(
       (newCheckOut.getTime() - newCheckIn.getTime()) / (60 * 1000)
     );
+    if (diffMinutes < 0) {
+      // 출근 > 퇴근인 정정 (2026-07-24 사례). 음수를 저장하면 화면·월간합계가
+      // 오염되므로 null로 두고 로그만 남긴다. 시각 자체는 요청대로 저장한다.
+      console.error(
+        `[applyCorrectionToDaily] 음수 근무시간 차단 — ` +
+          `employeeId=${employeeId}, workDate=${workDate.toISOString()}, ` +
+          `checkIn=${newCheckIn.toISOString()}, checkOut=${newCheckOut.toISOString()}, ` +
+          `diff=${diffMinutes}분, requestId=${requestId}`
+      );
+      newWorkMinutes = null;
+    } else {
+      newWorkMinutes = diffMinutes;
+    }
   }
 
   // 공휴일이면 지각/조퇴 판정 없이 단순 판정 (aggregator와 동일 정책)
