@@ -79,7 +79,15 @@ function formatDateKorean(ymd: string): string {
   return `${y}년 ${m}월 ${d}일 (${dow})`;
 }
 
-// Phase 6-2K: 🔵 근무중 포함 상태 배지
+// 평가 축(정상/지각/조퇴/결근)과 진행 축(근무중/미퇴근)은 서로 다른 축이므로
+// 한쪽이 다른 쪽을 덮어쓰지 않고 함께 표시한다. 예: "🟡 지각 · 미퇴근"
+const EVAL_BADGE: Record<string, { label: string; cls: string }> = {
+  normal: { label: "🟢 정상", cls: "text-emerald-600" },
+  late: { label: "🟡 지각", cls: "text-amber-600" },
+  early_leave: { label: "🟠 조퇴", cls: "text-orange-600" },
+  absent: { label: "🔴 결근", cls: "text-rose-600" },
+};
+
 function StatusBadge({
   autoStatus,
   checkIn,
@@ -91,26 +99,38 @@ function StatusBadge({
   checkOut: string | null;
   isToday: boolean;
 }) {
-  // 출근O·퇴근X — 오늘이면 근무중, 과거면 미퇴근 (30일 모달과 동일 규칙)
-  if (checkIn && !checkOut) {
-    return isToday ? (
-      <span className="text-xs font-medium text-blue-600">🔵 근무중</span>
-    ) : (
-      <span className="text-xs font-medium text-amber-600">🟠 미퇴근</span>
+  // 평가 축 — 퇴근 기록 유무와 무관하게 항상 표시한다.
+  const evalKey = autoStatus && autoStatus in EVAL_BADGE ? autoStatus : null;
+  // 진행 축 — 출근O·퇴근X 일 때만. 오늘이면 근무중, 과거면 미퇴근.
+  const progress = checkIn && !checkOut ? (isToday ? "근무중" : "미퇴근") : null;
+
+  // 둘 다 있음 → 병기 (예: 야간 근무가 넘어가 퇴근이 아직 안 잡힌 지각자)
+  if (evalKey && progress) {
+    const e = EVAL_BADGE[evalKey];
+    return (
+      <span className={`text-xs font-medium ${e.cls}`}>
+        {e.label}
+        <span className="text-gray-400"> · </span>
+        <span className="text-gray-500">{progress}</span>
+      </span>
     );
   }
-  const map: Record<string, { label: string; cls: string }> = {
-    working: { label: "🔵 근무중", cls: "text-blue-600" },
-    normal: { label: "🟢 정상", cls: "text-emerald-600" },
-    late: { label: "🟡 지각", cls: "text-amber-600" },
-    early_leave: { label: "🟠 조퇴", cls: "text-orange-600" },
-    absent: { label: "🔴 결근", cls: "text-rose-600" },
-  };
-  const k = autoStatus ?? "";
-  if (!k || !map[k]) return <span className="text-gray-400">-</span>;
-  return (
-    <span className={`${map[k].cls} font-medium`}>{map[k].label}</span>
-  );
+  if (evalKey) {
+    const e = EVAL_BADGE[evalKey];
+    return <span className={`text-xs font-medium ${e.cls}`}>{e.label}</span>;
+  }
+  if (progress) {
+    const cls = progress === "근무중" ? "text-blue-600" : "text-amber-600";
+    const icon = progress === "근무중" ? "🔵" : "🟠";
+    return (
+      <span className={`text-xs font-medium ${cls}`}>{`${icon} ${progress}`}</span>
+    );
+  }
+  // 평가·진행 둘 다 없음 — auto_status='working' 폴백 후 "-"
+  if (autoStatus === "working") {
+    return <span className="text-xs font-medium text-blue-600">🔵 근무중</span>;
+  }
+  return <span className="text-gray-400">-</span>;
 }
 
 // 폴백용(row=daily 없는 미래 일정 등): 요청의 정정/외근 시간대 라벨.
@@ -273,10 +293,19 @@ export default function AttendanceCalendarDayModal({
       let statusCell = "";
       if (hasReq && catName) {
         statusCell = catName;
-      } else if (row?.checkIn && !row?.checkOut) {
-        statusCell = isToday ? "근무중" : "미퇴근";
-      } else if (row?.autoStatus) {
-        statusCell = autoStatusLabel(row.autoStatus);
+      } else {
+        // 평가 축 + 진행 축 병기 — StatusBadge 와 동일 규칙
+        const parts: string[] = [];
+        if (row?.autoStatus && row.autoStatus in AUTO_STATUS_META) {
+          parts.push(autoStatusLabel(row.autoStatus));
+        }
+        if (row?.checkIn && !row?.checkOut) {
+          parts.push(isToday ? "근무중" : "미퇴근");
+        }
+        if (parts.length === 0 && row?.autoStatus) {
+          parts.push(autoStatusLabel(row.autoStatus));
+        }
+        statusCell = parts.join(" · ");
       }
       if (row?.originalCheckIn || row?.originalCheckOut) statusCell += " (정정)";
 
