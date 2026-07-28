@@ -71,6 +71,39 @@ def _floor_minute(dt: Optional[datetime]) -> Optional[datetime]:
     return dt.replace(second=0, microsecond=0) if dt is not None else None
 
 
+def _extend_overnight_session(
+    raw_records: list[dict],
+    tail_records: list[dict],
+    grace_minutes: int,
+) -> list[dict]:
+    """cutoff를 넘겨 이어진 야간 세션의 꼬리를 raw_records에 이어붙인다.
+
+    work_date 창의 마지막 record가 online이면 그 세션은 창 안에서 끝나지 않은 것이다.
+    tail_records(창 밖 기록)에서 '세션을 실제로 닫는 offline'까지만 이어붙이고 자른다.
+    세션을 닫는 offline = 그 뒤로 grace_minutes 이상 재연결이 없는 offline.
+    그 이후 기록은 다음 work_date의 출근이므로 절대 포함하지 않는다.
+    """
+    if not raw_records or not tail_records:
+        return raw_records
+    if raw_records[-1]["status"] != "online":
+        return raw_records
+
+    merged = list(raw_records)
+    for i, rec in enumerate(tail_records):
+        merged.append(rec)
+        if rec["status"] != "offline":
+            continue
+        nxt = tail_records[i + 1] if i + 1 < len(tail_records) else None
+        if nxt is None:
+            # 더 이상 기록 없음 → grace 경과 판정은 compute_check_in_out이 수행
+            break
+        gap = (nxt["checked_at"] - rec["checked_at"]).total_seconds()
+        if gap >= grace_minutes * 60:
+            # 세션 종료 확정 → 여기서 자른다 (이후는 다음 날 출근)
+            break
+    return merged
+
+
 class Aggregator:
     def __init__(self):
         self.config = load_config()
@@ -212,6 +245,16 @@ class Aggregator:
         except (ValueError, TypeError):
             timed_event_margin_hours = 0.0
 
+        # 야간 세션 cutoff 넘김 처리 (기본 OFF — 켜기 전까지 기존 동작 100% 유지)
+        overnight_raw = self.db.get_policy("overnight_extend_enabled")
+        overnight_extend_enabled = str(overnight_raw).strip().lower() == "true"
+        try:
+            overnight_extend_max_hours = int(
+                self.db.get_policy("overnight_extend_max_hours") or 6
+            )
+        except (TypeError, ValueError):
+            overnight_extend_max_hours = 6
+
         # 점심 시각 (정책 2가 켜졌을 때만 사용; 기존 lunch_start/lunch_end 정책 재사용)
         lunch_start_str = self.db.get_policy("lunch_start") or "12:00"
         lunch_end_str = self.db.get_policy("lunch_end") or "13:00"
@@ -272,6 +315,8 @@ class Aggregator:
                     timed_event_margin_hours=timed_event_margin_hours,
                     lunch_start_str=lunch_start_str,
                     lunch_end_str=lunch_end_str,
+                    overnight_extend_enabled=overnight_extend_enabled,
+                    overnight_extend_max_hours=overnight_extend_max_hours,
                 )
                 if result == "upsert":
                     upsert_count += 1
@@ -337,6 +382,8 @@ class Aggregator:
         timed_event_margin_hours: float = 0.0,
         lunch_start_str: str = "12:00",
         lunch_end_str: str = "13:00",
+        overnight_extend_enabled: bool = False,
+        overnight_extend_max_hours: int = 6,
     ) -> str:
         """단일 직원 + 단일 work_date 처리. 반환: 'upsert' | 'overridden' | 'no_data'.
 
@@ -367,10 +414,43 @@ class Aggregator:
 
         # 1) presence_raw 기반 check_in/out (없으면 둘 다 None)
         raw = self.db.get_presence_raw_by_work_date(emp_id, work_date, cutoff_hour)
+
+        # 1-a) 야간 세션이 cutoff를 넘겨 이어진 경우 창을 세션 종료까지 연장 (정책 ON일 때만)
+        if overnight_extend_enabled and raw and raw[-1]["status"] == "online":
+            try:
+                tail = self.db.get_presence_raw_after_work_date(
+                    emp_id, work_date, cutoff_hour, overnight_extend_max_hours
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"  [overnight] get_presence_raw_after_work_date 실패 "
+                    f"(emp={emp_id}, work_date={work_date}): {e}"
+                )
+                tail = []
+            if tail:
+                _before = len(raw)
+                raw = _extend_overnight_session(raw, tail, grace_minutes)
+                if len(raw) > _before:
+                    self.logger.info(
+                        f"  [overnight] 직원 {emp_id}({emp_no}/{emp_name}) "
+                        f"work_date={work_date} — cutoff 넘김 세션 연장 "
+                        f"+{len(raw) - _before}건, "
+                        f"마지막={raw[-1]['status']}@{raw[-1]['checked_at']}"
+                    )
+
         if raw:
             check_in, check_out = self.compute_check_in_out(raw, grace_minutes, now)
         else:
             check_in, check_out = None, None
+
+        # 1-b) 이 창에 출근(online)이 하나도 없으면 남은 offline은 전일 세션의 꼬리다.
+        #      퇴근으로 굳히면 '출근 없이 퇴근만 있는' 유령 행이 생기므로 보류한다.
+        if overnight_extend_enabled and check_in is None and check_out is not None:
+            self.logger.info(
+                f"  [overnight] 직원 {emp_id}({emp_no}/{emp_name}) "
+                f"work_date={work_date} — 출근 없는 고아 퇴근({check_out}) 보류"
+            )
+            check_out = None
 
         # 초 단위 절삭 — 폴링 사이클 오프셋(초)이 판정/근무시간에 섞이지 않도록 원천 차단
         check_in = _floor_minute(check_in)

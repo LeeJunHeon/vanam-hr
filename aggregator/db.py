@@ -132,6 +132,41 @@ class Database:
             )
             return [dict(r) for r in c.fetchall()]
 
+    def get_presence_raw_after_work_date(
+        self,
+        employee_id: int,
+        work_date: date,
+        cutoff_hour: int,
+        max_hours: int = 6,
+    ) -> list[dict]:
+        """work_date 창이 끝난 뒤(익일 cutoff_hour시부터) max_hours 이내의 presence_raw.
+
+        야간 근무가 cutoff를 넘겨 이어진 경우, 그 세션이 실제로 끝나는 시각을
+        찾기 위한 '꼬리' 조회. 판정 자체는 호출자(aggregator)가 한다.
+
+        반환: [{checked_at: datetime, status: 'online'|'offline'}, ...] checked_at 오름차순.
+        """
+        self._ensure_connected()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute(
+                """
+                SELECT checked_at, status
+                FROM hr.presence_raw
+                WHERE employee_id = %s
+                  AND checked_at >= (
+                        ((%s::date + 1)::timestamp + make_interval(hours => %s))
+                        AT TIME ZONE 'Asia/Seoul')
+                  AND checked_at < (
+                        ((%s::date + 1)::timestamp + make_interval(hours => %s)
+                         + make_interval(hours => %s))
+                        AT TIME ZONE 'Asia/Seoul')
+                ORDER BY checked_at ASC, id ASC
+                """,
+                (employee_id, work_date, cutoff_hour,
+                 work_date, cutoff_hour, max_hours),
+            )
+            return [dict(r) for r in c.fetchall()]
+
     def get_work_date_kst(self, cutoff_hour: int) -> date:
         """현재 시각의 work_date 반환 (cutoff_hour 이전이면 전일로 귀속).
 

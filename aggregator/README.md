@@ -11,6 +11,8 @@
 - cutoff_hour는 hr.policy_settings.work_date_cutoff_hour에서 읽음 (기본 4)
 - attendance_daily에 UPSERT (employee_id, work_date) UNIQUE 기반
 - is_overridden=true 인 row는 건드리지 않음 (관리자 수동 수정 보호)
+- 야간 세션 cutoff 넘김: 창 마지막이 online이면 세션 종료(첫 offline + grace 침묵)까지 창 연장. 정책 `overnight_extend_enabled` (기본 false)로 제어, 범위 상한은 `overnight_extend_max_hours` (기본 6시간)
+- 창에 online이 하나도 없으면 check_out을 확정하지 않음 (전일 세션 꼬리 → 유령 행 방지). 위 정책이 켜졌을 때만 적용
 
 ## 로컬 실행
 ```bash
