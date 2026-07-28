@@ -108,7 +108,7 @@ function StatusBadge({
   if (evalKey && progress) {
     const e = EVAL_BADGE[evalKey];
     return (
-      <span className={`text-xs font-medium ${e.cls}`}>
+      <span className={`text-xs font-medium whitespace-nowrap ${e.cls}`}>
         {e.label}
         <span className="text-gray-400"> · </span>
         <span className="text-gray-500">{progress}</span>
@@ -117,18 +117,18 @@ function StatusBadge({
   }
   if (evalKey) {
     const e = EVAL_BADGE[evalKey];
-    return <span className={`text-xs font-medium ${e.cls}`}>{e.label}</span>;
+    return <span className={`text-xs font-medium whitespace-nowrap ${e.cls}`}>{e.label}</span>;
   }
   if (progress) {
     const cls = progress === "근무중" ? "text-blue-600" : "text-amber-600";
     const icon = progress === "근무중" ? "🔵" : "🟠";
     return (
-      <span className={`text-xs font-medium ${cls}`}>{`${icon} ${progress}`}</span>
+      <span className={`text-xs font-medium whitespace-nowrap ${cls}`}>{`${icon} ${progress}`}</span>
     );
   }
   // 평가·진행 둘 다 없음 — auto_status='working' 폴백 후 "-"
   if (autoStatus === "working") {
-    return <span className="text-xs font-medium text-blue-600">🔵 근무중</span>;
+    return <span className="text-xs font-medium text-blue-600 whitespace-nowrap">🔵 근무중</span>;
   }
   return <span className="text-gray-400">-</span>;
 }
@@ -341,7 +341,7 @@ export default function AttendanceCalendarDayModal({
         </div>
       )}
       <div
-        className="bg-white rounded-2xl max-w-4xl w-full max-h-[85vh] overflow-y-auto"
+        className="bg-white rounded-2xl max-w-5xl w-full max-h-[85vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="sticky top-0 bg-white border-b border-gray-100 px-4 sm:px-5 py-3 flex items-center justify-between z-10">

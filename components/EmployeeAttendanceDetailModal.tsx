@@ -103,7 +103,7 @@ function renderProgress(row: DetailRow) {
         label = ended ? `${row.categoryName}완료` : `${row.categoryName}중`;
       }
       return (
-        <span className="inline-flex items-center gap-1 text-xs font-medium text-purple-700">
+        <span className="inline-flex items-center gap-1 text-xs font-medium text-purple-700 whitespace-nowrap">
           <span
             className="w-2 h-2 rounded-full"
             style={{ backgroundColor: row.categoryColor ?? "#a855f7" }}
@@ -123,7 +123,7 @@ function renderProgress(row: DetailRow) {
   const style = SETTLED_PROGRESS_STYLE[label];
   return (
     <span
-      className={`inline-flex items-center gap-1 text-xs font-medium ${style.text}`}
+      className={`inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${style.text}`}
     >
       <span className={`w-2 h-2 rounded-full ${style.dot}`} />
       {label}
@@ -151,13 +151,13 @@ function renderEval(row: DetailRow) {
       ? AUTO_STATUS_META[row.autoStatus as keyof typeof AUTO_STATUS_META]
       : undefined;
   if (c) {
-    return <span className={`text-xs font-medium ${c.cls}`}>{c.label}</span>;
+    return <span className={`text-xs font-medium whitespace-nowrap ${c.cls}`}>{c.label}</span>;
   }
   // autoStatus NULL이지만 check_in+check_out 있으면 '정상' 추정 (옛날 데이터 보호)
   if (row.checkIn && row.checkOut) {
-    return <span className="text-xs font-medium text-emerald-600">정상</span>;
+    return <span className="text-xs font-medium text-emerald-600 whitespace-nowrap">정상</span>;
   }
-  return <span className="text-xs text-gray-400">–</span>;
+  return <span className="text-xs text-gray-400 whitespace-nowrap">–</span>;
 }
 
 export default function EmployeeAttendanceDetailModal({
@@ -260,7 +260,7 @@ export default function EmployeeAttendanceDetailModal({
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-2xl shadow-xl max-w-3xl w-full max-h-[85vh] overflow-y-auto"
+        className="bg-white rounded-2xl shadow-xl max-w-5xl w-full max-h-[85vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 헤더 */}
