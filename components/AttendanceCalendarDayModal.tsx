@@ -7,6 +7,8 @@ import {
   formatTime as libFormatTime,
   AUTO_STATUS_META,
   EVAL_STATUS,
+  dayOffsetFromWorkDate,
+  dayOffsetTitle,
 } from "@/lib/attendanceLabels";
 import { todayYmd } from "@/lib/dateUtils";
 import { exportExcel } from "@/lib/excelUtils";
@@ -64,6 +66,26 @@ interface ModalProps {
 
 // 이 파일의 기존 폴백은 ""(빈문자열) — 출력 보존 위해 lib formatTime에 "" 전달
 const formatTime = (iso: string | null) => libFormatTime(iso, "");
+
+// 야간 근무가 자정을 넘긴 경우 시각 뒤에 "+1" 윗첨자를 붙인다.
+function DayOffsetMark({
+  workDate,
+  iso,
+}: {
+  workDate: string | null | undefined;
+  iso: string | null | undefined;
+}) {
+  const off = dayOffsetFromWorkDate(workDate, iso);
+  if (off <= 0) return null;
+  return (
+    <sup
+      className="ml-0.5 text-[10px] font-semibold text-amber-600"
+      title={dayOffsetTitle(workDate, iso)}
+    >
+      +{off}
+    </sup>
+  );
+}
 
 function autoStatusLabel(s: string | null): string {
   if (s && s in AUTO_STATUS_META)
@@ -425,10 +447,16 @@ export default function AttendanceCalendarDayModal({
                           </span>
                           <span className="text-cyan-600 font-semibold">
                             {formatTime(row.checkOut)}
+                            <DayOffsetMark workDate={date} iso={row.checkOut} />
                           </span>
                         </>
+                      ) : row?.checkOut ? (
+                        <>
+                          {formatTime(row.checkOut)}
+                          <DayOffsetMark workDate={date} iso={row.checkOut} />
+                        </>
                       ) : (
-                        formatTime(row?.checkOut ?? null) || "-"
+                        "-"
                       )}
                     </td>
                     <td className="px-3 py-2.5 whitespace-nowrap">
@@ -524,10 +552,14 @@ export default function AttendanceCalendarDayModal({
                           </span>{" "}
                           <span className="text-cyan-600">
                             {formatTime(row.checkOut)}
+                            <DayOffsetMark workDate={date} iso={row.checkOut} />
                           </span>
                         </>
                       ) : (
-                        formatTime(row?.checkOut ?? null) || "-"
+                        <>
+                          {formatTime(row?.checkOut ?? null) || "-"}
+                          <DayOffsetMark workDate={date} iso={row?.checkOut} />
+                        </>
                       )}
                     </span>
                   </div>

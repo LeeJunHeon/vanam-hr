@@ -20,6 +20,8 @@ import {
   formatWorkMinutes,
   isVacationCategory,
   AUTO_STATUS_META,
+  dayOffsetFromWorkDate,
+  dayOffsetTitle,
 } from "@/lib/attendanceLabels";
 import ExcelButton from "@/components/ExcelButton";
 import AttendanceExportModal from "@/components/AttendanceExportModal";
@@ -133,16 +135,40 @@ function renderProgress(row: DetailRow) {
 
 // 평가 컬럼. Phase 6-2B: 캘린더 보정 시 카테고리명 표시 (Q5c).
 // 출퇴근 셀 — 정정된 경우 원본(취소선) + 정정값(청록). 캘린더 일별 모달과 동일 규칙.
-function renderTimeCell(original: string | null, actual: string | null) {
+// workDate를 주면 자정을 넘긴 시각에 "+1" 윗첨자를 붙인다(야간 근무).
+function renderTimeCell(
+  original: string | null,
+  actual: string | null,
+  workDate?: string
+) {
+  const off = workDate ? dayOffsetFromWorkDate(workDate, actual) : 0;
+  const mark =
+    off > 0 ? (
+      <sup
+        className="ml-0.5 text-[10px] font-semibold text-amber-600"
+        title={dayOffsetTitle(workDate, actual)}
+      >
+        +{off}
+      </sup>
+    ) : null;
   if (original) {
     return (
       <>
         <span className="line-through text-gray-400 mr-1">{formatTime(original)}</span>
-        <span className="text-cyan-600 font-semibold">{formatTime(actual)}</span>
+        <span className="text-cyan-600 font-semibold">
+          {formatTime(actual)}
+          {mark}
+        </span>
       </>
     );
   }
-  return formatTime(actual) || "-";
+  if (!actual) return "-";
+  return (
+    <>
+      {formatTime(actual)}
+      {mark}
+    </>
+  );
 }
 
 function renderEval(row: DetailRow) {
@@ -399,7 +425,7 @@ export default function EmployeeAttendanceDetailModal({
                               {renderTimeCell(r.originalCheckIn, r.checkIn)}
                             </td>
                             <td className="px-4 py-2.5 text-sm text-gray-900 font-mono whitespace-nowrap">
-                              {renderTimeCell(r.originalCheckOut, r.checkOut)}
+                              {renderTimeCell(r.originalCheckOut, r.checkOut, r.workDate)}
                             </td>
                             <td className="px-4 py-2.5 text-sm text-gray-900 font-mono text-right whitespace-nowrap">
                               {formatWorkMinutes(r.workMinutes)}
@@ -451,7 +477,7 @@ export default function EmployeeAttendanceDetailModal({
                         </div>
                         <div className="flex items-center justify-between text-xs">
                           <span className="text-gray-900 font-mono">
-                            {renderTimeCell(r.originalCheckIn, r.checkIn)} ~ {renderTimeCell(r.originalCheckOut, r.checkOut)}
+                            {renderTimeCell(r.originalCheckIn, r.checkIn)} ~ {renderTimeCell(r.originalCheckOut, r.checkOut, r.workDate)}
                           </span>
                           <span className="text-gray-700 font-mono font-semibold">
                             {formatWorkMinutes(r.workMinutes)}

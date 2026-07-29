@@ -17,6 +17,50 @@ export function formatTime(iso: string | null, fallback = "-"): string {
   return `${hh}:${mm}`;
 }
 
+/**
+ * 근무일(workDate) 기준으로 해당 시각이 며칠 뒤인지 반환한다.
+ * 야간 근무가 자정을 넘겨 다음 날 퇴근한 경우 "+1" 표식을 붙이기 위한 것.
+ * 반환: 0 = 같은 날, 1 = 다음 날, 2 = 이틀 뒤 … 계산 불가면 0.
+ *
+ * ※ formatTime이 브라우저 로컬(KST) 기준으로 시각을 뽑으므로
+ *   날짜 비교도 반드시 같은 기준(getFullYear/getMonth/getDate)을 써야 한다.
+ *   toISOString()을 쓰면 UTC로 밀려 9시간 어긋난다.
+ */
+export function dayOffsetFromWorkDate(
+  workDate: string | null | undefined,
+  iso: string | null | undefined
+): number {
+  if (!workDate || !iso) return 0;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return 0;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const actualYmd = `${y}-${m}-${dd}`;
+  if (actualYmd === workDate) return 0;
+  const a = Date.parse(`${actualYmd}T00:00:00`);
+  const b = Date.parse(`${workDate}T00:00:00`);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+  return Math.round((a - b) / 86400000);
+}
+
+/**
+ * 근무일과 다른 날의 시각이면 실제 날짜를 담은 title 문자열을 반환한다.
+ * 같은 날이거나 값이 없으면 undefined (title 속성이 안 붙음).
+ */
+export function dayOffsetTitle(
+  workDate: string | null | undefined,
+  iso: string | null | undefined
+): string | undefined {
+  const off = dayOffsetFromWorkDate(workDate, iso);
+  if (off <= 0 || !iso) return undefined;
+  const d = new Date(iso);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd} (${off === 1 ? "익일" : `${off}일 뒤`} 퇴근)`;
+}
+
 // 근무시간 (분 → "N시간 M분")
 export function formatWorkMinutes(min: number | null): string {
   if (min === null || min === undefined) return "-";
