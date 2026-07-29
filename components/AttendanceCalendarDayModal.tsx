@@ -393,13 +393,13 @@ export default function AttendanceCalendarDayModal({
                     key={emp.id}
                     className="border-t border-gray-50 hover:bg-blue-50/30"
                   >
-                    <td className="px-3 py-2.5 font-medium text-gray-900">
+                    <td className="px-3 py-2.5 font-medium text-gray-900 whitespace-nowrap">
                       {emp.name}
                       <span className="ml-1 text-xs text-gray-400 font-mono">
                         {emp.employeeNo}
                       </span>
                     </td>
-                    <td className="px-3 py-2.5 text-gray-600">
+                    <td className="px-3 py-2.5 text-gray-600 whitespace-nowrap">
                       {emp.department?.name ?? "-"}
                     </td>
                     {/* Phase 6-2K: 출장/외근도 시간 표시 */}
@@ -431,7 +431,7 @@ export default function AttendanceCalendarDayModal({
                         formatTime(row?.checkOut ?? null) || "-"
                       )}
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-3 py-2.5 whitespace-nowrap">
                       {hasReq && catName ? (
                         <span className="text-purple-600 font-medium">
                           {catName}
