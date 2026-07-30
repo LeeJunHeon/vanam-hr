@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import Providers from "@/components/Providers";
+import PortalChatLauncher from "@/components/PortalChatLauncher";
 
 export const metadata: Metadata = {
   title: "VanaM 근태 관리",
@@ -32,6 +33,7 @@ export default function RootLayout({
       </head>
       <body style={{ fontFamily: "'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif" }}>
         <Providers>{children}</Providers>
+        <PortalChatLauncher />
       </body>
     </html>
   );
