@@ -1417,7 +1417,7 @@ class Aggregator:
 
         # 7) 끊김 판정
         disconnected = False
-        last_seen: Optional[datetime] = None  # 마지막으로 online이었던 시각
+        disconnect_at: Optional[datetime] = None  # 연결 끊김 감지 시각(마지막 offline checked_at)
 
         if not raw:
             # 오늘 전환 기록이 0건이어도, 마지막 전환이 'online'이면 04:00 경계를 넘어
@@ -1442,7 +1442,6 @@ class Aggregator:
                 _eff_sec_b -= max(0.0, (_ove - _ovs).total_seconds())
             if _eff_sec_b >= threshold_min * 60:
                 disconnected = True
-                last_seen = None
         else:
             last_record = raw[-1]
             if last_record["status"] == "online":
@@ -1466,11 +1465,7 @@ class Aggregator:
                     elapsed -= max(0.0, (_ove - _ovs).total_seconds())
                 if elapsed >= threshold_min * 60:
                     disconnected = True
-                    # 가장 최근 'online' 기록을 last_seen으로
-                    for r in reversed(raw):
-                        if r["status"] == "online":
-                            last_seen = r["checked_at"]
-                            break
+                    disconnect_at = last_offline_at
 
         if not disconnected:
             return
@@ -1490,14 +1485,16 @@ class Aggregator:
             "",
             "[해당 메일은 자동 전송 되었습니다.]",
         ]
-        if last_seen is not None:
+        if disconnect_at is not None:
             try:
-                last_seen_kst = (
-                    last_seen.astimezone(KST) if last_seen.tzinfo is not None else last_seen
+                disconnect_at_kst = (
+                    disconnect_at.astimezone(KST)
+                    if disconnect_at.tzinfo is not None
+                    else disconnect_at
                 )
                 body_lines.insert(
                     2,
-                    f"마지막 연결 시각: {last_seen_kst.strftime('%Y-%m-%d %H:%M:%S')} (KST)",
+                    f"연결 끊김 감지 시각: {disconnect_at_kst.strftime('%Y-%m-%d %H:%M:%S')} (KST)",
                 )
             except Exception:
                 pass
