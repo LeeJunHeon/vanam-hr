@@ -117,25 +117,28 @@ export const AUTO_STATUS_META: Record<
 };
 
 // 평가 라벨.
-// - check_out이 없으면 평가 보류 ('–')
+// - 평가값이 없고 check_out도 없으면 평가 보류 ('–')
 // - autoStatus가 NULL이지만 check_out 있으면 '정상' 추정 (옛날 데이터 보호)
 export function evalLabel(autoStatus: string | null, hasCheckOut: boolean): string {
-  if (!hasCheckOut) return "–";
+  // 평가 축은 진행 축(퇴근 여부)과 독립이다. 평가값이 있으면 항상 표시한다.
   if (autoStatus === "normal") return "정상";
   if (autoStatus === "late") return "지각";
   if (autoStatus === "early_leave") return "조퇴";
   if (autoStatus === "absent") return "결근";
+  // 여기부터는 평가값이 없는 경우
+  if (!hasCheckOut) return "–";
   // NULL이지만 check_out 있음 → autoStatus 도입 전 옛날 데이터로 추정, '정상'으로 표시
   return "정상";
 }
 
 // 평가 텍스트 색상 (evalLabel과 동일한 분기)
 export function evalColor(autoStatus: string | null, hasCheckOut: boolean): string {
-  if (!hasCheckOut) return "text-gray-400"; // 평가 보류 '–'
+  // evalLabel과 동일한 분기 순서를 유지할 것.
   if (autoStatus === "normal") return "text-emerald-600";
   if (autoStatus === "late") return "text-amber-600";
   if (autoStatus === "early_leave") return "text-orange-600";
   if (autoStatus === "absent") return "text-rose-600";
+  if (!hasCheckOut) return "text-gray-400"; // 평가 보류 '–'
   // NULL이지만 check_out 있음 → 정상 색상으로
   return "text-emerald-600";
 }

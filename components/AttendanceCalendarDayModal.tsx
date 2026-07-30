@@ -310,6 +310,9 @@ export default function AttendanceCalendarDayModal({
         outCell = row.originalCheckOut
           ? `(${formatTime(row.originalCheckOut)}→)${formatTime(row.checkOut)}`
           : formatTime(row.checkOut);
+        // 자정을 넘긴 퇴근은 근무일과 다른 날이므로 "(+1)"을 붙인다.
+        const outOff = dayOffsetFromWorkDate(date, row.checkOut);
+        if (outOff > 0) outCell += ` (+${outOff})`;
       }
 
       // 상태/카테고리 — 카테고리 우선, 없으면 autoStatus

@@ -30,6 +30,27 @@ function hhmmKst(iso: string | null): string {
   }).format(new Date(iso)); // "09:02"
 }
 
+// "YYYY-MM-DD" (KST 기준). 서버 TZ가 UTC여도 안전하도록 Intl로 강제 변환한다.
+function ymdKst(iso: string | null): string {
+  if (!iso) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: KST,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(iso)); // "2026-07-28"
+}
+
+// 근무일 대비 며칠 뒤인지 (0=당일, 1=익일). 야간 근무 퇴근 표식용.
+function dayOffsetKst(workDate: string, iso: string | null): number {
+  const ymd = ymdKst(iso);
+  if (!ymd || ymd === workDate) return 0;
+  const a = Date.parse(`${ymd}T00:00:00Z`);
+  const b = Date.parse(`${workDate}T00:00:00Z`);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+  return Math.round((a - b) / 86400000);
+}
+
 // "YYYY-MM-DD" → 요일 인덱스 (0=일 ... 6=토). 서버 TZ 무관하게 UTC 기준으로 안전.
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 function dowOf(ymd: string): number {
@@ -66,10 +87,21 @@ function evalCell(row: AttendanceRow, todayYmd: string): string {
     }
     return row.categoryName;
   }
-  // 2) autoStatus 4종
+  // 2) autoStatus 4종 — 평가 축.
+  //    출근O·퇴근X 면 진행 축(근무중/미퇴근)을 함께 표기한다.
+  //    화면 모달의 StatusBadge와 동일 규칙 ("지각 · 미퇴근").
   if (row.autoStatus && row.autoStatus in AUTO_STATUS_META) {
-    return AUTO_STATUS_META[row.autoStatus as keyof typeof AUTO_STATUS_META]
-      .label;
+    const evalText =
+      AUTO_STATUS_META[row.autoStatus as keyof typeof AUTO_STATUS_META].label;
+    if (row.checkIn && !row.checkOut) {
+      const prog = settledProgressLabel({
+        hasCheckIn: true,
+        hasCheckOut: false,
+        isToday: row.workDate === todayYmd,
+      });
+      return `${evalText} · ${prog}`;
+    }
+    return evalText;
   }
   // 3) autoStatus 도입 전 옛 데이터 보호
   if (row.checkIn && row.checkOut) return "정상";
@@ -261,9 +293,23 @@ export function buildAttendanceWorkbook(p: {
           }
           const outV = hhmmKst(row.checkOut);
           if (outV) {
-            outCell.value = row.originalCheckOut ? `${outV}*` : outV;
+            const outOff = dayOffsetKst(row.workDate, row.checkOut);
+            const outBase = row.originalCheckOut ? `${outV}*` : outV;
+            // 자정을 넘긴 퇴근은 "(+1)"을 붙여 근무일과 다른 날임을 명시한다.
+            outCell.value = outOff > 0 ? `${outBase} (+${outOff})` : outBase;
+            const outNotes: string[] = [];
             if (row.originalCheckOut) {
-              outCell.note = `원본 ${hhmmKst(row.originalCheckOut)}`;
+              outNotes.push(`원본 ${hhmmKst(row.originalCheckOut)}`);
+            }
+            if (outOff > 0) {
+              outNotes.push(
+                `실제 퇴근 ${ymdKst(row.checkOut)} (${
+                  outOff === 1 ? "익일" : `${outOff}일 뒤`
+                })`
+              );
+            }
+            if (outNotes.length > 0) {
+              outCell.note = outNotes.join(" / ");
             }
           }
           evCell.value = evalCell(row, todayYmd);
