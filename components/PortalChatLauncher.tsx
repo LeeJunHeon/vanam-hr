@@ -8,15 +8,26 @@ import { MessageCircle } from "lucide-react";
 // - 인증: 같은 도메인이므로 포털 세션 쿠키가 자동 적용됨
 // - 대화 유지: 챗봇이 localStorage(도메인 공유)에 저장/복원하므로 앱 간 이동에도 이어짐
 // - iframe은 최초 열 때 1회만 마운트하고, 닫을 때는 hidden 처리(재로딩 방지)
+const CHAT_OPEN_KEY = "vanam_chat_open";
+
 export default function PortalChatLauncher() {
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    try {
+      if (window.sessionStorage.getItem(CHAT_OPEN_KEY) === "1") { setLoaded(true); setOpen(true); }
+    } catch {}
+  }, []);
 
   // 챗봇(임베드 모드) 닫기 버튼이 보내는 postMessage 수신
   useEffect(() => {
     function onMessage(e: MessageEvent) {
       if (e.origin !== window.location.origin) return;
-      if (e.data === "vanam-chat-close") setOpen(false);
+      if (e.data === "vanam-chat-close") {
+        setOpen(false);
+        try { window.sessionStorage.removeItem(CHAT_OPEN_KEY); } catch {}
+      }
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
@@ -30,6 +41,7 @@ export default function PortalChatLauncher() {
           onClick={() => {
             setLoaded(true);
             setOpen(true);
+            try { window.sessionStorage.setItem(CHAT_OPEN_KEY, "1"); } catch {}
           }}
           aria-label="챗봇 열기"
           className="fixed right-4 bottom-4 z-[60] w-14 h-14 rounded-full bg-blue-500 hover:bg-blue-600 text-white shadow-lg flex items-center justify-center transition-colors"
