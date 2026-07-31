@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
 import { todayYmd } from "@/lib/dateUtils";
+import {
+  loadResearchMeetingPolicy,
+  nextResearchMeetingDay,
+} from "@/lib/researchMeeting";
 
 // 로그인한 직원 본인이 자기 시프트를 (관리자가 만든 활성 패턴 중에서) 선택/변경하는 API.
 // 관리자 라우트(app/api/shifts, app/api/employee-shifts)와 분리되어 있으며 본인 것만 다룬다.
@@ -51,7 +55,7 @@ export async function GET() {
     // 오늘 KST 기준 (lib/dateUtils — 컨테이너 TZ=Asia/Seoul 설정 활용)
     const today = new Date(todayYmd() + "T00:00:00.000Z");
 
-    const [currentEs, patterns, effective] = await Promise.all([
+    const [currentEs, patterns, effective, me, rmPolicy] = await Promise.all([
       prisma.employeeShift.findFirst({
         where: {
           employeeId: empId,
@@ -76,7 +80,22 @@ export async function GET() {
         orderBy: [{ name: "asc" }],
       }),
       computeEffectiveDate(prisma, empId, today),
+      prisma.employee.findUnique({
+        where: { id: empId },
+        select: { attendsResearchMeeting: true },
+      }),
+      loadResearchMeetingPolicy(prisma),
     ]);
+
+    // 연구미팅 — 참여자이고 정책이 유효할 때만. 그 외에는 null(표시 없음).
+    const researchMeeting =
+      me?.attendsResearchMeeting && rmPolicy
+        ? {
+            attends: true as const,
+            policy: rmPolicy,
+            nextDate: nextResearchMeetingDay(todayYmd(), rmPolicy),
+          }
+        : null;
 
     const currentShift = currentEs
       ? {
@@ -100,6 +119,7 @@ export async function GET() {
       })),
       attendedToday: effective.attendedToday,
       effectiveDate: fmtDate(effective.effectiveDate),
+      researchMeeting,
     });
   } catch (error) {
     console.error("GET /api/my-shift error:", error);

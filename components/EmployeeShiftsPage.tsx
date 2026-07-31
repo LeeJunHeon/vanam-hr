@@ -33,6 +33,39 @@ interface EmployeeOption {
   employeeNo: string | null;
   name: string;
   departmentName: string | null;
+  attendsResearchMeeting: boolean;
+}
+
+// 연구미팅 참여 토글 스위치 (관리자 전용)
+function ResearchMeetingToggle({
+  on,
+  busy,
+  onToggle,
+}: {
+  on: boolean;
+  busy: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label="연구미팅 참여"
+      disabled={busy}
+      onClick={onToggle}
+      title="연구미팅 참여자는 격주 금요일 09:00~18:00로 자동 판정됩니다"
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+        on ? "bg-amber-500" : "bg-gray-200"
+      }`}
+    >
+      <span
+        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+          on ? "translate-x-[1.15rem]" : "translate-x-1"
+        }`}
+      />
+    </button>
+  );
 }
 
 interface PatternOption {
@@ -63,6 +96,7 @@ export default function EmployeeShiftsPage() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const [toast, setToast] = useState("");
+  const [rmSavingId, setRmSavingId] = useState<number | null>(null);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -85,11 +119,13 @@ export default function EmployeeShiftsPage() {
               employeeNo: string | null;
               name: string;
               departmentName: string | null;
+              attendsResearchMeeting?: boolean;
             }) => ({
               id: e.id,
               employeeNo: e.employeeNo,
               name: e.name,
               departmentName: e.departmentName,
+              attendsResearchMeeting: !!e.attendsResearchMeeting,
             }))
           );
         }
@@ -212,6 +248,43 @@ export default function EmployeeShiftsPage() {
     }
   };
 
+  // 연구미팅 참여 토글 — 낙관적 반영 후 실패 시 원복
+  const toggleResearchMeeting = async (emp: EmployeeOption) => {
+    const next = !emp.attendsResearchMeeting;
+    setRmSavingId(emp.id);
+    setEmployees((prev) =>
+      prev.map((e) =>
+        e.id === emp.id ? { ...e, attendsResearchMeeting: next } : e
+      )
+    );
+    try {
+      const res = await fetch("/api/employees/research-meeting", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ employeeId: emp.id, attends: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || "변경 실패");
+      showToast(
+        `✅ ${emp.name} 연구미팅 ${next ? "참여" : "미참여"}로 변경되었습니다`
+      );
+    } catch (e) {
+      setEmployees((prev) =>
+        prev.map((x) =>
+          x.id === emp.id ? { ...x, attendsResearchMeeting: !next } : x
+        )
+      );
+      showToast(
+        `⚠️ ${e instanceof Error ? e.message : "연구미팅 설정 변경 실패"}`
+      );
+    } finally {
+      setRmSavingId(null);
+    }
+  };
+
+  // 배정 행에서 쓰는 직원 조회 (employees에 없으면 토글 미표시)
+  const empById = new Map(employees.map((e) => [e.id, e]));
+
   // 시프트 미배정 직원 목록 (활성 직원 중 현재 시프트가 없는 직원)
   const unassignedEmployees = employees.filter(
     (e) => !assignments.some((a) => a.employeeId === e.id)
@@ -234,6 +307,10 @@ export default function EmployeeShiftsPage() {
           </h1>
           <p className="text-sm text-gray-500 mt-0.5">
             직원에게 시프트 패턴을 배정합니다 (지각/조퇴 판정 기준)
+          </p>
+          <p className="text-xs text-amber-700 mt-1">
+            연구미팅 참여자는 격주 금요일 09:00~18:00로 자동 판정됩니다 (규칙은
+            시스템 설정 &gt; 정책 설정의 research_meeting_* 키)
           </p>
         </div>
         <button
@@ -265,14 +342,19 @@ export default function EmployeeShiftsPage() {
               시프트가 배정되지 않은 직원은 지각/조퇴 판정 없이 단순 &apos;normal&apos; /
               &apos;absent&apos; 로 처리됩니다.
             </p>
-            <p className="text-[11px] text-amber-600 mt-2">
-              {unassignedEmployees
-                .slice(0, 5)
-                .map((e) => e.name)
-                .join(", ")}
-              {unassignedEmployees.length > 5 &&
-                ` 외 ${unassignedEmployees.length - 5}명`}
-            </p>
+            {/* 미배정 직원도 연구미팅 참여 지정은 가능하다 (시프트가 생기면 바로 적용) */}
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5">
+              {unassignedEmployees.map((e) => (
+                <div key={e.id} className="flex items-center gap-1.5">
+                  <ResearchMeetingToggle
+                    on={e.attendsResearchMeeting}
+                    busy={rmSavingId === e.id}
+                    onToggle={() => toggleResearchMeeting(e)}
+                  />
+                  <span className="text-[11px] text-amber-700">{e.name}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -442,6 +524,9 @@ export default function EmployeeShiftsPage() {
                     종료일
                   </th>
                   <th className="text-center text-xs font-semibold text-gray-500 px-5 py-3">
+                    연구미팅
+                  </th>
+                  <th className="text-center text-xs font-semibold text-gray-500 px-5 py-3">
                     작업
                   </th>
                 </tr>
@@ -450,7 +535,7 @@ export default function EmployeeShiftsPage() {
                 {assignments.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={6}
+                      colSpan={7}
                       className="px-5 py-12 text-center text-sm text-gray-400"
                     >
                       등록된 시프트 배정이 없습니다
@@ -494,6 +579,21 @@ export default function EmployeeShiftsPage() {
                         {a.endDate ?? (
                           <span className="text-xs text-emerald-600">진행 중</span>
                         )}
+                      </td>
+                      <td className="px-5 py-3">
+                        <div className="flex justify-center">
+                          {(() => {
+                            const emp = empById.get(a.employeeId);
+                            if (!emp) return <span className="text-xs text-gray-300">-</span>;
+                            return (
+                              <ResearchMeetingToggle
+                                on={emp.attendsResearchMeeting}
+                                busy={rmSavingId === emp.id}
+                                onToggle={() => toggleResearchMeeting(emp)}
+                              />
+                            );
+                          })()}
+                        </div>
                       </td>
                       <td className="px-5 py-3">
                         <div className="flex justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -565,6 +665,20 @@ export default function EmployeeShiftsPage() {
                   <p className="text-[11px] text-gray-400 font-mono">
                     {a.startDate} ~ {a.endDate ?? "진행 중"}
                   </p>
+                  {(() => {
+                    const emp = empById.get(a.employeeId);
+                    if (!emp) return null;
+                    return (
+                      <div className="flex items-center gap-2 pt-0.5">
+                        <ResearchMeetingToggle
+                          on={emp.attendsResearchMeeting}
+                          busy={rmSavingId === emp.id}
+                          onToggle={() => toggleResearchMeeting(emp)}
+                        />
+                        <span className="text-[11px] text-gray-500">연구미팅</span>
+                      </div>
+                    );
+                  })()}
                 </div>
               ))
             )}

@@ -79,6 +79,7 @@ export async function GET(request: NextRequest) {
           positionCode: e.position?.code ?? null,
           positionName: e.position?.name ?? null,
           isActive: e.isActive,
+          attendsResearchMeeting: e.attendsResearchMeeting,
         };
         // 비관리자에게는 민감 필드(email/phone/userId/입퇴사일/note) 노출 금지
         if (!isAdmin) return base;

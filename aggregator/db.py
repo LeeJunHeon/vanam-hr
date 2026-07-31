@@ -206,15 +206,19 @@ class Database:
         반환: {patternId, patternName, dayIndex, start: 'HH:MM' | None, end: 'HH:MM' | None, type: str} or None
         - type='off' 또는 start/end가 None이면 그 날은 휴무 — 호출자가 판정
         - 매칭되는 시프트가 없으면 None (시프트 미배정)
+        - 연구미팅 참여자이고 그날이 미팅일이면 근무일 point에 한해 09~18 등 정책 시간으로
+          대체 (patternName='연구 미팅'). 휴무(off)/미배정은 대체하지 않는다.
         """
         self._ensure_connected()
         with self.conn.cursor(cursor_factory=RealDictCursor) as c:
             c.execute(
                 """
                 SELECT es.pattern_id, sp.name AS pattern_name,
-                       es.start_date, sp.cycle_days, sp.schedule
+                       es.start_date, sp.cycle_days, sp.schedule,
+                       e.attends_research_meeting
                 FROM hr.employee_shifts es
                 JOIN hr.shift_patterns sp ON sp.id = es.pattern_id
+                JOIN hr.employees e ON e.id = es.employee_id
                 WHERE es.employee_id = %s
                   AND es.start_date <= %s
                   AND (es.end_date IS NULL OR es.end_date >= %s)
@@ -251,6 +255,24 @@ class Database:
             if point is None:
                 return None
 
+            # 연구미팅 대체 — 우선순위: 휴가/신청(상위 레이어) > 시프트 휴무(off) > 연구미팅 > 일반 패턴.
+            # 근무일 point일 때만 대체한다. off/미배정 경로는 기존 반환을 그대로 유지.
+            is_work_point = (
+                point.get("type") != "off" and point.get("start") and point.get("end")
+            )
+            if is_work_point and row["attends_research_meeting"]:
+                rm = self._get_research_meeting_if_day(work_date)
+                if rm is not None:
+                    start_t, end_t = rm
+                    return {
+                        "patternId": pattern_id,
+                        "patternName": "연구 미팅",  # 로그 shift= 라벨에 그대로 노출됨
+                        "dayIndex": day_offset,
+                        "start": start_t,
+                        "end": end_t,
+                        "type": point.get("type", "day"),
+                    }
+
             return {
                 "patternId": pattern_id,
                 "patternName": pattern_name,
@@ -259,6 +281,47 @@ class Database:
                 "end": point.get("end"),
                 "type": point.get("type", "day"),
             }
+
+    def _get_research_meeting_if_day(self, work_date: date) -> Optional[tuple[str, str]]:
+        """work_date가 연구미팅일이면 (start, end) 'HH:MM' 반환, 아니면 None.
+
+        policy_settings의 research_meeting_* 5키로 판정한다. 키 누락/파싱 실패는
+        기능 비활성(None)으로 처리하고 예외를 전파하지 않는다.
+        lib/researchMeeting.ts의 isResearchMeetingDay와 판정이 동일해야 한다.
+        """
+        try:
+            self._ensure_connected()
+            with self.conn.cursor(cursor_factory=RealDictCursor) as c:
+                c.execute(
+                    """
+                    SELECT key, value
+                    FROM hr.policy_settings
+                    WHERE key LIKE 'research_meeting_%%'
+                    """
+                )
+                settings = {r["key"]: r["value"] for r in c.fetchall()}
+
+            weekday = int(settings["research_meeting_weekday"])
+            interval = int(settings["research_meeting_interval_weeks"])
+            anchor = datetime.strptime(
+                settings["research_meeting_anchor_date"], "%Y-%m-%d"
+            ).date()
+            start_t = settings["research_meeting_start"]
+            end_t = settings["research_meeting_end"]
+            if interval < 1 or not start_t or not end_t:
+                return None
+        except Exception:
+            return None
+
+        if work_date.isoweekday() != weekday:
+            return None
+
+        def monday(d: date) -> date:
+            return d - timedelta(days=d.isoweekday() - 1)
+
+        # 파이썬 % 는 음수에도 올바른 리듬 유지 — anchor 이전 날짜도 정상
+        week_diff = (monday(work_date) - monday(anchor)).days // 7
+        return (start_t, end_t) if week_diff % interval == 0 else None
 
     def get_pending_attendance_alerts(self) -> list[dict]:
         """직전 근무일이 비정상(absent/late/early_leave)이고 아직 알림을 안 보낸

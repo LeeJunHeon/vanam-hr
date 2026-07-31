@@ -194,6 +194,7 @@ model Employee {
   resignedAt   DateTime? @map("resigned_at") @db.Date
   isActive     Boolean   @default(true) @map("is_active")
   isHrOnly     Boolean   @default(false) @map("is_hr_only")
+  attendsResearchMeeting Boolean @default(false) @map("attends_research_meeting")
   hrSortOrder  Int?      @map("hr_sort_order")
   note         String?
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)

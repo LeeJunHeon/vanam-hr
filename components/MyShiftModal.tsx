@@ -2,6 +2,10 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Loader2, X, Clock, Check } from "lucide-react";
+import {
+  isResearchMeetingDay,
+  type ResearchMeetingPolicy,
+} from "@/lib/researchMeeting";
 
 // schedule 원소: { dayIndex, start, end, type } — dayIndex는 "그 주 월요일=0" 기준
 interface SchedulePoint {
@@ -23,11 +27,19 @@ interface CurrentShift extends ShiftPattern {
   startDate: string;
 }
 
+// 연구미팅 참여자에게만 내려온다 (미참여자·정책 미설정이면 null)
+interface ResearchMeetingInfo {
+  attends: true;
+  policy: ResearchMeetingPolicy;
+  nextDate: string | null;
+}
+
 interface MyShiftResponse {
   currentShift: CurrentShift | null;
   patterns: ShiftPattern[];
   attendedToday: boolean;
   effectiveDate: string; // "YYYY-MM-DD"
+  researchMeeting?: ResearchMeetingInfo | null;
 }
 
 const WEEKDAY = ["월", "화", "수", "목", "금", "토", "일"];
@@ -47,6 +59,9 @@ function addDaysUTC(d: Date, n: number): Date {
 }
 function mmddUTC(d: Date): string {
   return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+}
+function ymdUTC(d: Date): string {
+  return d.toISOString().split("T")[0];
 }
 // 현재 시프트: 지금 진행 중인 사이클의 1주차 월요일(YYYY-MM-DD) — 첫 사이클의 옛 날짜 대신 현재 반복 날짜를 보여주기 위함
 function currentCycleMonday(
@@ -91,10 +106,12 @@ function ScheduleGrid({
   schedule,
   cycleDays,
   anchorDate,
+  researchMeeting,
 }: {
   schedule: SchedulePoint[];
   cycleDays: number;
   anchorDate?: string; // 이 시프트가 적용되는(될) 기준 시작일 "YYYY-MM-DD"
+  researchMeeting?: ResearchMeetingInfo | null;
 }) {
   if (!Array.isArray(schedule) || schedule.length === 0) {
     return <div className="text-xs text-gray-400">스케줄 정보 없음</div>;
@@ -111,6 +128,10 @@ function ScheduleGrid({
   }
 
   const anchorMon = anchorDate ? mondayOfUTC(anchorDate) : null;
+  // 주차에 실제 날짜가 병기되는 표시에서만 셀의 실제 날짜를 특정할 수 있다.
+  // 그 외(1주 반복 그리드)에서는 어느 주인지 알 수 없어 요일 배지만 단다.
+  const exactDates = multiWeek && anchorMon != null;
+  const rm = researchMeeting ?? null;
 
   return (
     <div className="space-y-2">
@@ -136,6 +157,45 @@ function ScheduleGrid({
             <div className="grid grid-cols-7 gap-1">
               {pts.map((p) => {
                 const off = p.type === "off";
+                // 연구미팅 대체 — 휴무(off)는 대체하지 않는다 (off > 연구미팅).
+                const cellYmd =
+                  exactDates && anchorMon
+                    ? ymdUTC(addDaysUTC(anchorMon, w * 7 + (p.dayIndex % 7)))
+                    : null;
+                const rmExact =
+                  !!rm &&
+                  !off &&
+                  cellYmd != null &&
+                  isResearchMeetingDay(cellYmd, rm.policy);
+                // 날짜를 특정할 수 없는 그리드 — 해당 요일에 배지만 (격주 여부는 하단 안내로)
+                const rmWeekdayOnly =
+                  !!rm &&
+                  !off &&
+                  !exactDates &&
+                  (p.dayIndex % 7) + 1 === rm.policy.weekday;
+
+                if (rmExact && rm) {
+                  return (
+                    <div
+                      key={p.dayIndex}
+                      style={{ gridColumnStart: (p.dayIndex % 7) + 1 }}
+                      className="rounded-md px-0.5 py-1 text-center bg-amber-100 ring-1 ring-amber-300"
+                      title="연구미팅으로 자동 대체되는 날입니다"
+                    >
+                      <div className="text-[10px] font-medium text-amber-500">
+                        {WEEKDAY[p.dayIndex % 7]}
+                      </div>
+                      <div className="text-[9px] font-bold text-amber-800 leading-tight">
+                        연구미팅
+                      </div>
+                      <div className="text-[10px] font-semibold text-amber-800 leading-tight">
+                        <div>{rm.policy.start}</div>
+                        <div>~{rm.policy.end}</div>
+                      </div>
+                    </div>
+                  );
+                }
+
                 const box = off
                   ? "bg-gray-50"
                   : p.type === "night"
@@ -166,6 +226,11 @@ function ScheduleGrid({
                       <div
                         className={`text-[10px] font-semibold ${txt} leading-tight`}
                       >
+                        {rmWeekdayOnly && (
+                          <div className="text-[9px] font-bold text-amber-700 bg-amber-100 rounded px-0.5 mb-0.5">
+                            연구미팅
+                          </div>
+                        )}
                         <div>{p.start}</div>
                         <div>~{p.end}</div>
                       </div>
@@ -238,6 +303,22 @@ export default function MyShiftModal({
       data.patterns.some((p) =>
         p.schedule?.some((s) => s.type === "night" || s.type === "half_day")
       ));
+  // 연구미팅 — 참여자에게만 값이 있다 (null이면 어떤 표시도 하지 않음)
+  const rm = data?.researchMeeting ?? null;
+  // 1주 사이클 그리드는 실제 날짜를 특정할 수 없어 요일 배지만 달리므로 하단 안내가 필요하다.
+  const hasWeekdayOnlyGrid =
+    !!data &&
+    ((!!data.currentShift && data.currentShift.cycleDays <= 7) ||
+      data.patterns.some((p) => p.cycleDays <= 7));
+  const rmIntervalLabel =
+    rm == null
+      ? ""
+      : rm.policy.intervalWeeks === 2
+      ? "격주"
+      : rm.policy.intervalWeeks === 1
+      ? "매주"
+      : `${rm.policy.intervalWeeks}주마다`;
+
   const selectedPattern =
     data?.patterns.find((p) => p.id === selectedId) ??
     (data?.currentShift && data.currentShift.id === selectedId
@@ -347,6 +428,7 @@ export default function MyShiftModal({
                       data.currentShift.cycleDays,
                       data.effectiveDate
                     )}
+                    researchMeeting={rm}
                   />
                 </div>
               ) : (
@@ -429,6 +511,7 @@ export default function MyShiftModal({
                           schedule={p.schedule}
                           cycleDays={p.cycleDays}
                           anchorDate={data.effectiveDate}
+                          researchMeeting={rm}
                         />
                       </button>
                     );
@@ -452,6 +535,15 @@ export default function MyShiftModal({
                       : "";
                   if (!pt || pt.type === "off")
                     return <>휴무입니다.{wk}</>;
+                  // 휴무가 아닌 날에만 연구미팅으로 대체 (off > 연구미팅)
+                  if (rm && isResearchMeetingDay(data.effectiveDate, rm.policy)) {
+                    return (
+                      <>
+                        <b className="text-amber-700">연구미팅</b>{" "}
+                        {rm.policy.start}~{rm.policy.end}로 대체됩니다.{wk}
+                      </>
+                    );
+                  }
                   const label =
                     pt.type === "night"
                       ? "야간"
@@ -464,6 +556,19 @@ export default function MyShiftModal({
                     </>
                   );
                 })()}
+              </div>
+            )}
+
+            {/* 연구미팅 안내 — 요일 배지만 달린 그리드가 있을 때 (참여자에게만) */}
+            {rm && hasWeekdayOnlyGrid && (
+              <div className="text-[11px] leading-relaxed text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                연구미팅 참여자: {rmIntervalLabel}{" "}
+                {WEEKDAY[rm.policy.weekday - 1]}요일
+                {rm.nextDate && `(다음: ${mmddUTC(
+                  new Date(rm.nextDate + "T00:00:00.000Z")
+                )})`}
+                은 {rm.policy.start}~{rm.policy.end}로 자동 대체됩니다 (휴무일
+                제외)
               </div>
             )}
 
