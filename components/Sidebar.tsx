@@ -12,6 +12,7 @@ import {
 export type PageId =
   | "dashboard" | "my-attendance" | "request" | "approval"
   | "field-trip"
+  | "my-trips"
   | "attendance-overview"
   | "schedule-overview"
   | "annual-leave"
@@ -34,6 +35,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "my-attendance",  label: "내 근태",        icon: Calendar },
   { id: "request",        label: "휴가 및 근태 신청", icon: FileText },
   { id: "field-trip",     label: "출장 및 외근 관리", icon: Plane },
+  { id: "my-trips",       label: "내 출장",        icon: Plane },
   { id: "approval",       label: "결재함",         icon: CheckSquare },
   // 관리자
   { id: "attendance-overview", label: "전체 근태 조회", icon: BarChart3,   group: "관리자", adminOnly: true },

@@ -228,6 +228,9 @@ model Employee {
   // 연차 부여 기록
   annualLeaveGrants AnnualLeaveGrant[] @relation("EmployeeAnnualLeaveGrant")
 
+  // 출장보고서 (작성자)
+  tripReports TripReport[] @relation("EmployeeTripReports")
+
   @@index([isActive], map: "idx_employees_active")
   @@index([departmentId], map: "idx_employees_department")
   @@index([positionId], map: "idx_employees_position")
@@ -417,6 +420,9 @@ model AttendanceRequest {
   // 그룹 출장 참가일자 역참조 — TripParticipantDate.attendanceRequestId가 이쪽으로 가리킴
   tripParticipantDates TripParticipantDate[] @relation("TripParticipantDateRequest")
 
+  // 출장보고서 (단건 출장/외근 신청 경로)
+  tripReport TripReport?
+
   @@unique([externalSource, externalEventId], map: "uk_request_external")
   @@index([employeeId, startDate], map: "idx_requests_employee")
   @@index([primaryApproverId, status], map: "idx_requests_primary_approver")
@@ -562,6 +568,7 @@ model TripParticipant {
   employee   Employee              @relation("TripParticipantEmployee", fields: [employeeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   approvedBy Employee?             @relation("TripParticipantApprovedBy", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   dates      TripParticipantDate[]
+  report     TripReport?
 
   @@unique([tripEventId, employeeId], map: "uk_trip_participants_event_emp")
   @@index([employeeId, approvalStatus], map: "idx_trip_participants_emp_status")
@@ -588,6 +595,56 @@ model TripParticipantDate {
   @@unique([tripParticipantId, attendDate], map: "uk_trip_participant_dates")
   @@index([attendDate], map: "idx_trip_participant_dates_date")
   @@map("trip_participant_dates")
+  @@schema("hr")
+}
+
+// 출장보고서 — 참조는 tripParticipantId / attendanceRequestId 중 정확히 하나.
+// DB의 부분 유니크 인덱스(uk_trip_reports_participant/request)는 Prisma로 표현할 수
+// 없어 스키마에 없다. 참조당 1건이라는 유일성은 DB가 보장한다.
+model TripReport {
+  id                  Int       @id @default(autoincrement())
+  // @unique는 1:1 역참조(report/tripReport)를 위해 Prisma가 요구하는 최소 표현이다.
+  // NULL은 유니크 인덱스에서 서로 충돌하지 않으므로, DB의 부분 유니크 인덱스
+  // (WHERE ... IS NOT NULL)와 동작이 동일하다.
+  tripParticipantId   Int?      @unique @map("trip_participant_id")
+  attendanceRequestId Int?      @unique @map("attendance_request_id")
+  employeeId          Int       @map("employee_id")
+  workHours           String?   @map("work_hours") @db.VarChar(100)
+  region              String?   @db.VarChar(200)
+  destination         String?   @db.VarChar(200)
+  detail              String?   @db.Text
+  followup            String?   @db.Text
+  status              String    @default("draft") @db.VarChar(20)
+  submittedAt         DateTime? @map("submitted_at") @db.Timestamptz(6)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  tripParticipant   TripParticipant?   @relation(fields: [tripParticipantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  attendanceRequest AttendanceRequest? @relation(fields: [attendanceRequestId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  employee          Employee           @relation("EmployeeTripReports", fields: [employeeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  expenses          TripReportExpense[]
+
+  @@index([employeeId, status], map: "idx_trip_reports_employee")
+  @@map("trip_reports")
+  @@schema("hr")
+}
+
+// 출장보고서 사용 경비 (행 단위)
+model TripReportExpense {
+  id          Int      @id @default(autoincrement())
+  reportId    Int      @map("report_id")
+  seq         Int      @default(0)
+  method      String   @db.VarChar(100)
+  item        String   @db.VarChar(100)
+  amount      Int
+  projectName String?  @map("project_name") @db.VarChar(200)
+  note        String?  @db.VarChar(300)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  report TripReport @relation(fields: [reportId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([reportId], map: "idx_trip_report_expenses_report")
+  @@map("trip_report_expenses")
   @@schema("hr")
 }
 

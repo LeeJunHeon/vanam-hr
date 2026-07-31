@@ -9,6 +9,7 @@ import DashboardPage from "@/components/DashboardPage";
 import MyAttendancePage from "@/components/MyAttendancePage";
 import RequestPage from "@/components/RequestPage";
 import FieldTripPage from "@/components/FieldTripPage";
+import MyTripsPage from "@/components/MyTripsPage";
 import ApprovalPage from "@/components/ApprovalPage";
 import EmployeesPage from "@/components/EmployeesPage";
 import OrgPage from "@/components/OrgPage";
@@ -28,6 +29,7 @@ const PAGE_TITLES: Record<PageId, string> = {
   "my-attendance": "내 근태",
   request: "휴가 및 근태 신청",
   "field-trip": "출장 및 외근 관리",
+  "my-trips": "내 출장",
   approval: "결재함",
   "attendance-overview": "전체 근태 조회",
   "schedule-overview": "전체 일정 조회",
@@ -54,7 +56,7 @@ export default function Home() {
     const params = new URLSearchParams(window.location.search);
     const p = params.get("page");
     const VALID: PageId[] = [
-      "dashboard", "my-attendance", "request", "field-trip", "approval",
+      "dashboard", "my-attendance", "request", "field-trip", "my-trips", "approval",
       "attendance-overview", "schedule-overview", "annual-leave", "employees", "org",
       "devices", "shifts", "employee-shifts", "approval-lines", "system-settings",
     ];
@@ -106,6 +108,7 @@ export default function Home() {
       case "my-attendance":      return <MyAttendancePage />;
       case "request":            return <RequestPage />;
       case "field-trip":         return <FieldTripPage />;
+      case "my-trips":           return <MyTripsPage />;
       case "approval":           return <ApprovalPage />;
       case "attendance-overview": return <AttendanceOverviewPage />;
       case "schedule-overview":   return <ScheduleOverviewPage />;
