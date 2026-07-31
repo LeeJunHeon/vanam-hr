@@ -351,11 +351,30 @@ model AttendanceDaily {
   employee     Employee            @relation(fields: [employeeId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   category     AttendanceCategory? @relation(fields: [categoryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   shiftPattern ShiftPattern?       @relation(fields: [shiftPatternId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reasonFiles  AttendanceReasonFile[]
 
   @@unique([employeeId, workDate], map: "uk_attendance_daily")
   @@index([workDate, autoStatus], map: "idx_attendance_daily_date")
   @@index([isConfirmed, workDate], map: "idx_attendance_daily_unconfirmed")
   @@map("attendance_daily")
+  @@schema("hr")
+}
+
+// 지각/조퇴 사유 첨부파일 — 파일은 base64로 DB 저장 (장비 시스템 equipment_photos와 동일 패턴)
+// 테이블은 DB에 이미 존재. 마이그레이션 생성 금지.
+model AttendanceReasonFile {
+  id        Int      @id @default(autoincrement())
+  dailyId   Int      @map("daily_id")
+  fileName  String   @map("file_name") @db.VarChar(255)
+  mimeType  String   @map("mime_type") @db.VarChar(100)
+  fileData  String   @map("file_data") @db.Text
+  fileSize  Int?     @map("file_size")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  daily AttendanceDaily @relation(fields: [dailyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([dailyId], map: "idx_attendance_reason_files_daily")
+  @@map("attendance_reason_files")
   @@schema("hr")
 }
 

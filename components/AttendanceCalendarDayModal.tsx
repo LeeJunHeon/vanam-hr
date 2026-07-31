@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import {
   correctedRangeLabel,
@@ -164,6 +164,127 @@ function calendarTimeNote(req: CalendarRequest | undefined): string | null {
   return `${label}: ${formatTime(req.correctedCheckIn)}-${formatTime(req.correctedCheckOut)}`;
 }
 
+// 지각/조퇴 사유 첨부파일 (증빙) — 메타만 다루고 본문은 별도 GET으로 연다.
+interface ReasonFileMeta {
+  id: number;
+  fileName: string;
+  mimeType: string;
+  fileSize: number | null;
+  createdAt: string;
+}
+
+const REASON_FILE_ACCEPT =
+  ".jpg,.jpeg,.png,.heic,.webp,.pdf,.hwp,.hwpx,.doc,.docx";
+const REASON_FILE_MAX = 3;
+
+function formatFileSize(bytes: number | null): string {
+  if (bytes == null) return "";
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/** 첨부 칩 — 클릭하면 새 탭으로 열기(이미지/PDF 미리보기, hwp/doc은 다운로드) */
+function ReasonFileChip({
+  dailyId,
+  file,
+  onDelete,
+  deleting,
+}: {
+  dailyId: number;
+  file: ReasonFileMeta;
+  onDelete?: () => void;
+  deleting?: boolean;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1 max-w-full bg-gray-100 border border-gray-200 rounded-full pl-2.5 pr-1 py-0.5 text-[11px] text-gray-700">
+      <button
+        type="button"
+        onClick={() =>
+          window.open(
+            `/api/attendance-daily/${dailyId}/files/${file.id}`,
+            "_blank",
+            "noopener"
+          )
+        }
+        className="truncate max-w-[160px] hover:text-blue-600 hover:underline"
+        title={file.fileName}
+      >
+        {file.fileName}
+      </button>
+      <span className="text-gray-400 shrink-0">{formatFileSize(file.fileSize)}</span>
+      {onDelete && (
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={deleting}
+          className="p-0.5 rounded-full text-gray-400 hover:text-rose-600 hover:bg-rose-50 disabled:opacity-50 shrink-0"
+          aria-label={`${file.fileName} 삭제`}
+        >
+          <X size={11} />
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** 본인 행 전용 첨부 영역 (파일 선택 버튼 + 칩 목록) */
+function ReasonFileUploader({
+  dailyId,
+  files,
+  uploading,
+  deletingId,
+  onPick,
+  onDelete,
+}: {
+  dailyId: number;
+  files: ReasonFileMeta[];
+  uploading: boolean;
+  deletingId: number | null;
+  onPick: (file: File) => void;
+  onDelete: (fileId: number) => void;
+}) {
+  // 데스크탑/모바일에서 같은 행이 두 번 렌더되므로 input ref는 컴포넌트 인스턴스별로 둔다.
+  const inputRef = useRef<HTMLInputElement>(null);
+  const full = files.length >= REASON_FILE_MAX;
+
+  return (
+    <div className="mt-1.5">
+      <input
+        ref={inputRef}
+        type="file"
+        accept={REASON_FILE_ACCEPT}
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) onPick(f);
+          e.target.value = "";
+        }}
+      />
+      <div className="flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={full || uploading}
+          title={full ? "첨부는 최대 3개까지 가능합니다." : undefined}
+          className="px-2 py-1 text-[11px] font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50 shrink-0"
+        >
+          {uploading ? "업로드중" : "파일 첨부"}
+        </button>
+        {files.map((f) => (
+          <ReasonFileChip
+            key={f.id}
+            dailyId={dailyId}
+            file={f}
+            deleting={deletingId === f.id}
+            onDelete={() => onDelete(f.id)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function AttendanceCalendarDayModal({
   date,
   employees,
@@ -178,6 +299,104 @@ export default function AttendanceCalendarDayModal({
   const [savedToast, setSavedToast] = useState("");
   // 저장 후 즉시 반영용 로컬 사유 오버라이드 (dailyId → reason)
   const [localReasons, setLocalReasons] = useState<Record<number, string | null>>({});
+  // 지각/조퇴 사유 첨부파일 (dailyId → 메타 목록)
+  const [reasonFiles, setReasonFiles] = useState<Record<number, ReasonFileMeta[]>>({});
+  const [uploadingId, setUploadingId] = useState<number | null>(null);
+  const [deletingFileId, setDeletingFileId] = useState<number | null>(null);
+
+  // 모달이 열릴 때 지각/조퇴 행의 첨부 목록만 병렬 로드.
+  // 권한 없음(403)/실패는 조용히 무시 — 해당 행 첨부 영역이 표시되지 않을 뿐.
+  useEffect(() => {
+    const targets = rows
+      .filter(
+        (r) =>
+          r.workDate === date &&
+          (r.autoStatus === "late" || r.autoStatus === "early_leave")
+      )
+      .map((r) => r.dailyId);
+    if (targets.length === 0) return;
+
+    let cancelled = false;
+    Promise.all(
+      targets.map(async (dailyId) => {
+        try {
+          const res = await fetch(`/api/attendance-daily/${dailyId}/files`);
+          if (!res.ok) return null;
+          const list = (await res.json()) as ReasonFileMeta[];
+          return { dailyId, list };
+        } catch {
+          return null;
+        }
+      })
+    ).then((results) => {
+      if (cancelled) return;
+      const next: Record<number, ReasonFileMeta[]> = {};
+      for (const r of results) if (r) next[r.dailyId] = r.list;
+      setReasonFiles((p) => ({ ...p, ...next }));
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rows, date]);
+
+  const toast = (msg: string, ms = 2500) => {
+    setSavedToast(msg);
+    setTimeout(() => setSavedToast(""), ms);
+  };
+
+  // 첨부 업로드 — 성공 시 목록 즉시 갱신
+  const uploadReasonFile = async (dailyId: number, file: File) => {
+    setUploadingId(dailyId);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`/api/attendance-daily/${dailyId}/files`, {
+        method: "POST",
+        body: fd,
+      });
+      if (res.ok) {
+        const listRes = await fetch(`/api/attendance-daily/${dailyId}/files`);
+        if (listRes.ok) {
+          const list = (await listRes.json()) as ReasonFileMeta[];
+          setReasonFiles((p) => ({ ...p, [dailyId]: list }));
+        }
+        toast("파일이 첨부되었습니다.", 2000);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast(err.error ?? "첨부 실패");
+      }
+    } catch {
+      toast("네트워크 오류");
+    } finally {
+      setUploadingId(null);
+    }
+  };
+
+  // 첨부 삭제
+  const deleteReasonFile = async (dailyId: number, fileId: number) => {
+    setDeletingFileId(fileId);
+    try {
+      const res = await fetch(
+        `/api/attendance-daily/${dailyId}/files/${fileId}`,
+        { method: "DELETE" }
+      );
+      if (res.ok) {
+        setReasonFiles((p) => ({
+          ...p,
+          [dailyId]: (p[dailyId] ?? []).filter((f) => f.id !== fileId),
+        }));
+        toast("첨부가 삭제되었습니다.", 2000);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast(err.error ?? "삭제 실패");
+      }
+    } catch {
+      toast("네트워크 오류");
+    } finally {
+      setDeletingFileId(null);
+    }
+  };
 
   // 사유 저장 함수
   const saveReason = async (dailyId: number, value: string) => {
@@ -216,6 +435,7 @@ export default function AttendanceCalendarDayModal({
         ? localReasons[row.dailyId] ?? ""
         : row.statusReason ?? "";
     const label = row.autoStatus === "late" ? "지각" : "조퇴";
+    const files = reasonFiles[row.dailyId] ?? [];
 
     if (canEdit) {
       return (
@@ -243,17 +463,38 @@ export default function AttendanceCalendarDayModal({
               {savingId === row.dailyId ? "저장중" : "저장"}
             </button>
           </div>
+          <ReasonFileUploader
+            dailyId={row.dailyId}
+            files={files}
+            uploading={uploadingId === row.dailyId}
+            deletingId={deletingFileId}
+            onPick={(f) => uploadReasonFile(row.dailyId, f)}
+            onDelete={(fileId) => deleteReasonFile(row.dailyId, fileId)}
+          />
         </div>
       );
     }
-    // 타인(관리자 조회) — 표시만
+    // 타인(관리자 조회) — 표시만. 첨부가 있으면 칩으로 열람 가능.
+    const fileChips =
+      files.length > 0 ? (
+        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+          {files.map((f) => (
+            <ReasonFileChip key={f.id} dailyId={row.dailyId} file={f} />
+          ))}
+        </div>
+      ) : null;
+
     return currentReason ? (
       <div className="mt-1.5 text-xs text-gray-600">
         <span className="font-medium text-gray-500">{label} 사유:</span>{" "}
         {currentReason}
+        {fileChips}
       </div>
     ) : (
-      <div className="mt-1.5 text-xs text-gray-400">{label} 사유 미작성</div>
+      <div className="mt-1.5 text-xs text-gray-400">
+        {label} 사유 미작성
+        {fileChips}
+      </div>
     );
   };
 
