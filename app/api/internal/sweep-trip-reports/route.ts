@@ -218,7 +218,7 @@ export async function POST(request: Request) {
         type: "trip_report",
         title: "출장보고서 미제출 알림",
         body,
-        linkPage: "my-trips",
+        linkPage: "field-trip", // 내 출장은 출장 및 외근 관리의 탭
       });
       notified++;
     }

@@ -40,7 +40,12 @@ function periodLabel(start: string | null, end: string | null): string {
   return start ?? end ?? "-";
 }
 
-export default function MyTripsPage() {
+export default function MyTripsPage({
+  /** 다른 페이지의 탭으로 삽입될 때 — 페이지 제목/바깥 여백을 생략한다 */
+  embedded = false,
+}: {
+  embedded?: boolean;
+} = {}) {
   const { me } = useCurrentEmployee();
   const [rows, setRows] = useState<MyTripRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -93,11 +98,13 @@ export default function MyTripsPage() {
   };
 
   return (
-    <div className="p-4 sm:p-6 space-y-5">
-      {/* 헤더 */}
+    <div className={embedded ? "space-y-3" : "p-4 sm:p-6 space-y-5"}>
+      {/* 헤더 — 탭으로 임베드될 땐 페이지 제목이 중복이라 안내문만 남긴다 */}
       <div>
-        <h1 className="text-xl sm:text-2xl font-bold text-gray-900">내 출장</h1>
-        <p className="text-sm text-gray-500 mt-0.5">
+        {!embedded && (
+          <h1 className="text-xl sm:text-2xl font-bold text-gray-900">내 출장</h1>
+        )}
+        <p className={`text-sm text-gray-500 ${embedded ? "" : "mt-0.5"}`}>
           다녀온 출장/외근의 보고서를 작성합니다
           {filter === "todo" && total > 0 && (
             <span className="ml-1 text-rose-600 font-medium">

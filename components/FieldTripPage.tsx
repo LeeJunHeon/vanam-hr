@@ -23,6 +23,7 @@ import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import TimePicker from "@/components/TimePicker";
 import TripReportModal, { type TripReportTarget } from "@/components/TripReportModal";
 import Pagination from "@/components/Pagination";
+import MyTripsPage from "@/components/MyTripsPage";
 import { buildMemoHeader, extractMemoHeader, extractMemoNotes, composeMemo } from "@/lib/calendar-memo";
 
 // Phase 7 2단계: 출장 관리 페이지 — 이벤트 + 참석자(초대/self-join/수락/거절/날짜수정/제거).
@@ -161,6 +162,10 @@ interface ReportOverviewRow extends TripReportTarget {
   report: { id: number; status: string; submittedAt: string | null } | null;
 }
 
+// 탭 버튼 개수 배지 — 모든 탭이 같은 표기를 쓴다
+const TAB_BADGE_CLS =
+  "ml-1.5 text-[10px] font-bold text-rose-700 bg-rose-100 rounded-full px-1.5 py-0.5";
+
 type ReportStatusFilter = "all" | "missing" | "draft" | "submitted";
 
 const REPORT_FILTERS: { key: ReportStatusFilter; label: string }[] = [
@@ -200,8 +205,13 @@ export default function FieldTripPage() {
   // 새 출장 생성 직후 "본인도 참여하시겠습니까?" → 예 → 이 state에 생성된 이벤트
   // 저장 후 self-join DatesModal을 띄운다.
   const [joinAfterCreate, setJoinAfterCreate] = useState<TripEventDetail | null>(null);
-  // 출장 목록 탭: active=진행중·예정, history=취소·지난, reports=보고서 현황(관리자)
-  const [tab, setTab] = useState<"active" | "history" | "reports">("active");
+  // 출장 목록 탭: active=진행중·예정, history=취소·지난, my-trips=본인 보고서 작성,
+  // reports=보고서 현황(관리자)
+  const [tab, setTab] = useState<"active" | "history" | "my-trips" | "reports">(
+    "active"
+  );
+  // 내 출장 탭 배지 — 본인 미제출 수 (마운트 시 1회, total만 사용)
+  const [myMissingTotal, setMyMissingTotal] = useState(0);
   // 보고서 현황 (관리자 전용) — reports 탭 최초 진입 시에만 lazy 로드
   const [reportRows, setReportRows] = useState<ReportOverviewRow[] | null>(null);
   const [reportsLoading, setReportsLoading] = useState(false);
@@ -387,6 +397,27 @@ export default function FieldTripPage() {
     };
   }, [tab, isAdmin, reportFilter, userFilter, reportPage, reportPageSize]);
 
+  // 내 출장 탭 배지용 — 본인 미제출 수만 마운트 시 1회 조회 (total만 사용).
+  // 의존성 없음: 로딩/데이터 상태를 넣으면 자기가 바꾼 상태로 재실행된다.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          "/api/my-trips?status=missing&page=1&pageSize=10"
+        );
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled) setMyMissingTotal(json.total ?? 0);
+      } catch {
+        /* 배지 실패는 본업과 무관 — 배지만 안 보인다 */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // 사용자 필터용 직원 목록 1회 로드 (활성만)
   useEffect(() => {
     (async () => {
@@ -459,7 +490,10 @@ export default function FieldTripPage() {
                     : "border-transparent text-gray-500 hover:text-gray-700"
                 }`}
               >
-                활성/예정 ({activeCount})
+                활성/예정
+                {activeCount > 0 && (
+                  <span className={TAB_BADGE_CLS}>{activeCount}</span>
+                )}
               </button>
               <button
                 onClick={() => {
@@ -472,7 +506,27 @@ export default function FieldTripPage() {
                     : "border-transparent text-gray-500 hover:text-gray-700"
                 }`}
               >
-                취소/지난 ({historyCount})
+                취소/지난
+                {historyCount > 0 && (
+                  <span className={TAB_BADGE_CLS}>{historyCount}</span>
+                )}
+              </button>
+              {/* 내 출장 — 본인 보고서 작성 (전 직원) */}
+              <button
+                onClick={() => {
+                  setTab("my-trips");
+                  setHistoryPage(1);
+                }}
+                className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
+                  tab === "my-trips"
+                    ? "border-blue-600 text-blue-600"
+                    : "border-transparent text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                내 출장
+                {myMissingTotal > 0 && (
+                  <span className={TAB_BADGE_CLS}>{myMissingTotal}</span>
+                )}
               </button>
               {/* 보고서 현황 — 관리자 전용 열람 탭 */}
               {isAdmin && (
@@ -489,9 +543,7 @@ export default function FieldTripPage() {
                 >
                   보고서
                   {reportRows !== null && missingTotal > 0 && (
-                    <span className="ml-1.5 text-[10px] font-bold text-rose-700 bg-rose-100 rounded-full px-1.5 py-0.5">
-                      {missingTotal}
-                    </span>
+                    <span className={TAB_BADGE_CLS}>{missingTotal}</span>
                   )}
                 </button>
               )}
@@ -517,7 +569,10 @@ export default function FieldTripPage() {
             </select>
           </div>
 
-          {tab === "reports" ? (
+          {tab === "my-trips" ? (
+            /* 내 출장 — 본인 보고서 작성 (컴포넌트 그대로 임베드) */
+            <MyTripsPage embedded />
+          ) : tab === "reports" ? (
             /* 보고서 현황 (열람 전용) */
             <div className="space-y-3">
               <div className="flex flex-wrap gap-2">
