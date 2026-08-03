@@ -128,6 +128,8 @@ class Aggregator:
         self._no_show_notified: dict[int, str] = {}
         # 대리 위임 자동 마감 스윕 날짜 게이트 (KST 기준 하루 1회)
         self._last_sweep_date = None
+        # 출장보고서 미제출 리마인더 스윕 날짜 게이트 (KST 기준 하루 1회)
+        self._last_trip_report_sweep_date = None
 
     def compute_check_in_out(
         self,
@@ -359,6 +361,12 @@ class Aggregator:
             self._sweep_delegations()
         except Exception as e:
             self.logger.error(f"_sweep_delegations 예외: {e}")
+
+        # 출장보고서 미제출 리마인더 스윕 — 사이클당 1회 (실제 발송은 HR이 영업일만 판정)
+        try:
+            self._sweep_trip_reports()
+        except Exception as e:
+            self.logger.error(f"_sweep_trip_reports 예외: {e}")
 
         total = time.time() - cycle_start
         self.logger.info(
@@ -1279,6 +1287,40 @@ class Aggregator:
                     self.logger.error(f"[sweep] HR 응답 오류: {resp.status}")
         except Exception as e:
             self.logger.error(f"[sweep] 발송 실패: {e}")
+
+    def _sweep_trip_reports(self):
+        """출장보고서 미제출 리마인더 — HR 내부 API(/api/internal/sweep-trip-reports) 호출.
+
+        KST 기준 하루 1회만 실행(날짜 게이트). 매 사이클 호출돼도 실제 발송은 하루 1회.
+        영업일(주말·공휴일) 판정과 대상 선정은 HR 쪽에서 한다.
+        HR_INTERNAL_URL/INTERNAL_API_TOKEN 미설정 시 return(데몬 중단 금지).
+        모든 예외 흡수하고 error 로그만 남긴다.
+        """
+        # 날짜 게이트: 하루 1회. env 체크보다 먼저 통과 처리해야 재시도 폭주를 막는다.
+        today = datetime.now(KST).date()
+        if self._last_trip_report_sweep_date == today:
+            return
+        self._last_trip_report_sweep_date = today
+
+        hr_url = os.environ.get("HR_INTERNAL_URL")
+        token = os.environ.get("INTERNAL_API_TOKEN")
+        if not hr_url or not token:
+            return
+        try:
+            req = urllib.request.Request(
+                f"{hr_url}/api/internal/sweep-trip-reports",
+                data=json.dumps({}).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status >= 400:
+                    self.logger.error(f"[trip-report-sweep] HR 응답 오류: {resp.status}")
+        except Exception as e:
+            self.logger.error(f"[trip-report-sweep] 발송 실패: {e}")
 
     def _check_disconnect_alert(
         self,

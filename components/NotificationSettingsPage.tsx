@@ -15,6 +15,7 @@ const NOTIFY_TYPES: { type: string; label: string; desc: string; channels: ("app
   { type: "cancel", label: "결재 취소", desc: "승인된 신청 취소 시 결재자에게", channels: ["app", "email", "push"] },
   { type: "disconnect", label: "근무중 WiFi 끊김", desc: "근무 시간 중 WiFi가 끊긴 본인에게", channels: ["app", "email", "push"] },
   { type: "no_show", label: "당일 출근 미감지", desc: "출근 예정 시각까지 WiFi 미감지 시 본인에게", channels: ["app", "email", "push"] },
+  { type: "trip_report", label: "출장보고서 미제출", desc: "종료 후 영업일 4일차부터 미제출 본인에게 매 영업일 1회", channels: ["app", "email", "push"] },
   { type: "attendance_alert", label: "근태 확인 요청", desc: "결근/지각/조퇴 기록 시 본인에게", channels: ["app", "email", "push"] },
 ];
 
