@@ -96,6 +96,7 @@ export async function GET(request: NextRequest) {
         followup: report.followup,
         status: report.status,
         submittedAt: report.submittedAt?.toISOString() ?? null,
+        updatedAt: report.updatedAt.toISOString(),
         expenses: report.expenses.map((e) => ({
           method: e.method,
           item: e.item,

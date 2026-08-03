@@ -211,6 +211,9 @@ export default function FieldTripPage() {
   const [missingTotal, setMissingTotal] = useState(0);
   const [reportPage, setReportPage] = useState(1);
   const [reportPageSize, setReportPageSize] = useState(20);
+  // 취소·지난 탭 페이지네이션 (클라이언트 측 slice — 서버/로드 로직 변경 없음)
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyPageSize, setHistoryPageSize] = useState(20);
   const [openReport, setOpenReport] = useState<ReportOverviewRow | null>(null);
   const [toast, setToast] = useState("");
   // 캘린더 소스 마스터(생성 모달의 등록 캘린더 선택지)
@@ -271,6 +274,26 @@ export default function FieldTripPage() {
   const historyCount = tripsHistory.length + extsHistory.length;
   const shownTrips = tab === "active" ? tripsActive : tripsHistory;
   const shownExts = tab === "active" ? extsActive : extsHistory;
+
+  // 취소·지난 탭 페이지네이션 — 로드/병합/정렬은 그대로 두고 렌더 직전에만 잘라낸다.
+  // 카드는 [출장…, 외근…] 순서로 이어 붙여 보이므로 그 연결 순서 위의 윈도우를 잘라 나눈다.
+  const historyTotal = shownTrips.length + shownExts.length;
+  const histStart = (historyPage - 1) * historyPageSize;
+  const histEnd = histStart + historyPageSize;
+  const pagedTrips =
+    tab === "history" ? shownTrips.slice(histStart, histEnd) : shownTrips;
+  const pagedExts =
+    tab === "history"
+      ? shownExts.slice(
+          Math.max(0, histStart - shownTrips.length),
+          Math.max(0, histEnd - shownTrips.length)
+        )
+      : shownExts;
+
+  const changeHistoryPageSize = (size: number) => {
+    setHistoryPageSize(size);
+    setHistoryPage(1);
+  };
 
   // 보고서 현황 — 필터/페이지는 서버가 적용한다 (클라이언트 필터 없음)
   const shownReports = reportRows ?? [];
@@ -426,7 +449,10 @@ export default function FieldTripPage() {
           <div className="flex items-center justify-between gap-3 border-b border-gray-200">
             <div className="flex items-center gap-1">
               <button
-                onClick={() => setTab("active")}
+                onClick={() => {
+                  setTab("active");
+                  setHistoryPage(1);
+                }}
                 className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
                   tab === "active"
                     ? "border-blue-600 text-blue-600"
@@ -436,7 +462,10 @@ export default function FieldTripPage() {
                 활성/예정 ({activeCount})
               </button>
               <button
-                onClick={() => setTab("history")}
+                onClick={() => {
+                  setTab("history");
+                  setHistoryPage(1);
+                }}
                 className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
                   tab === "history"
                     ? "border-blue-600 text-blue-600"
@@ -448,7 +477,10 @@ export default function FieldTripPage() {
               {/* 보고서 현황 — 관리자 전용 열람 탭 */}
               {isAdmin && (
                 <button
-                  onClick={() => setTab("reports")}
+                  onClick={() => {
+                    setTab("reports");
+                    setHistoryPage(1);
+                  }}
                   className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
                     tab === "reports"
                       ? "border-blue-600 text-blue-600"
@@ -470,7 +502,9 @@ export default function FieldTripPage() {
                 setUserFilter(
                   e.target.value === "all" ? "all" : Number(e.target.value)
                 );
-                setReportPage(1); // 보고서 탭: 직원 변경 시 1페이지부터
+                // 직원이 바뀌면 목록 모수가 달라지므로 1페이지부터 다시
+                setReportPage(1);
+                setHistoryPage(1);
               }}
               className="mb-1 px-3 py-1.5 text-sm border border-gray-200 rounded-xl bg-white shrink-0"
             >
@@ -566,20 +600,31 @@ export default function FieldTripPage() {
                 : "취소되었거나 지난 항목이 없습니다."}
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
-              {shownTrips.map((ev) => (
-                <button
-                  key={`t-${ev.id}`}
-                  onClick={() => setOpenEventId(ev.id)}
-                  className="text-left"
-                >
-                  <TripEventCard event={ev} today={today} />
-                </button>
-              ))}
-              {shownExts.map((x) => (
-                <ExternalWorkCard key={`e-${x.id}`} item={x} today={today} />
-              ))}
-            </div>
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
+                {pagedTrips.map((ev) => (
+                  <button
+                    key={`t-${ev.id}`}
+                    onClick={() => setOpenEventId(ev.id)}
+                    className="text-left"
+                  >
+                    <TripEventCard event={ev} today={today} />
+                  </button>
+                ))}
+                {pagedExts.map((x) => (
+                  <ExternalWorkCard key={`e-${x.id}`} item={x} today={today} />
+                ))}
+              </div>
+              {tab === "history" && (
+                <Pagination
+                  page={historyPage}
+                  pageSize={historyPageSize}
+                  total={historyTotal}
+                  onPageChange={setHistoryPage}
+                  onPageSizeChange={changeHistoryPageSize}
+                />
+              )}
+            </>
           )}
         </>
       )}

@@ -34,6 +34,48 @@ function formatWon(n: number): string {
   return n.toLocaleString("ko-KR");
 }
 
+// 서버는 UTC — 저장 시각은 KST로 표기한다.
+function formatKst(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`;
+}
+
+/** 제출/수정 시각 안내 문구 — 보고서가 없으면 null */
+function timestampLabel(
+  status: string,
+  submittedAt: string | null,
+  updatedAt: string | null
+): string | null {
+  const updated = formatKst(updatedAt);
+  if (status === "submitted") {
+    const submitted = formatKst(submittedAt);
+    if (!submitted) return updated ? `최종 수정: ${updated}` : null;
+    // 제출 후 수정된 적이 있으면(1분 이상 차이) 최종 수정 시각을 병기
+    const gapMs =
+      submittedAt && updatedAt
+        ? new Date(updatedAt).getTime() - new Date(submittedAt).getTime()
+        : 0;
+    const edited = gapMs >= 60_000 && updated;
+    return `제출일: ${submitted}${edited ? ` · 최종 수정: ${updated}` : ""}`;
+  }
+  if (status === "draft") {
+    return updated ? `임시저장 · 최종 수정: ${updated}` : "임시저장";
+  }
+  return null;
+}
+
 /** 참가일자에 시간이 있으면 "HH:MM~HH:MM"로 업무시간 프리필 */
 function prefillWorkHours(target: TripReportTarget): string {
   const withTime = target.myDates.find((d) => d.startTime && d.endTime);
@@ -76,6 +118,8 @@ export default function TripReportModal({
   const [toast, setToast] = useState("");
 
   const [status, setStatus] = useState<string>("none");
+  const [submittedAt, setSubmittedAt] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [workHours, setWorkHours] = useState("");
   const [region, setRegion] = useState("");
   const [destination, setDestination] = useState("");
@@ -105,6 +149,8 @@ export default function TripReportModal({
         if (json.report) {
           const r = json.report;
           setStatus(r.status ?? "draft");
+          setSubmittedAt(r.submittedAt ?? null);
+          setUpdatedAt(r.updatedAt ?? null);
           setWorkHours(r.workHours ?? "");
           setRegion(r.region ?? "");
           setDestination(r.destination ?? "");
@@ -276,6 +322,14 @@ export default function TripReportModal({
           <div className="p-6 text-center text-sm text-rose-600">{loadError}</div>
         ) : (
           <div className="p-5 space-y-4">
+            {/* 작성/제출 시각 — 기존 보고서가 있을 때만 */}
+            {(() => {
+              const label = timestampLabel(status, submittedAt, updatedAt);
+              return label ? (
+                <p className="text-[11px] text-gray-400">{label}</p>
+              ) : null;
+            })()}
+
             {readOnly ? (
               status === "none" ? (
                 <div className="text-xs bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-gray-600">
