@@ -59,11 +59,15 @@ export default function TripReportModal({
   employeeName,
   onClose,
   onSaved,
+  readOnly = false,
 }: {
   target: TripReportTarget;
-  employeeName: string;
+  /** 출장자 표시용. 관리자 열람에서는 대상 직원 이름을 넘긴다. */
+  employeeName?: string;
   onClose: () => void;
   onSaved?: () => void;
+  /** true면 열람 전용 — 입력 잠금 + 저장/제출 버튼 없음 (기본 false: 기존 동작) */
+  readOnly?: boolean;
 }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -272,10 +276,23 @@ export default function TripReportModal({
           <div className="p-6 text-center text-sm text-rose-600">{loadError}</div>
         ) : (
           <div className="p-5 space-y-4">
-            {isSubmitted && (
-              <div className="text-xs bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-emerald-800">
-                제출 완료된 보고서입니다. 내용을 고치면 수정 저장됩니다.
-              </div>
+            {readOnly ? (
+              status === "none" ? (
+                <div className="text-xs bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-gray-600">
+                  아직 작성되지 않은 보고서입니다.
+                </div>
+              ) : (
+                <div className="text-xs bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-gray-600">
+                  열람 전용입니다.
+                  {status === "draft" && " (작성 중인 보고서)"}
+                </div>
+              )
+            ) : (
+              isSubmitted && (
+                <div className="text-xs bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-emerald-800">
+                  제출 완료된 보고서입니다. 내용을 고치면 수정 저장됩니다.
+                </div>
+              )
             )}
 
             {/* 출장자 / 출장 일자 — 읽기전용 */}
@@ -307,8 +324,9 @@ export default function TripReportModal({
                 type="text"
                 value={workHours}
                 onChange={(e) => setWorkHours(e.target.value)}
+                disabled={readOnly}
                 placeholder="10:00~15:00 (출장 출발 ~ 출장업무 끝나는 시간)"
-                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-200"
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-200 disabled:bg-gray-50 disabled:text-gray-600"
               />
             </div>
 
@@ -322,8 +340,9 @@ export default function TripReportModal({
                   type="text"
                   value={region}
                   onChange={(e) => setRegion(e.target.value)}
+                  disabled={readOnly}
                   placeholder="예: 대전"
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-200"
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-200 disabled:bg-gray-50 disabled:text-gray-600"
                 />
               </div>
               <div>
@@ -334,8 +353,9 @@ export default function TripReportModal({
                   type="text"
                   value={destination}
                   onChange={(e) => setDestination(e.target.value)}
+                  disabled={readOnly}
                   placeholder="예: 한국전자통신연구원"
-                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-200"
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-200 disabled:bg-gray-50 disabled:text-gray-600"
                 />
               </div>
             </div>
@@ -348,9 +368,10 @@ export default function TripReportModal({
               <textarea
                 value={detail}
                 onChange={(e) => setDetail(e.target.value)}
+                disabled={readOnly}
                 rows={4}
                 placeholder="출장에서 수행한 업무 내용을 작성하세요"
-                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-200 resize-y"
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-200 resize-y disabled:bg-gray-50 disabled:text-gray-600"
               />
             </div>
 
@@ -362,9 +383,10 @@ export default function TripReportModal({
               <textarea
                 value={followup}
                 onChange={(e) => setFollowup(e.target.value)}
+                disabled={readOnly}
                 rows={3}
                 placeholder="후속으로 진행할 사항을 작성하세요"
-                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-200 resize-y"
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-200 resize-y disabled:bg-gray-50 disabled:text-gray-600"
               />
             </div>
 
@@ -374,19 +396,21 @@ export default function TripReportModal({
                 <label className="text-xs font-semibold text-gray-500">
                   사용 경비
                 </label>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setExpenses((p) =>
-                      p.length >= 20 ? p : [...p, { ...EMPTY_ROW }]
-                    )
-                  }
-                  disabled={expenses.length >= 20}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 disabled:opacity-50"
-                  title={expenses.length >= 20 ? "최대 20행까지 입력할 수 있습니다" : undefined}
-                >
-                  <Plus size={12} />행 추가
-                </button>
+                {!readOnly && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpenses((p) =>
+                        p.length >= 20 ? p : [...p, { ...EMPTY_ROW }]
+                      )
+                    }
+                    disabled={expenses.length >= 20}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 disabled:opacity-50"
+                    title={expenses.length >= 20 ? "최대 20행까지 입력할 수 있습니다" : undefined}
+                  >
+                    <Plus size={12} />행 추가
+                  </button>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -400,24 +424,28 @@ export default function TripReportModal({
                         type="text"
                         value={r.method}
                         onChange={(e) => updateRow(i, { method: e.target.value })}
+                        disabled={readOnly}
                         placeholder="R&D Card"
-                        className="flex-1 min-w-0 px-2.5 py-2 border border-gray-200 rounded-lg text-xs bg-white outline-none focus:ring-2 focus:ring-blue-200"
+                        className="flex-1 min-w-0 px-2.5 py-2 border border-gray-200 rounded-lg text-xs bg-white outline-none focus:ring-2 focus:ring-blue-200 disabled:bg-gray-50 disabled:text-gray-600"
                       />
                       <input
                         type="text"
                         value={r.item}
                         onChange={(e) => updateRow(i, { item: e.target.value })}
+                        disabled={readOnly}
                         placeholder="교통비"
-                        className="flex-1 min-w-0 px-2.5 py-2 border border-gray-200 rounded-lg text-xs bg-white outline-none focus:ring-2 focus:ring-blue-200"
+                        className="flex-1 min-w-0 px-2.5 py-2 border border-gray-200 rounded-lg text-xs bg-white outline-none focus:ring-2 focus:ring-blue-200 disabled:bg-gray-50 disabled:text-gray-600"
                       />
-                      <button
-                        type="button"
-                        onClick={() => removeRow(i)}
-                        className="p-1.5 rounded-lg text-gray-400 hover:text-rose-600 hover:bg-rose-50 shrink-0"
-                        aria-label={`경비 ${i + 1}행 삭제`}
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                      {!readOnly && (
+                        <button
+                          type="button"
+                          onClick={() => removeRow(i)}
+                          className="p-1.5 rounded-lg text-gray-400 hover:text-rose-600 hover:bg-rose-50 shrink-0"
+                          aria-label={`경비 ${i + 1}행 삭제`}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
                     </div>
                     <div className="flex gap-2">
                       <div className="relative flex-1 min-w-0">
@@ -427,8 +455,9 @@ export default function TripReportModal({
                           step={1}
                           value={r.amount}
                           onChange={(e) => updateRow(i, { amount: e.target.value })}
+                          disabled={readOnly}
                           placeholder="금액"
-                          className="w-full pl-2.5 pr-6 py-2 border border-gray-200 rounded-lg text-xs bg-white outline-none focus:ring-2 focus:ring-blue-200"
+                          className="w-full pl-2.5 pr-6 py-2 border border-gray-200 rounded-lg text-xs bg-white outline-none focus:ring-2 focus:ring-blue-200 disabled:bg-gray-50 disabled:text-gray-600"
                         />
                         <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-gray-400">
                           원
@@ -438,16 +467,18 @@ export default function TripReportModal({
                         type="text"
                         value={r.projectName}
                         onChange={(e) => updateRow(i, { projectName: e.target.value })}
+                        disabled={readOnly}
                         placeholder="딥테크팁스"
-                        className="flex-1 min-w-0 px-2.5 py-2 border border-gray-200 rounded-lg text-xs bg-white outline-none focus:ring-2 focus:ring-blue-200"
+                        className="flex-1 min-w-0 px-2.5 py-2 border border-gray-200 rounded-lg text-xs bg-white outline-none focus:ring-2 focus:ring-blue-200 disabled:bg-gray-50 disabled:text-gray-600"
                       />
                     </div>
                     <input
                       type="text"
                       value={r.note}
                       onChange={(e) => updateRow(i, { note: e.target.value })}
+                      disabled={readOnly}
                       placeholder="비고 (선택)"
-                      className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-xs bg-white outline-none focus:ring-2 focus:ring-blue-200"
+                      className="w-full px-2.5 py-2 border border-gray-200 rounded-lg text-xs bg-white outline-none focus:ring-2 focus:ring-blue-200 disabled:bg-gray-50 disabled:text-gray-600"
                     />
                   </div>
                 ))}
@@ -463,7 +494,17 @@ export default function TripReportModal({
 
             {formError && <div className="text-sm text-rose-600">{formError}</div>}
 
-            {/* 하단 버튼 */}
+            {/* 하단 버튼 — 열람 전용이면 닫기만 */}
+            {readOnly ? (
+              <div className="flex justify-end pt-1">
+                <button
+                  onClick={onClose}
+                  className="px-5 py-2.5 bg-gray-100 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-200"
+                >
+                  닫기
+                </button>
+              </div>
+            ) : (
             <div className="flex justify-end gap-2 pt-1">
               <button
                 onClick={onClose}
@@ -490,6 +531,7 @@ export default function TripReportModal({
                 {isSubmitted ? "수정 저장" : "제출"}
               </button>
             </div>
+            )}
           </div>
         )}
       </div>

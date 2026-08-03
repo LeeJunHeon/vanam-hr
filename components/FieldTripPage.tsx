@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import TimePicker from "@/components/TimePicker";
+import TripReportModal, { type TripReportTarget } from "@/components/TripReportModal";
 import { buildMemoHeader, extractMemoHeader, extractMemoNotes, composeMemo } from "@/lib/calendar-memo";
 
 // Phase 7 2단계: 출장 관리 페이지 — 이벤트 + 참석자(초대/self-join/수락/거절/날짜수정/제거).
@@ -152,9 +153,44 @@ const APPROVAL_LABEL: Record<string, { label: string; cls: string }> = {
   rejected: { label: "반려", cls: "bg-rose-50 text-rose-700" },
 };
 
+// 보고서 현황 행 — /api/trip-reports/overview 응답 (관리자 열람 탭)
+interface ReportOverviewRow extends TripReportTarget {
+  employeeId: number;
+  employeeName: string;
+  report: { id: number; status: string; submittedAt: string | null } | null;
+}
+
+type ReportStatusFilter = "all" | "missing" | "draft" | "submitted";
+
+const REPORT_FILTERS: { key: ReportStatusFilter; label: string }[] = [
+  { key: "all", label: "전체" },
+  { key: "missing", label: "미작성" },
+  { key: "draft", label: "작성중" },
+  { key: "submitted", label: "제출완료" },
+];
+
+// 보고서 상태 배지 — MyTripsPage와 동일 색 관례 (미작성 rose / 작성중 amber / 제출완료 emerald)
+function ReportStatusBadge({ status }: { status: string | null }) {
+  const meta =
+    status === "submitted"
+      ? { label: "제출완료", cls: "bg-emerald-100 text-emerald-700" }
+      : status === "draft"
+      ? { label: "작성중", cls: "bg-amber-50 text-amber-700" }
+      : { label: "미작성", cls: "bg-rose-50 text-rose-700" };
+  return (
+    <span
+      className={`shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded-full ${meta.cls}`}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
 // ── 페이지 본체 ──────────────────────────────
 export default function FieldTripPage() {
-  const { current, loading: empLoading } = useCurrentEmployee();
+  const { current, loading: empLoading, me } = useCurrentEmployee();
+  // 관리자 판정 — 이 파일의 기존 관례(TripDetailModal)와 동일
+  const isAdmin = !!(me?.isAdmin || me?.isCeo);
   const [events, setEvents] = useState<TripEventListRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -163,8 +199,15 @@ export default function FieldTripPage() {
   // 새 출장 생성 직후 "본인도 참여하시겠습니까?" → 예 → 이 state에 생성된 이벤트
   // 저장 후 self-join DatesModal을 띄운다.
   const [joinAfterCreate, setJoinAfterCreate] = useState<TripEventDetail | null>(null);
-  // 출장 목록 탭: active=진행중·예정, history=취소·지난
-  const [tab, setTab] = useState<"active" | "history">("active");
+  // 출장 목록 탭: active=진행중·예정, history=취소·지난, reports=보고서 현황(관리자)
+  const [tab, setTab] = useState<"active" | "history" | "reports">("active");
+  // 보고서 현황 (관리자 전용) — reports 탭 최초 진입 시에만 lazy 로드
+  const [reportRows, setReportRows] = useState<ReportOverviewRow[] | null>(null);
+  const [reportsLoading, setReportsLoading] = useState(false);
+  const [reportsError, setReportsError] = useState<string | null>(null);
+  const [reportFilter, setReportFilter] = useState<ReportStatusFilter>("all");
+  const [openReport, setOpenReport] = useState<ReportOverviewRow | null>(null);
+  const [toast, setToast] = useState("");
   // 캘린더 소스 마스터(생성 모달의 등록 캘린더 선택지)
   const [calendarSources, setCalendarSources] = useState<
     {
@@ -224,6 +267,22 @@ export default function FieldTripPage() {
   const shownTrips = tab === "active" ? tripsActive : tripsHistory;
   const shownExts = tab === "active" ? extsActive : extsHistory;
 
+  // 보고서 현황 — 상태 칩 + 기존 사용자 필터(userFilter)를 그대로 재사용
+  const reportsAll = reportRows ?? [];
+  const missingReportCount = reportsAll.filter((r) => r.report == null).length;
+  const shownReports = reportsAll.filter((r) => {
+    if (userFilter !== "all" && r.employeeId !== userFilter) return false;
+    if (reportFilter === "missing") return r.report == null;
+    if (reportFilter === "draft") return r.report?.status === "draft";
+    if (reportFilter === "submitted") return r.report?.status === "submitted";
+    return true;
+  });
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 2500);
+  };
+
   const fetchEvents = useCallback(async () => {
     setLoading(true);
     try {
@@ -256,6 +315,35 @@ export default function FieldTripPage() {
     fetchEvents();
     fetchExternal();
   }, [fetchEvents, fetchExternal]);
+
+  // 보고서 현황 — reports 탭 최초 진입 시에만 1회 로드 (기존 탭 fetch와 무관)
+  useEffect(() => {
+    if (tab !== "reports" || !isAdmin) return;
+    if (reportRows !== null || reportsLoading) return;
+    let cancelled = false;
+    (async () => {
+      setReportsLoading(true);
+      setReportsError(null);
+      try {
+        const res = await fetch("/api/trip-reports/overview");
+        const json = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (res.ok) {
+          setReportRows(json);
+        } else {
+          setReportsError(json.error ?? "보고서 현황을 불러올 수 없습니다.");
+        }
+      } catch (e) {
+        console.error("trip-reports/overview fetch error:", e);
+        if (!cancelled) setReportsError("보고서 현황을 불러올 수 없습니다.");
+      } finally {
+        if (!cancelled) setReportsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, isAdmin, reportRows, reportsLoading]);
 
   // 사용자 필터용 직원 목록 1회 로드 (활성만)
   useEffect(() => {
@@ -338,6 +426,24 @@ export default function FieldTripPage() {
               >
                 취소/지난 ({historyCount})
               </button>
+              {/* 보고서 현황 — 관리자 전용 열람 탭 */}
+              {isAdmin && (
+                <button
+                  onClick={() => setTab("reports")}
+                  className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
+                    tab === "reports"
+                      ? "border-blue-600 text-blue-600"
+                      : "border-transparent text-gray-500 hover:text-gray-700"
+                  }`}
+                >
+                  보고서
+                  {reportRows !== null && missingReportCount > 0 && (
+                    <span className="ml-1.5 text-[10px] font-bold text-rose-700 bg-rose-100 rounded-full px-1.5 py-0.5">
+                      {missingReportCount}
+                    </span>
+                  )}
+                </button>
+              )}
             </div>
             <select
               value={userFilter === "all" ? "all" : String(userFilter)}
@@ -357,7 +463,72 @@ export default function FieldTripPage() {
             </select>
           </div>
 
-          {shownTrips.length === 0 && shownExts.length === 0 ? (
+          {tab === "reports" ? (
+            /* 보고서 현황 (열람 전용) */
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-2">
+                {REPORT_FILTERS.map((f) => (
+                  <button
+                    key={f.key}
+                    onClick={() => setReportFilter(f.key)}
+                    className={`px-3.5 py-1.5 rounded-full text-xs font-semibold transition-colors ${
+                      reportFilter === f.key
+                        ? "bg-blue-500 text-white"
+                        : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+
+              {reportsLoading ? (
+                <div className="flex items-center justify-center h-40">
+                  <Loader2 size={24} className="animate-spin text-blue-500" />
+                  <span className="ml-2 text-sm text-gray-500">로딩 중...</span>
+                </div>
+              ) : reportsError ? (
+                <div className="bg-rose-50 text-rose-700 px-4 py-3 rounded-xl flex items-center gap-2">
+                  <AlertCircle size={16} />
+                  {reportsError}
+                </div>
+              ) : shownReports.length === 0 ? (
+                <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center text-sm text-gray-400 flex flex-col items-center gap-3">
+                  <Globe size={28} className="text-gray-300" />
+                  표시할 보고서가 없습니다.
+                </div>
+              ) : (
+                <div className="bg-white rounded-2xl border border-gray-100 divide-y divide-gray-50 overflow-hidden">
+                  {shownReports.map((r) => (
+                    <button
+                      key={`${r.kind}-${r.refId}`}
+                      onClick={() => {
+                        if (!r.report) {
+                          showToast("아직 작성되지 않은 보고서입니다.");
+                          return;
+                        }
+                        setOpenReport(r);
+                      }}
+                      className="w-full text-left px-4 py-3 hover:bg-blue-50/30 transition-colors flex items-center gap-3"
+                    >
+                      <span className="text-sm font-semibold text-gray-900 w-20 shrink-0 truncate">
+                        {r.employeeName}
+                      </span>
+                      <span className="flex-1 min-w-0 text-sm text-gray-700 truncate">
+                        {r.title}
+                      </span>
+                      <span className="text-xs text-gray-500 font-mono shrink-0 hidden sm:inline">
+                        {r.startDate === r.endDate
+                          ? r.startDate ?? "-"
+                          : `${r.startDate ?? "-"}~${r.endDate ?? "-"}`}
+                      </span>
+                      <ReportStatusBadge status={r.report?.status ?? null} />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : shownTrips.length === 0 && shownExts.length === 0 ? (
             <div className="bg-white rounded-2xl border border-gray-100 p-12 text-center text-sm text-gray-400 flex flex-col items-center gap-3">
               <Globe size={28} className="text-gray-300" />
               {tab === "active"
@@ -381,6 +552,21 @@ export default function FieldTripPage() {
             </div>
           )}
         </>
+      )}
+
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-[60] bg-gray-900 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-lg">
+          {toast}
+        </div>
+      )}
+
+      {openReport && (
+        <TripReportModal
+          target={openReport}
+          employeeName={openReport.employeeName}
+          readOnly
+          onClose={() => setOpenReport(null)}
+        />
       )}
 
       {createOpen && (
