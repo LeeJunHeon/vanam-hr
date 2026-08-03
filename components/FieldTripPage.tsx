@@ -22,6 +22,7 @@ import {
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import TimePicker from "@/components/TimePicker";
 import TripReportModal, { type TripReportTarget } from "@/components/TripReportModal";
+import Pagination from "@/components/Pagination";
 import { buildMemoHeader, extractMemoHeader, extractMemoNotes, composeMemo } from "@/lib/calendar-memo";
 
 // Phase 7 2단계: 출장 관리 페이지 — 이벤트 + 참석자(초대/self-join/수락/거절/날짜수정/제거).
@@ -206,6 +207,10 @@ export default function FieldTripPage() {
   const [reportsLoading, setReportsLoading] = useState(false);
   const [reportsError, setReportsError] = useState<string | null>(null);
   const [reportFilter, setReportFilter] = useState<ReportStatusFilter>("all");
+  const [reportTotal, setReportTotal] = useState(0);
+  const [missingTotal, setMissingTotal] = useState(0);
+  const [reportPage, setReportPage] = useState(1);
+  const [reportPageSize, setReportPageSize] = useState(20);
   const [openReport, setOpenReport] = useState<ReportOverviewRow | null>(null);
   const [toast, setToast] = useState("");
   // 캘린더 소스 마스터(생성 모달의 등록 캘린더 선택지)
@@ -267,16 +272,18 @@ export default function FieldTripPage() {
   const shownTrips = tab === "active" ? tripsActive : tripsHistory;
   const shownExts = tab === "active" ? extsActive : extsHistory;
 
-  // 보고서 현황 — 상태 칩 + 기존 사용자 필터(userFilter)를 그대로 재사용
-  const reportsAll = reportRows ?? [];
-  const missingReportCount = reportsAll.filter((r) => r.report == null).length;
-  const shownReports = reportsAll.filter((r) => {
-    if (userFilter !== "all" && r.employeeId !== userFilter) return false;
-    if (reportFilter === "missing") return r.report == null;
-    if (reportFilter === "draft") return r.report?.status === "draft";
-    if (reportFilter === "submitted") return r.report?.status === "submitted";
-    return true;
-  });
+  // 보고서 현황 — 필터/페이지는 서버가 적용한다 (클라이언트 필터 없음)
+  const shownReports = reportRows ?? [];
+
+  // 필터 변경은 항상 1페이지부터
+  const changeReportFilter = (key: ReportStatusFilter) => {
+    setReportFilter(key);
+    setReportPage(1);
+  };
+  const changeReportPageSize = (size: number) => {
+    setReportPageSize(size);
+    setReportPage(1);
+  };
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -316,20 +323,31 @@ export default function FieldTripPage() {
     fetchExternal();
   }, [fetchEvents, fetchExternal]);
 
-  // 보고서 현황 — reports 탭 최초 진입 시에만 1회 로드 (기존 탭 fetch와 무관)
+  // 보고서 현황 — 필터/페이지 파라미터가 바뀔 때마다 재조회.
+  // 의존성에 로딩·데이터 상태를 넣으면 effect가 자기가 바꾼 상태로 재실행되고,
+  // 이전 cleanup의 cancelled=true 때문에 로딩 해제가 스킵돼 영원히 로딩에 갇힌다.
+  // 그래서 파라미터만 의존성에 두고, finally의 로딩 해제는 cancelled와 무관하게 항상 실행한다.
   useEffect(() => {
     if (tab !== "reports" || !isAdmin) return;
-    if (reportRows !== null || reportsLoading) return;
     let cancelled = false;
     (async () => {
+      const params = new URLSearchParams({
+        page: String(reportPage),
+        pageSize: String(reportPageSize),
+      });
+      if (reportFilter !== "all") params.set("status", reportFilter);
+      if (userFilter !== "all") params.set("employeeId", String(userFilter));
+
       setReportsLoading(true);
       setReportsError(null);
       try {
-        const res = await fetch("/api/trip-reports/overview");
+        const res = await fetch(`/api/trip-reports/overview?${params}`);
         const json = await res.json().catch(() => ({}));
-        if (cancelled) return;
+        if (cancelled) return; // 파라미터가 바뀌었거나 언마운트 — 늦은 응답 무시
         if (res.ok) {
-          setReportRows(json);
+          setReportRows(json.rows ?? []);
+          setReportTotal(json.total ?? 0);
+          setMissingTotal(json.missingTotal ?? 0);
         } else {
           setReportsError(json.error ?? "보고서 현황을 불러올 수 없습니다.");
         }
@@ -337,13 +355,14 @@ export default function FieldTripPage() {
         console.error("trip-reports/overview fetch error:", e);
         if (!cancelled) setReportsError("보고서 현황을 불러올 수 없습니다.");
       } finally {
-        if (!cancelled) setReportsLoading(false);
+        // cancelled 여부와 무관하게 해제 — 여기서 조건을 걸면 무한로딩이 재발한다
+        setReportsLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [tab, isAdmin, reportRows, reportsLoading]);
+  }, [tab, isAdmin, reportFilter, userFilter, reportPage, reportPageSize]);
 
   // 사용자 필터용 직원 목록 1회 로드 (활성만)
   useEffect(() => {
@@ -437,9 +456,9 @@ export default function FieldTripPage() {
                   }`}
                 >
                   보고서
-                  {reportRows !== null && missingReportCount > 0 && (
+                  {reportRows !== null && missingTotal > 0 && (
                     <span className="ml-1.5 text-[10px] font-bold text-rose-700 bg-rose-100 rounded-full px-1.5 py-0.5">
-                      {missingReportCount}
+                      {missingTotal}
                     </span>
                   )}
                 </button>
@@ -447,11 +466,12 @@ export default function FieldTripPage() {
             </div>
             <select
               value={userFilter === "all" ? "all" : String(userFilter)}
-              onChange={(e) =>
+              onChange={(e) => {
                 setUserFilter(
                   e.target.value === "all" ? "all" : Number(e.target.value)
-                )
-              }
+                );
+                setReportPage(1); // 보고서 탭: 직원 변경 시 1페이지부터
+              }}
               className="mb-1 px-3 py-1.5 text-sm border border-gray-200 rounded-xl bg-white shrink-0"
             >
               <option value="all">전체 사용자</option>
@@ -470,7 +490,7 @@ export default function FieldTripPage() {
                 {REPORT_FILTERS.map((f) => (
                   <button
                     key={f.key}
-                    onClick={() => setReportFilter(f.key)}
+                    onClick={() => changeReportFilter(f.key)}
                     className={`px-3.5 py-1.5 rounded-full text-xs font-semibold transition-colors ${
                       reportFilter === f.key
                         ? "bg-blue-500 text-white"
@@ -526,6 +546,16 @@ export default function FieldTripPage() {
                     </button>
                   ))}
                 </div>
+              )}
+
+              {!reportsLoading && !reportsError && shownReports.length > 0 && (
+                <Pagination
+                  page={reportPage}
+                  pageSize={reportPageSize}
+                  total={reportTotal}
+                  onPageChange={setReportPage}
+                  onPageSizeChange={changeReportPageSize}
+                />
               )}
             </div>
           ) : shownTrips.length === 0 && shownExts.length === 0 ? (

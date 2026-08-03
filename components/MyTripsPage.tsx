@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Loader2, Plane, MapPin, CalendarDays } from "lucide-react";
 import TripReportModal, { type TripReportTarget } from "@/components/TripReportModal";
+import Pagination from "@/components/Pagination";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 
 interface MyTripRow extends TripReportTarget {
@@ -42,21 +43,32 @@ function periodLabel(start: string | null, end: string | null): string {
 export default function MyTripsPage() {
   const { me } = useCurrentEmployee();
   const [rows, setRows] = useState<MyTripRow[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [filter, setFilter] = useState<FilterKey>("all");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [target, setTarget] = useState<MyTripRow | null>(null);
 
+  // 필터/페이지 파라미터로만 재조회한다.
+  // 로딩·데이터 상태는 절대 의존성에 넣지 않는다 (자기가 바꾼 상태로 재실행 → 무한로딩).
   const fetchRows = useCallback(async () => {
+    const params = new URLSearchParams({
+      status: filter === "todo" ? "missing" : filter === "done" ? "submitted" : "all",
+      page: String(page),
+      pageSize: String(pageSize),
+    });
     setLoading(true);
     setLoadError("");
     try {
-      const res = await fetch("/api/my-trips");
+      const res = await fetch(`/api/my-trips?${params}`);
+      const json = await res.json().catch(() => ({}));
       if (res.ok) {
-        setRows(await res.json());
+        setRows(json.rows ?? []);
+        setTotal(json.total ?? 0);
       } else {
-        const err = await res.json().catch(() => ({}));
-        setLoadError(err.error ?? "출장 목록을 불러오지 못했습니다.");
+        setLoadError(json.error ?? "출장 목록을 불러오지 못했습니다.");
       }
     } catch (e) {
       console.error("GET /api/my-trips error:", e);
@@ -64,19 +76,21 @@ export default function MyTripsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [filter, page, pageSize]);
 
   useEffect(() => {
     fetchRows();
   }, [fetchRows]);
 
-  const filtered = rows.filter((r) => {
-    if (filter === "done") return r.report?.status === "submitted";
-    if (filter === "todo") return r.report?.status !== "submitted";
-    return true;
-  });
-
-  const todoCount = rows.filter((r) => r.report?.status !== "submitted").length;
+  // 필터 변경은 항상 1페이지부터
+  const changeFilter = (key: FilterKey) => {
+    setFilter(key);
+    setPage(1);
+  };
+  const changePageSize = (size: number) => {
+    setPageSize(size);
+    setPage(1);
+  };
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
@@ -85,9 +99,9 @@ export default function MyTripsPage() {
         <h1 className="text-xl sm:text-2xl font-bold text-gray-900">내 출장</h1>
         <p className="text-sm text-gray-500 mt-0.5">
           다녀온 출장/외근의 보고서를 작성합니다
-          {todoCount > 0 && (
+          {filter === "todo" && total > 0 && (
             <span className="ml-1 text-rose-600 font-medium">
-              · 미제출 {todoCount}건
+              · 미제출 {total}건
             </span>
           )}
         </p>
@@ -98,7 +112,7 @@ export default function MyTripsPage() {
         {FILTERS.map((f) => (
           <button
             key={f.key}
-            onClick={() => setFilter(f.key)}
+            onClick={() => changeFilter(f.key)}
             className={`px-3.5 py-1.5 rounded-full text-xs font-semibold transition-colors ${
               filter === f.key
                 ? "bg-blue-500 text-white"
@@ -120,18 +134,19 @@ export default function MyTripsPage() {
         <div className="bg-white rounded-2xl border border-gray-100 px-5 py-12 text-center text-sm text-rose-600">
           {loadError}
         </div>
-      ) : filtered.length === 0 ? (
+      ) : rows.length === 0 ? (
         <div className="bg-white rounded-2xl border border-gray-100 px-5 py-12 text-center">
           <Plane size={28} className="mx-auto text-gray-300 mb-2" />
           <p className="text-sm text-gray-400">
-            {rows.length === 0
+            {filter === "all"
               ? "보고서를 작성할 출장/외근이 없습니다"
               : "해당 조건의 출장이 없습니다"}
           </p>
         </div>
       ) : (
+        <>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          {filtered.map((r) => (
+          {rows.map((r) => (
             <button
               key={`${r.kind}-${r.refId}`}
               onClick={() => setTarget(r)}
@@ -164,6 +179,14 @@ export default function MyTripsPage() {
             </button>
           ))}
         </div>
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={setPage}
+          onPageSizeChange={changePageSize}
+        />
+        </>
       )}
 
       {target && (

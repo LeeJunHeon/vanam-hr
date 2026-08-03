@@ -18,6 +18,8 @@ function hhmm(t: Date | null): string | null {
   return `${h}:${m}`;
 }
 
+const ALLOWED_PAGE_SIZES = [10, 20, 50];
+
 interface OverviewRow {
   kind: "trip" | "request";
   refId: number;
@@ -53,6 +55,12 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // 페이지네이션 — pageSize는 화이트리스트만 허용
+    const pageRaw = Number(sp.get("page"));
+    const page = Number.isInteger(pageRaw) && pageRaw >= 1 ? pageRaw : 1;
+    const sizeRaw = Number(sp.get("pageSize"));
+    const pageSize = ALLOWED_PAGE_SIZES.includes(sizeRaw) ? sizeRaw : 20;
+
     const [participants, requests] = await Promise.all([
       // (a) 그룹출장 — my-trips와 동일 조건 (초대 수락 + 결재 완료)
       prisma.tripParticipant.findMany({
@@ -61,7 +69,7 @@ export async function GET(request: NextRequest) {
           inviteStatus: "accepted",
           approvalStatus: { in: ["approved", "not_required"] },
         },
-        take: 200,
+        take: 500,
         orderBy: { tripEvent: { endDate: "desc" } },
         include: {
           employee: { select: { id: true, name: true } },
@@ -83,7 +91,7 @@ export async function GET(request: NextRequest) {
           OR: [{ externalSource: null }, { externalSource: { not: "trip" } }],
           status: { in: ["approved", "auto_approved"] },
         },
-        take: 200,
+        take: 500,
         orderBy: { endDate: "desc" },
         include: {
           employee: { select: { id: true, name: true } },
@@ -139,19 +147,25 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    let rows = [...tripRows, ...requestRows];
+    const merged = [...tripRows, ...requestRows].sort((a, b) =>
+      (b.endDate ?? "").localeCompare(a.endDate ?? "")
+    );
 
+    // 탭 배지용 — 상태칩과 무관하게 (직원 필터만 적용된) 미작성 건수
+    const missingTotal = merged.filter((r) => r.report == null).length;
+
+    let filtered = merged;
     if (statusFilter === "missing") {
-      rows = rows.filter((r) => r.report == null);
+      filtered = merged.filter((r) => r.report == null);
     } else if (statusFilter === "draft" || statusFilter === "submitted") {
-      rows = rows.filter((r) => r.report?.status === statusFilter);
+      filtered = merged.filter((r) => r.report?.status === statusFilter);
     }
 
-    rows = rows
-      .sort((a, b) => (b.endDate ?? "").localeCompare(a.endDate ?? ""))
-      .slice(0, 200);
+    const total = filtered.length;
+    const start = (page - 1) * pageSize;
+    const rows = filtered.slice(start, start + pageSize);
 
-    return NextResponse.json(rows);
+    return NextResponse.json({ rows, total, page, pageSize, missingTotal });
   } catch (error) {
     console.error("GET /api/trip-reports/overview error:", error);
     return NextResponse.json(

@@ -1,6 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
+
+const ALLOWED_PAGE_SIZES = [10, 20, 50];
 
 // GET /api/my-trips — 본인이 다녀온(다녀올) 출장/외근 목록. 출장보고서 작성 대상.
 // 두 소스를 합친다:
@@ -32,7 +34,7 @@ export interface MyTripRow {
   report: { id: number; status: string; submittedAt: string | null } | null;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const sessionR = await requireSession();
     if (!sessionR.ok) return sessionR.response;
@@ -45,6 +47,14 @@ export async function GET() {
     }
     const empId = employeeId as number;
 
+    // 페이지네이션 + 상태 필터 (missing = 보고서 없음 또는 draft)
+    const sp = new URL(request.url).searchParams;
+    const statusFilter = sp.get("status"); // all | missing | submitted
+    const pageRaw = Number(sp.get("page"));
+    const page = Number.isInteger(pageRaw) && pageRaw >= 1 ? pageRaw : 1;
+    const sizeRaw = Number(sp.get("pageSize"));
+    const pageSize = ALLOWED_PAGE_SIZES.includes(sizeRaw) ? sizeRaw : 20;
+
     const [participants, requests] = await Promise.all([
       // (a) 그룹출장 — 초대 수락 + 결재 완료(approved 또는 결재불요 not_required)
       prisma.tripParticipant.findMany({
@@ -53,7 +63,7 @@ export async function GET() {
           inviteStatus: "accepted",
           approvalStatus: { in: ["approved", "not_required"] },
         },
-        take: 100,
+        take: 500,
         orderBy: { tripEvent: { endDate: "desc" } },
         include: {
           tripEvent: {
@@ -76,7 +86,7 @@ export async function GET() {
           OR: [{ externalSource: null }, { externalSource: { not: "trip" } }],
           status: { in: ["approved", "auto_approved"] },
         },
-        take: 100,
+        take: 500,
         orderBy: { endDate: "desc" },
         include: {
           category: { select: { name: true } },
@@ -128,11 +138,23 @@ export async function GET() {
     });
 
     // 두 소스를 합쳐 종료일 내림차순 (endDate 없는 건은 뒤로)
-    const rows = [...tripRows, ...requestRows]
-      .sort((a, b) => (b.endDate ?? "").localeCompare(a.endDate ?? ""))
-      .slice(0, 100);
+    const merged = [...tripRows, ...requestRows].sort((a, b) =>
+      (b.endDate ?? "").localeCompare(a.endDate ?? "")
+    );
 
-    return NextResponse.json(rows);
+    // 미제출 = 보고서 없음 또는 draft(작성중)
+    const filtered =
+      statusFilter === "missing"
+        ? merged.filter((r) => r.report?.status !== "submitted")
+        : statusFilter === "submitted"
+        ? merged.filter((r) => r.report?.status === "submitted")
+        : merged;
+
+    const total = filtered.length;
+    const start = (page - 1) * pageSize;
+    const rows = filtered.slice(start, start + pageSize);
+
+    return NextResponse.json({ rows, total, page, pageSize });
   } catch (error) {
     console.error("GET /api/my-trips error:", error);
     return NextResponse.json({ error: "출장 목록 조회 실패" }, { status: 500 });
