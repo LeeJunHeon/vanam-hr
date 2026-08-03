@@ -1296,6 +1296,15 @@ class Aggregator:
         HR_INTERNAL_URL/INTERNAL_API_TOKEN 미설정 시 return(데몬 중단 금지).
         모든 예외 흡수하고 error 로그만 남긴다.
         """
+        # 발송 시각 가드: 설정 시각(기본 09시, KST) 이전에는 날짜 게이트를 소비하지
+        # 않고 return → 다음 사이클에 재시도. 자정 발송 방지.
+        try:
+            remind_hour = int(self.db.get_policy("trip_report_remind_hour") or "9")
+        except Exception:
+            remind_hour = 9
+        if datetime.now(KST).hour < remind_hour:
+            return
+
         # 날짜 게이트: 하루 1회. env 체크보다 먼저 통과 처리해야 재시도 폭주를 막는다.
         today = datetime.now(KST).date()
         if self._last_trip_report_sweep_date == today:
