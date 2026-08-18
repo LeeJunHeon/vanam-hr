@@ -590,14 +590,17 @@ class Aggregator:
             )
             if has_allday:
                 auto_status = "normal"
+                is_late_flag, is_early_flag = False, False
             elif timed_trip_exempt and has_timed_trip:
                 # 정책1 ON + 시간형 출장/외근 존재 → 판정 면제
                 auto_status = "normal"
+                is_late_flag, is_early_flag = False, False
             elif has_ongoing_timed_trip:
                 # 외근/출장 진행 중 → 퇴근/조퇴 확정 보류, '근무중(외근중)'으로 둔다.
                 # check_out도 비워 점심 끊김 시각이 퇴근으로 굳지 않게 한다.
                 check_out = None
                 auto_status = "working"
+                is_late_flag, is_early_flag = None, None  # 판정 보류
             elif check_in is not None and check_out is not None:
                 # 정책3용: 이 work_date 범위 내 시간형 일정 총 시간(분) 합산
                 trip_minutes = 0
@@ -606,7 +609,7 @@ class Aggregator:
                     co = r["corrected_check_out"]
                     if ci is not None and co is not None and co > ci:
                         trip_minutes += int((co - ci).total_seconds() // 60)
-                auto_status = self._determine_auto_status(
+                auto_status, is_late_flag, is_early_flag = self._determine_auto_status(
                     check_in=check_in,
                     check_out=check_out,
                     shift_info=shift_info,
@@ -621,8 +624,10 @@ class Aggregator:
                 )
             elif check_in is not None:
                 auto_status = "working"
+                is_late_flag, is_early_flag = None, None  # 판정 보류
             else:
                 auto_status = "normal"
+                is_late_flag, is_early_flag = False, False
         else:
             # 4) 캘린더 없음 + presence_raw 없음 → 원칙적으로 INSERT 의미 없음.
             if not raw or (check_in is None and check_out is None):
@@ -665,6 +670,8 @@ class Aggregator:
                         category_id=None,
                         is_overridden=False,
                         override_source=None,
+                        is_late=None,
+                        is_early_leave=None,
                     )
                     if new_id is not None:
                         self.logger.info(
@@ -680,7 +687,7 @@ class Aggregator:
             category_id = None
             is_overridden = False
             override_source = None
-            auto_status = self._determine_auto_status(
+            auto_status, is_late_flag, is_early_flag = self._determine_auto_status(
                 check_in=check_in,
                 check_out=check_out,
                 shift_info=shift_info,
@@ -726,6 +733,8 @@ class Aggregator:
             category_id=category_id,
             is_overridden=is_overridden,
             override_source=override_source,
+            is_late=is_late_flag,
+            is_early_leave=is_early_flag,
         )
 
         if new_id is None:
@@ -795,7 +804,7 @@ class Aggregator:
         final_in = _floor_minute(final_in)
         final_out = _floor_minute(final_out)
 
-        new_auto_status = self._determine_auto_status(
+        new_auto_status, new_is_late, new_is_early = self._determine_auto_status(
             check_in=final_in, check_out=final_out, shift_info=shift_info,
             grace_in_minutes=grace_in_minutes, grace_out_minutes=grace_out_minutes,
             lunch_deduct_enabled=lunch_deduct_enabled,
@@ -818,6 +827,7 @@ class Aggregator:
             employee_id=emp_id, work_date=work_date,
             check_in=final_in, check_out=final_out,
             work_minutes=new_work_minutes, auto_status=new_auto_status,
+            is_late=new_is_late, is_early_leave=new_is_early,
         )
         if new_id is not None:
             self.logger.info(
@@ -867,9 +877,17 @@ class Aggregator:
         trip_minutes: int = 0,
         margin_hours: float = 0.0,
         is_holiday: bool = False,
-    ) -> Optional[str]:
+    ) -> tuple[Optional[str], Optional[bool], Optional[bool]]:
         """
         정책 A 기반 auto_status 판정.
+
+        반환: (auto_status, is_late, is_early_leave)
+          - auto_status: 기존과 100% 동일한 판정 문자열(또는 None).
+          - is_late / is_early_leave: 그림자 기록용 독립 플래그.
+            · False = 해당 없음으로 확정 (판정 면제일 포함)
+            · True  = 해당함
+            · None  = 미판정 (아직 퇴근 전 / 파싱 실패 / 결근 등 판정 불가)
+          플래그는 auto_status 산출에 영향을 주지 않는다(순수 부가 정보).
 
         규칙:
         1) 시프트 정보 없거나 휴무이거나 공휴일(is_holiday):
@@ -899,22 +917,23 @@ class Aggregator:
             or not shift_info.get("end")
             or is_holiday
         ):
+            # 지각·조퇴 개념 자체가 면제된 날 → 플래그는 False로 확정
             if check_in is not None and check_out is not None:
-                return "normal"
+                return "normal", False, False
             elif check_in is not None and check_out is None:
-                return "working"  # 시프트 없을 때도 출근만 있으면 근무 중
+                return "working", False, False  # 시프트 없을 때도 출근만 있으면 근무 중
             elif check_in is None and check_out is None:
-                return "absent"
+                return "absent", False, False
             else:
-                return None
+                return None, False, False
 
         # 시프트 있음 + 둘 다 NULL → absent
         if check_in is None and check_out is None:
-            return "absent"
+            return "absent", None, None
 
         # 시프트 있음 + check_out만 (이론상 거의 없음) → None (판정 보류)
         if check_in is None and check_out is not None:
-            return None
+            return None, None, None
 
         # 여기 도달 = check_in은 반드시 있음 (check_out은 있을 수도/없을 수도)
 
@@ -926,7 +945,7 @@ class Aggregator:
             eh_h, eh_m = map(int, shift_end_str.split(":"))
         except (ValueError, AttributeError):
             # 시프트 시각 파싱 실패 → 출근만이면 근무 중, 둘 다면 정상
-            return "working" if check_out is None else "normal"
+            return ("working" if check_out is None else "normal"), None, None
 
         # 시프트 총 근무시간 (분), 자정 넘김 처리 (예: 22:00~06:00)
         shift_minutes = (eh_h * 60 + eh_m) - (sh_h * 60 + sh_m)
@@ -943,13 +962,13 @@ class Aggregator:
         is_late = check_in > late_threshold
 
         # 2) 아직 퇴근 전(check_out 없음): 지각이면 late, 아니면 working(근무 중)
+        #    조퇴는 퇴근 전엔 판정 불가 → None
         if check_out is None:
-            return "late" if is_late else "working"
+            return ("late" if is_late else "working"), is_late, None
 
         # 3) 퇴근까지 있음: 지각 우선 → 조퇴 → 정상
-        if is_late:
-            return "late"
-
+        #    (auto_status 우선순위는 그대로. 다만 is_early_leave 플래그를 남기기 위해
+        #     지각이어도 아래 근무시간 계산을 끝까지 수행한다.)
         actual_minutes = int((check_out - check_in).total_seconds() / 60)
 
         # 정책2: 점심 차감 — check_in~check_out과 점심시간이 겹치는 만큼 근무시간에서 제외.
@@ -996,9 +1015,9 @@ class Aggregator:
         if required_minutes < 0:
             required_minutes = 0
 
-        if actual_minutes < required_minutes:
-            return "early_leave"
-        return "normal"
+        is_early_leave = actual_minutes < required_minutes
+        auto_status = "late" if is_late else ("early_leave" if is_early_leave else "normal")
+        return auto_status, is_late, is_early_leave
 
     def _check_attendance_alerts(self, today, now: datetime, holiday_name=None) -> None:
         """직전 근무일이 비정상인 직원에게 '근태 확인 요청' 메일 발송.

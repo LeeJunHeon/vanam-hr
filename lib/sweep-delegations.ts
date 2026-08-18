@@ -98,6 +98,9 @@ export async function sweepEligibleDelegations(): Promise<number> {
                 checkOut: null,
                 categoryId: req.categoryId,
                 autoStatus: "normal",
+                // 휴가/외근은 지각·조퇴 판정 면제 → 명시적 false
+                isLate: false,
+                isEarlyLeave: false,
                 isOverridden: true,
                 overrideSource: "manual",
                 note: `결재 #${req.id} (${category.name})`,
@@ -105,6 +108,9 @@ export async function sweepEligibleDelegations(): Promise<number> {
               update: {
                 categoryId: req.categoryId,
                 autoStatus: "normal",
+                // 휴가/외근은 지각·조퇴 판정 면제 → 명시적 false
+                isLate: false,
+                isEarlyLeave: false,
                 isOverridden: true,
                 overrideSource: "manual",
                 note: existing?.note ?? `결재 #${req.id} (${category.name})`,

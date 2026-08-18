@@ -481,6 +481,8 @@ class Database:
         category_id: Optional[int] = None,        # Phase 6-2B: 캘린더 보정 카테고리
         is_overridden: bool = False,              # Phase 6-2B: 캘린더 보정이면 True
         override_source: Optional[str] = None,    # Phase 6-2L+ C: 'calendar' | 'manual' | None
+        is_late: Optional[bool] = None,           # 지각 그림자 플래그 (None=미판정)
+        is_early_leave: Optional[bool] = None,    # 조퇴 그림자 플래그 (None=미판정)
     ) -> Optional[int]:
         """attendance_daily UPSERT.
 
@@ -504,8 +506,9 @@ class Database:
                 INSERT INTO hr.attendance_daily
                     (employee_id, work_date, check_in, check_out, work_minutes,
                      auto_status, category_id, is_overridden, override_source,
+                     is_late, is_early_leave,
                      created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                 ON CONFLICT (employee_id, work_date)
                 DO UPDATE SET
                     check_in = EXCLUDED.check_in,
@@ -515,13 +518,16 @@ class Database:
                     category_id = EXCLUDED.category_id,
                     is_overridden = EXCLUDED.is_overridden,
                     override_source = EXCLUDED.override_source,
+                    is_late = EXCLUDED.is_late,
+                    is_early_leave = EXCLUDED.is_early_leave,
                     updated_at = NOW()
                 WHERE hr.attendance_daily.is_overridden = false
                    OR hr.attendance_daily.override_source = 'calendar'
                 RETURNING id
                 """,
                 (employee_id, work_date, check_in, check_out, work_minutes,
-                 auto_status, category_id, is_overridden, override_source),
+                 auto_status, category_id, is_overridden, override_source,
+                 is_late, is_early_leave),
             )
             row = c.fetchone()
             return row[0] if row else None
@@ -593,6 +599,7 @@ class Database:
     def backfill_missing_side_update(
         self, employee_id: int, work_date: date,
         check_in, check_out, work_minutes, auto_status,
+        is_late: Optional[bool] = None, is_early_leave: Optional[bool] = None,
     ):
         """manual 정정 행의 '안 고친 NULL 쪽'만 채우는 좁은 UPDATE.
         COALESCE로 이미 값이 있는 쪽은 유지, 다중 가드로 정정된 쪽/이미 채워진 쪽은 절대 안 건드림.
@@ -606,6 +613,8 @@ class Database:
                     check_out = COALESCE(check_out, %s),
                     work_minutes = %s,
                     auto_status = %s,
+                    is_late = %s,
+                    is_early_leave = %s,
                     updated_at = NOW()
                 WHERE employee_id = %s AND work_date = %s
                   AND is_overridden = true AND override_source = 'manual'
@@ -615,7 +624,8 @@ class Database:
                       )
                 RETURNING id
                 """,
-                (check_in, check_out, work_minutes, auto_status, employee_id, work_date),
+                (check_in, check_out, work_minutes, auto_status,
+                 is_late, is_early_leave, employee_id, work_date),
             )
             row = c.fetchone()
             return row[0] if row else None

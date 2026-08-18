@@ -410,6 +410,8 @@ export async function PUT(request: NextRequest) {
                   note: null,
                   overrideSource: null,
                   autoStatus: null,   // aggregator 재계산 트리거
+                  isLate: null,       // 낡은 플래그 제거 — aggregator가 재판정
+                  isEarlyLeave: null,
                   workMinutes: null,  // aggregator 재계산 트리거
                   // checkIn/checkOut은 유지 (WiFi 원본)
                 },

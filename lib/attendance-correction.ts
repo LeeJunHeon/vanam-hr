@@ -217,6 +217,9 @@ export async function applyCorrectionToDaily(
       checkOut: newCheckOut,
       workMinutes: newWorkMinutes,
       autoStatus: newAutoStatus,
+      // 판정 주체는 aggregator이므로 여기선 '모름'으로 비운다(이후 백필이 채움)
+      isLate: null,
+      isEarlyLeave: null,
       isOverridden: true,
       overrideSource: "manual",
       note: `결재정정 #${requestId}`,
@@ -226,6 +229,9 @@ export async function applyCorrectionToDaily(
       checkOut: newCheckOut,
       workMinutes: newWorkMinutes,
       autoStatus: newAutoStatus,
+      // 판정 주체는 aggregator이므로 여기선 '모름'으로 비운다(이후 백필이 채움)
+      isLate: null,
+      isEarlyLeave: null,
       isOverridden: true,
       overrideSource: "manual",
       note: existing?.note ?? `결재정정 #${requestId}`,

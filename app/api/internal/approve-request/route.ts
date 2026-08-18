@@ -116,10 +116,14 @@ async function processOne(
             create: {
               employeeId: t.employeeId, workDate: wd, checkIn: null, checkOut: null,
               categoryId: t.categoryId, autoStatus: "normal", isOverridden: true,
+              // 휴가/외근은 지각·조퇴 판정 면제 → 명시적 false
+              isLate: false, isEarlyLeave: false,
               overrideSource: "manual", note: `결재 #${t.id} (${category.name})`,
             },
             update: {
               categoryId: t.categoryId, autoStatus: "normal", isOverridden: true,
+              // 휴가/외근은 지각·조퇴 판정 면제 → 명시적 false
+              isLate: false, isEarlyLeave: false,
               overrideSource: "manual",
               note: existing?.note ?? `결재 #${t.id} (${category.name})`,
             },

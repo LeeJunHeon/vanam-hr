@@ -913,6 +913,9 @@ export async function PUT(request: NextRequest) {
               checkOut: null,
               categoryId: target.categoryId,
               autoStatus: "normal",
+              // 휴가/외근은 지각·조퇴 판정 면제 → 명시적 false
+              isLate: false,
+              isEarlyLeave: false,
               isOverridden: true,
               overrideSource: "manual", // Phase 6-2L+ C-3: 수동 결재 적용 → 보호 대상
               note: `결재 #${updated.id} (${category.name})`,
@@ -920,6 +923,9 @@ export async function PUT(request: NextRequest) {
             update: {
               categoryId: target.categoryId,
               autoStatus: "normal",
+              // 휴가/외근은 지각·조퇴 판정 면제 → 명시적 false
+              isLate: false,
+              isEarlyLeave: false,
               isOverridden: true,
               overrideSource: "manual", // Phase 6-2L+ C-3
               note: existing?.note ?? `결재 #${updated.id} (${category.name})`,
