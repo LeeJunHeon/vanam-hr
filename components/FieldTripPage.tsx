@@ -2019,17 +2019,86 @@ function DatesPicker({
     return arr;
   }, [viewYm]);
 
-  const toggle = (ymd: string) => {
-    if (byDate.has(ymd)) {
-      onChange(value.filter((v) => v.attendDate !== ymd));
-    } else {
-      onChange(
-        [...value, { attendDate: ymd, startTime: "", endTime: "" }].sort(
-          (a, b) => a.attendDate.localeCompare(b.attendDate)
-        )
-      );
-    }
+  // 범위 선택 앵커(1번째 클릭). mode는 앵커 날짜의 선택 여부로 결정.
+  const [anchor, setAnchor] = useState<
+    { ymd: string; mode: "add" | "remove" } | null
+  >(null);
+  const [hoverYmd, setHoverYmd] = useState<string | null>(null);
+
+  // 이벤트 기간 안으로 클램프된 a~b 구간
+  const spanOf = (a: string, b: string): string[] => {
+    const [s, e] = a <= b ? [a, b] : [b, a];
+    return enumerateDates(s, e).filter((d) => inRange.has(d));
   };
+
+  const applyRange = (a: string, b: string, mode: "add" | "remove") => {
+    const span = spanOf(a, b);
+    if (span.length === 0) return;
+    if (mode === "remove") {
+      const kill = new Set(span);
+      onChange(value.filter((v) => !kill.has(v.attendDate)));
+      return;
+    }
+    const exist = new Set(value.map((v) => v.attendDate));
+    const added = span
+      .filter((d) => !exist.has(d))
+      .map((d) => ({ attendDate: d, startTime: "", endTime: "" }));
+    if (added.length === 0) return;
+    onChange(
+      [...value, ...added].sort((x, y) => x.attendDate.localeCompare(y.attendDate))
+    );
+  };
+
+  const handleCellClick = (ymd: string) => {
+    if (!inRange.has(ymd)) return;
+    if (anchor === null) {
+      setAnchor({ ymd, mode: byDate.has(ymd) ? "remove" : "add" });
+      setHoverYmd(ymd);
+      return;
+    }
+    applyRange(anchor.ymd, ymd, anchor.mode);
+    setAnchor(null);
+    setHoverYmd(null);
+  };
+
+  const removeOne = (ymd: string) => {
+    onChange(value.filter((v) => v.attendDate !== ymd));
+    setAnchor(null);
+    setHoverYmd(null);
+  };
+
+  const selectAllPeriod = () => {
+    applyRange(event.startDate, event.endDate, "add");
+    setAnchor(null);
+    setHoverYmd(null);
+  };
+
+  const clearAll = () => {
+    onChange([]);
+    setAnchor(null);
+    setHoverYmd(null);
+  };
+
+  // ESC로 앵커 취소 (상위 모달이 닫히지 않도록 capture 단계에서 차단)
+  useEffect(() => {
+    if (!anchor) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setAnchor(null);
+      setHoverYmd(null);
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [anchor]);
+
+  // 앵커~hover 미리보기 구간
+  const previewSet = useMemo(() => {
+    if (!anchor || !hoverYmd) return new Set<string>();
+    const [a, b] =
+      anchor.ymd <= hoverYmd ? [anchor.ymd, hoverYmd] : [hoverYmd, anchor.ymd];
+    return new Set(enumerateDates(a, b).filter((d) => inRange.has(d)));
+  }, [anchor, hoverYmd, inRange]);
 
   const updateTime = (
     ymd: string,
@@ -2080,6 +2149,25 @@ function DatesPicker({
           </button>
         </div>
 
+        {/* 일괄 선택/해제 */}
+        <div className="flex items-center gap-1.5 mb-2">
+          <button
+            type="button"
+            onClick={selectAllPeriod}
+            className="text-[11px] font-semibold rounded-lg px-2 py-1 text-blue-600 bg-blue-50 hover:bg-blue-100"
+          >
+            기간 전체 선택
+          </button>
+          <button
+            type="button"
+            onClick={clearAll}
+            disabled={value.length === 0}
+            className="text-[11px] font-semibold rounded-lg px-2 py-1 text-gray-500 bg-gray-50 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            전체 해제
+          </button>
+        </div>
+
         {/* 요일 헤더 */}
         <div className="grid grid-cols-7 gap-1 mb-1">
           {DOW_HEADERS.map((h, i) => (
@@ -2112,18 +2200,31 @@ function DatesPicker({
                 : c.dow === 6
                 ? "text-blue-500"
                 : "text-gray-700";
+            const isAnchor = anchor?.ymd === c.ymd;
+            const isPreview = previewSet.has(c.ymd) && !isAnchor;
+            let cellClass: string;
+            if (!isInRange) {
+              cellClass = "text-gray-300 cursor-not-allowed bg-gray-50/60";
+            } else if (isPreview && anchor?.mode === "add") {
+              cellClass = `bg-blue-100 border border-blue-300 ${baseColor}`;
+            } else if (isPreview && anchor?.mode === "remove") {
+              cellClass = `bg-rose-100 border border-rose-300 ${baseColor}`;
+            } else if (isSelected) {
+              cellClass = "bg-blue-500 text-white hover:bg-blue-600";
+            } else {
+              cellClass = `bg-white hover:bg-blue-50 border border-gray-100 ${baseColor}`;
+            }
             return (
               <button
                 key={c.ymd}
                 type="button"
-                onClick={() => isInRange && toggle(c.ymd)}
+                onClick={() => handleCellClick(c.ymd)}
+                onMouseEnter={() => {
+                  if (anchor && isInRange) setHoverYmd(c.ymd);
+                }}
                 disabled={!isInRange}
-                className={`h-9 rounded-lg text-xs font-semibold transition-colors ${
-                  !isInRange
-                    ? "text-gray-300 cursor-not-allowed bg-gray-50/60"
-                    : isSelected
-                    ? "bg-blue-500 text-white hover:bg-blue-600"
-                    : `bg-white hover:bg-blue-50 border border-gray-100 ${baseColor}`
+                className={`h-9 rounded-lg text-xs font-semibold transition-colors ${cellClass} ${
+                  isAnchor ? "ring-2 ring-offset-1 ring-blue-500" : ""
                 }`}
                 title={c.ymd}
               >
@@ -2132,6 +2233,26 @@ function DatesPicker({
             );
           })}
         </div>
+
+        {/* 범위 선택 안내 배너 */}
+        {anchor && (
+          <div className="mt-2 flex items-center gap-2 rounded-lg bg-amber-50 px-2.5 py-1.5">
+            <span className="text-[11px] text-amber-700 leading-relaxed">
+              {anchor.ymd} 부터 — {anchor.mode === "add" ? "선택할" : "해제할"}{" "}
+              마지막 날짜를 클릭하세요 (같은 날 다시 클릭 = 하루만)
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setAnchor(null);
+                setHoverYmd(null);
+              }}
+              className="ml-auto text-[11px] font-semibold text-amber-700 hover:underline shrink-0"
+            >
+              취소
+            </button>
+          </div>
+        )}
       </div>
 
       {/* 선택된 날짜 + 시간 입력 리스트 */}
@@ -2169,7 +2290,7 @@ function DatesPicker({
                   />
                   <button
                     type="button"
-                    onClick={() => toggle(row.attendDate)}
+                    onClick={() => removeOne(row.attendDate)}
                     className="p-1 rounded hover:bg-rose-50 text-rose-400"
                     title="제거"
                   >
@@ -2183,7 +2304,8 @@ function DatesPicker({
       )}
 
       <p className="text-[11px] text-gray-400 mt-2 leading-relaxed">
-        {helpText ?? "캘린더에서 날짜를 클릭해 선택하세요. 시작/종료 시간은 선택사항(비우면 종일)."}
+        {helpText ??
+          "시작일을 클릭한 뒤 종료일을 클릭하면 그 사이 전체가 선택됩니다. 떨어진 구간을 여러 번 선택하면 합쳐집니다(예: 22~23 + 26~27). 이미 선택된 날에서 시작하면 그 범위가 해제됩니다. 시작/종료 시간은 선택사항(비우면 종일)."}
       </p>
     </div>
   );
