@@ -394,6 +394,57 @@ class Database:
             row = c.fetchone()
             return row is not None
 
+    def try_log_prestart_alert(self, employee_id: int, work_date: date) -> bool:
+        """발송 기록 INSERT. 새로 기록되면 True(발송 가능), UNIQUE 충돌이면 False(이미 보냄).
+
+        daily_attendance_alert_log와 별도 테이블 — 그쪽은 UNIQUE(employee_id, work_date)를
+        '전일 비정상 알림'이 쓰고 있어 재사용하면 서로 막힌다.
+        try_log_attendance_alert와 동일한 '로그 먼저 → 성공 시 발송' 패턴.
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                INSERT INTO hr.shift_prestart_alert_log
+                    (employee_id, work_date)
+                VALUES (%s, %s)
+                ON CONFLICT (employee_id, work_date) DO NOTHING
+                RETURNING id
+                """,
+                (employee_id, work_date),
+            )
+            row = c.fetchone()
+            return row is not None
+
+    def has_presence_on_work_date(
+        self,
+        employee_id: int,
+        work_date: date,
+        cutoff_hour: int,
+    ) -> bool:
+        """해당 work_date 창에 presence_raw 기록이 하나라도 있으면 True.
+
+        work_date 귀속 규칙은 get_presence_raw_by_work_date와 동일(cutoff_hour 기준).
+        전체 행을 가져오지 않는 가벼운 EXISTS 용도.
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                SELECT 1
+                FROM hr.presence_raw
+                WHERE employee_id = %s
+                  AND CASE
+                      WHEN EXTRACT(HOUR FROM (checked_at AT TIME ZONE 'Asia/Seoul')) < %s
+                      THEN ((checked_at AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '1 day')::date
+                      ELSE (checked_at AT TIME ZONE 'Asia/Seoul')::date
+                  END = %s
+                LIMIT 1
+                """,
+                (employee_id, cutoff_hour, work_date),
+            )
+            return c.fetchone() is not None
+
     def get_auto_approved_request(
         self,
         employee_id: int,

@@ -257,6 +257,14 @@ class Aggregator:
         except (TypeError, ValueError):
             overnight_extend_max_hours = 6
 
+        # 근무 시작 전 'WiFi 연결 확인' 알림 (기본 OFF면 기능 전체 no-op)
+        prestart_raw = self.db.get_policy("prestart_alert_enabled")
+        prestart_alert_enabled = str(prestart_raw).strip().lower() == "true"
+        try:
+            prestart_alert_minutes = int(self.db.get_policy("prestart_alert_minutes") or 5)
+        except (TypeError, ValueError):
+            prestart_alert_minutes = 5
+
         # 점심 시각 (정책 2가 켜졌을 때만 사용; 기존 lunch_start/lunch_end 정책 재사용)
         lunch_start_str = self.db.get_policy("lunch_start") or "12:00"
         lunch_end_str = self.db.get_policy("lunch_end") or "13:00"
@@ -355,6 +363,17 @@ class Aggregator:
             self._check_attendance_alerts(today, now, holiday_name=holiday_cache.get(today))
         except Exception as e:
             self.logger.error(f"_check_attendance_alerts 예외: {e}")
+
+        # 근무 시작 전 WiFi 연결 확인 알림 — 사이클당 1회.
+        # 정책이 꺼져 있으면 호출 자체를 하지 않는다(완전 no-op).
+        if prestart_alert_enabled:
+            try:
+                self._check_prestart_alerts(
+                    employees, today, holiday_cache.get(today),
+                    prestart_alert_minutes, cutoff_hour,
+                )
+            except Exception as e:
+                self.logger.error(f"_check_prestart_alerts 예외: {e}")
 
         # 대리 위임 자동 마감 스윕 — 사이클당 1회 (대리 승인 + 위임창 경과 pending 확정)
         try:
@@ -1237,6 +1256,87 @@ class Aggregator:
             f"  [no-show] 알림 발송 (emp={emp_id}, name={name}, "
             f"work_date={today}, threshold={threshold}분)"
         )
+
+    def _check_prestart_alerts(self, employees, today, holiday_name,
+                               alert_minutes, cutoff_hour) -> None:
+        """근무 시작 alert_minutes분 전에 WiFi 연결 확인 알림 1회 발송.
+
+        발송 조건(전부 AND):
+          - 오늘이 공휴일이 아님
+          - 그 직원의 오늘 시프트가 존재하고 type != 'off' 이며 start 파싱 가능
+          - 현재 시각(KST)이 [시프트시작 - alert_minutes, 시프트시작) 구간 안
+          - 오늘 presence_raw 기록이 아직 없음 (이미 사무실에 있으면 불필요)
+          - 오늘 종일 캘린더(휴가/출장)가 없음
+          - shift_prestart_alert_log에 오늘 기록이 없음
+
+        중복 발송은 '로그 먼저 INSERT → 성공 시 발송'(try_log_prestart_alert)으로 차단.
+        직원 단위 예외는 그 직원만 skip하고 사이클은 계속한다.
+        """
+        # 공휴일이면 전원 스킵
+        if holiday_name:
+            return
+
+        now_kst = datetime.now(KST)
+        sent = 0
+
+        for emp in employees:
+            emp_id = emp.get("id")
+            try:
+                # 1) 시프트 — 없음/휴무/시작시각 없음이면 제외
+                shift = self.db.get_employee_shift(emp_id, today)
+                if not shift or shift.get("type") == "off" or not shift.get("start"):
+                    continue
+
+                # 2) 시프트 시작 시각 파싱 ("HH:MM") — 실패하면 그 직원만 skip
+                try:
+                    sh_h, sh_m = map(int, str(shift["start"]).split(":"))
+                except (ValueError, AttributeError):
+                    self.logger.warning(
+                        f"  [prestart] 시프트 시작 시각 파싱 실패 "
+                        f"(emp={emp_id}, start={shift.get('start')}) — 스킵"
+                    )
+                    continue
+
+                # 3) 발송 창: [시프트시작 - alert_minutes, 시프트시작)
+                shift_start_dt = now_kst.replace(
+                    hour=sh_h, minute=sh_m, second=0, microsecond=0
+                )
+                window_open = shift_start_dt - timedelta(minutes=alert_minutes)
+                if not (window_open <= now_kst < shift_start_dt):
+                    continue
+
+                # 4) 이미 오늘 네트워크에 잡혔으면(=출근함) 불필요
+                if self.db.has_presence_on_work_date(emp_id, today, cutoff_hour):
+                    continue
+
+                # 5) 종일 휴가/출장이면 제외 (캘린더 보정 분기와 동일한 종일 판정)
+                active_requests = self.db.get_active_requests(emp_id, today)
+                has_allday = any(
+                    r["corrected_check_in"] is None or r["corrected_check_out"] is None
+                    for r in active_requests
+                )
+                if has_allday:
+                    continue
+
+                # 6) 로그 먼저 → 새로 기록됐을 때만 발송 (하루 1회 보장)
+                if not self.db.try_log_prestart_alert(emp_id, today):
+                    continue
+
+                self._notify(
+                    employee_ids=[emp_id],
+                    type="shift_prestart",
+                    title="출근 전 알림",
+                    body=f"출근 {alert_minutes}분 전입니다. WiFi 연결 상태를 확인해 주세요.",
+                    link_page="attendance",
+                )
+                sent += 1
+            except Exception as e:
+                # 직원 단위 예외는 그 직원만 스킵 — 사이클/다른 직원 발송에 영향 없음
+                self.logger.error(f"  [prestart] 처리 실패 (emp={emp_id}): {e}")
+                continue
+
+        if sent:
+            self.logger.info(f"  [prestart] 알림 발송 {sent}건")
 
     def _notify(self, employee_ids, type, title, body, link_page=None):
         """HR 내부 알림 API(/api/internal/notify) 호출 → createNotifications로 위임.

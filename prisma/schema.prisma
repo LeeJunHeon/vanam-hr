@@ -367,6 +367,20 @@ model AttendanceDaily {
   @@schema("hr")
 }
 
+// 근무 시작 전 'WiFi 연결 확인' 알림 발송 로그 (aggregator 전용).
+// 테이블은 DB에 이미 존재. 마이그레이션 생성 금지.
+// UNIQUE(employee_id, work_date)로 하루 1회 발송을 보장한다.
+model ShiftPrestartAlertLog {
+  id         Int      @id @default(autoincrement())
+  employeeId Int      @map("employee_id")
+  workDate   DateTime @map("work_date") @db.Date
+  sentAt     DateTime @default(now()) @map("sent_at") @db.Timestamptz(6)
+
+  @@unique([employeeId, workDate], map: "shift_prestart_alert_log_employee_id_work_date_key")
+  @@map("shift_prestart_alert_log")
+  @@schema("hr")
+}
+
 // 지각/조퇴 사유 첨부파일 — 파일은 base64로 DB 저장 (장비 시스템 equipment_photos와 동일 패턴)
 // 테이블은 DB에 이미 존재. 마이그레이션 생성 금지.
 model AttendanceReasonFile {
