@@ -96,7 +96,7 @@ export async function POST(
       return NextResponse.json({ error: r.error }, { status: 400 });
     }
 
-    const approvalStatus = computeApprovalStatus(session.user.role);
+    let approvalStatus = computeApprovalStatus(session.user.role);
 
     // 본인이 employee라 결재가 필요(pending)하면 부서 결재선을 계산해 저장(방법 B: 본인 참여 시점).
     // admin/ceo(not_required)는 결재 불필요 → 빈 배열 유지.
@@ -108,10 +108,21 @@ export async function POST(
         where: { id: ownId as number },
         select: { departmentId: true },
       });
-      const resolved = await resolveApprovers(prisma, me?.departmentId ?? null, await getBusinessTripCategoryId());
+      // 신청자 본인은 자기 출장 참여를 결재할 수 없다 → 결재선에서 제외.
+      const resolved = await resolveApprovers(
+        prisma,
+        me?.departmentId ?? null,
+        await getBusinessTripCategoryId(),
+        ownId as number
+      );
       resolvedApproverIds = resolved.approverIds;
       resolvedApprovalMode = resolved.approvalMode;
       resolvedDeputyId = resolved.deputyApproverId;
+      // 본인 제외 후 결재자가 없으면 결재 자체가 성립하지 않는다.
+      // 빈 approverIds로 pending을 남기면 관리자 결재함에 유령으로 뜨므로 not_required로 승격.
+      if (resolvedApproverIds.length === 0) {
+        approvalStatus = "not_required";
+      }
     }
 
     const created = await prisma.$transaction(async (tx) => {

@@ -184,10 +184,21 @@ export async function PATCH(
         where: { id: participant.employeeId },
         select: { departmentId: true },
       });
-      const resolved = await resolveApprovers(prisma, me?.departmentId ?? null);
+      // 신청자 본인은 자기 출장 참여를 결재할 수 없다 → 결재선에서 제외.
+      const resolved = await resolveApprovers(
+        prisma,
+        me?.departmentId ?? null,
+        null,
+        participant.employeeId
+      );
       acceptApproverIds = resolved.approverIds;
       acceptApprovalMode = resolved.approvalMode;
       acceptDeputyId = resolved.deputyApproverId;
+      // 본인 제외 후 결재자가 없으면 결재 불가 → not_required로 승격.
+      // (빈 approverIds로 pending을 남기면 관리자 결재함에 유령으로 뜬다.)
+      if (acceptApproverIds.length === 0) {
+        nextApprovalStatus = "not_required";
+      }
     }
 
     // update_dates 시 옛 근태(attendance_request) 정리(과거 보존).

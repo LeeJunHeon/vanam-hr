@@ -197,6 +197,8 @@ export async function createAttendanceRequest(
   let approvalMode: "all" | "any" = "all";
   let primaryApproverId: number | null = null; // 호환용 컬럼
   let deputyApproverId: number | null = null; // 호환용 컬럼
+  // 자기결재 여부. resolveApprovers를 타지 않는 분기(CEO/ADMIN 외근)에선 false 유지.
+  let isSelfApproval = false;
 
   // 결재선을 타는 대상: CEO 아님 + (ADMIN이면서 외근)도 아님
   //  → EMPLOYEE 전부, 그리고 "외근이 아닌 ADMIN"이 여기에 해당.
@@ -207,19 +209,25 @@ export async function createAttendanceRequest(
       approvalCategoryId = await getBusinessTripCategoryId();
     }
     // 결재선 결정을 resolveApprovers로 통일: (부서+카테고리) 항목별 라인 → 부서 기본 → fallback
-    const resolved = await resolveApprovers(prisma, emp.departmentId, approvalCategoryId);
+    // 신청자 본인은 결재자가 될 수 없다 → resolveApprovers가 결과에서 제외해준다.
+    const resolved = await resolveApprovers(
+      prisma,
+      emp.departmentId,
+      approvalCategoryId,
+      employeeIdNum
+    );
     approverIds = resolved.approverIds;
     approvalMode = resolved.approvalMode;
     deputyApproverId = resolved.deputyApproverId;
     primaryApproverId = approverIds.length > 0 ? approverIds[0] : null;
-  }
 
-  // 자기결재 여부: 결재자가 본인뿐이면(자기가 자기를 결재) 자동승인 처리.
-  //  - 예: fallback이 LEE인데 신청자도 LEE면 approverIds=[LEE], 신청자=LEE → 자기결재.
-  //  - 자기결재는 형식상 의미 없으므로 자동승인하되, 신청 기록(attendance_request)은 남는다.
-  const isSelfApproval =
-    approverIds.length > 0 &&
-    approverIds.every((id) => id === employeeIdNum);
+    // 본인 제외 후 결재자가 남지 않으면 자기결재 → 자동승인 (기존과 동일 결과)
+    //  - 예: fallback이 LEE인데 신청자도 LEE면 원본 [LEE] → 제외 후 [] → 자기결재.
+    //  - 자기결재는 형식상 의미 없으므로 자동승인하되, 신청 기록(attendance_request)은 남는다.
+    //  - 원래 결재선이 비어 있던 경우(excludedSelf=false)는 자기결재가 아니라
+    //    "결재자 없음"이므로 아래 가드에서 차단된다.
+    isSelfApproval = resolved.excludedSelf && approverIds.length === 0;
+  }
 
   // 자동승인 조건:
   //  - CEO 신청

@@ -56,6 +56,7 @@ export async function POST(request: Request) {
     where: { employeeId: myId, tripEvent: { status: "active" } },
     select: {
       id: true,
+      employeeId: true,
       inviteStatus: true,
       approvalStatus: true,
       approverIds: true,
@@ -138,11 +139,24 @@ export async function POST(request: Request) {
   let acceptApproverIds: number[] | null = null;
   let acceptApprovalMode: "all" | "any" | null = null;
   let acceptDeputyId: number | null = null;
+  // 본인 제외로 결재자가 0명이 되어 not_required로 승격됐는지 (후처리 분기용).
+  let promotedNotRequired = false;
   if (part.approvalStatus === "pending" && (!Array.isArray(part.approverIds) || part.approverIds.length === 0)) {
-    const resolved = await resolveApprovers(prisma, identity.departmentId, await getBusinessTripCategoryId());
+    // 신청자 본인은 자기 출장 참여를 결재할 수 없다 → 결재선에서 제외.
+    const resolved = await resolveApprovers(
+      prisma,
+      identity.departmentId,
+      await getBusinessTripCategoryId(),
+      part.employeeId
+    );
     acceptApproverIds = resolved.approverIds;
     acceptApprovalMode = resolved.approvalMode;
     acceptDeputyId = resolved.deputyApproverId;
+    // 본인 제외 후 결재자가 없으면 결재 불가 → not_required로 승격.
+    // (빈 approverIds로 pending을 남기면 관리자 결재함에 유령으로 뜬다.)
+    if (acceptApproverIds.length === 0) {
+      promotedNotRequired = true;
+    }
   }
 
   await prisma.$transaction(async (tx) => {
@@ -159,6 +173,7 @@ export async function POST(request: Request) {
       where: { id: part.id },
       data: {
         inviteStatus: "accepted",
+        ...(promotedNotRequired ? { approvalStatus: "not_required" } : {}),
         ...(acceptApproverIds !== null
           ? { approverIds: acceptApproverIds, approvalMode: acceptApprovalMode ?? "all", deputyApproverId: acceptDeputyId }
           : {}),
@@ -167,7 +182,7 @@ export async function POST(request: Request) {
   });
 
   // 후처리: 확정(not_required)→근태+캘린더 / 대기(pending)→결재 알림 (웹 accept 동일)
-  if (part.approvalStatus === "not_required") {
+  if (promotedNotRequired || part.approvalStatus === "not_required") {
     try {
       await createTripParticipantAttendanceRequests(part.id);
     } catch (e) {
