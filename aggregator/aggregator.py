@@ -1265,18 +1265,32 @@ class Aggregator:
           - 오늘이 공휴일이 아님
           - 그 직원의 오늘 시프트가 존재하고 type != 'off' 이며 start 파싱 가능
           - 현재 시각(KST)이 [시프트시작 - alert_minutes, 시프트시작) 구간 안
-          - 오늘 presence_raw 기록이 아직 없음 (이미 사무실에 있으면 불필요)
+          - 오늘 attendance_daily.check_in 이 아직 없음 (이미 출근했으면 불필요).
+            presence_raw 대신 check_in을 쓰는 이유: presence_raw에는 offline도 들어가서
+            stale ARP 엔트리가 정리된 흔적(예: 08:14 offline)만으로도 '기록 있음'이 되어
+            실제 미출근자의 알림이 누락된다.
           - 오늘 종일 캘린더(휴가/출장)가 없음
           - shift_prestart_alert_log에 오늘 기록이 없음
 
         중복 발송은 '로그 먼저 INSERT → 성공 시 발송'(try_log_prestart_alert)으로 차단.
         직원 단위 예외는 그 직원만 skip하고 사이클은 계속한다.
+
+        cutoff_hour: 현재 사용하지 않음(출근 판정이 presence_raw → check_in으로 바뀌면서
+                     불필요해졌다). 호출부 시그니처 유지를 위해 파라미터만 남겨둔다.
         """
         # 공휴일이면 전원 스킵
         if holiday_name:
             return
 
         now_kst = datetime.now(KST)
+        # 진단 카운터 — 발송 0건일 때 '왜 안 갔는지'를 로그로 남기기 위함
+        considered = 0        # 시프트가 있어 검토 대상이 된 인원
+        skip_no_shift = 0     # 시프트 없음/휴무/start 없음
+        skip_parse = 0        # 시작시각 파싱 실패
+        skip_window = 0       # 발송 창 밖
+        skip_checked_in = 0   # 이미 출근
+        skip_allday = 0       # 종일 휴가/출장
+        skip_dup = 0          # 오늘 이미 발송
         sent = 0
 
         for emp in employees:
@@ -1285,7 +1299,9 @@ class Aggregator:
                 # 1) 시프트 — 없음/휴무/시작시각 없음이면 제외
                 shift = self.db.get_employee_shift(emp_id, today)
                 if not shift or shift.get("type") == "off" or not shift.get("start"):
+                    skip_no_shift += 1
                     continue
+                considered += 1
 
                 # 2) 시프트 시작 시각 파싱 ("HH:MM") — 실패하면 그 직원만 skip
                 try:
@@ -1295,6 +1311,7 @@ class Aggregator:
                         f"  [prestart] 시프트 시작 시각 파싱 실패 "
                         f"(emp={emp_id}, start={shift.get('start')}) — 스킵"
                     )
+                    skip_parse += 1
                     continue
 
                 # 3) 발송 창: [시프트시작 - alert_minutes, 시프트시작)
@@ -1303,10 +1320,14 @@ class Aggregator:
                 )
                 window_open = shift_start_dt - timedelta(minutes=alert_minutes)
                 if not (window_open <= now_kst < shift_start_dt):
+                    skip_window += 1
                     continue
 
-                # 4) 이미 오늘 네트워크에 잡혔으면(=출근함) 불필요
-                if self.db.has_presence_on_work_date(emp_id, today, cutoff_hour):
+                # 4) 이미 출근했으면(check_in 있음) 불필요.
+                #    presence_raw 존재 여부는 offline(stale ARP 정리 흔적)에도 반응해
+                #    실제 미출근자를 걸러버리므로 check_in 기준으로 판정한다.
+                if self.db.get_daily_check_in(emp_id, today) is not None:
+                    skip_checked_in += 1
                     continue
 
                 # 5) 종일 휴가/출장이면 제외 (캘린더 보정 분기와 동일한 종일 판정)
@@ -1316,10 +1337,12 @@ class Aggregator:
                     for r in active_requests
                 )
                 if has_allday:
+                    skip_allday += 1
                     continue
 
                 # 6) 로그 먼저 → 새로 기록됐을 때만 발송 (하루 1회 보장)
                 if not self.db.try_log_prestart_alert(emp_id, today):
+                    skip_dup += 1
                     continue
 
                 self._notify(
@@ -1335,8 +1358,14 @@ class Aggregator:
                 self.logger.error(f"  [prestart] 처리 실패 (emp={emp_id}): {e}")
                 continue
 
-        if sent:
-            self.logger.info(f"  [prestart] 알림 발송 {sent}건")
+        # 창 밖은 거의 모든 사이클에서 전원 해당이라 로그 조건에서 제외(매분 로그 방지).
+        if sent or skip_checked_in or skip_allday or skip_dup or skip_parse:
+            self.logger.info(
+                f"  [prestart] 검토 {considered}명 → 발송 {sent}건 "
+                f"(스킵: 창밖 {skip_window}, 이미출근 {skip_checked_in}, "
+                f"종일 {skip_allday}, 중복 {skip_dup}, 파싱실패 {skip_parse}, "
+                f"시프트없음 {skip_no_shift})"
+            )
 
     def _notify(self, employee_ids, type, title, body, link_page=None):
         """HR 내부 알림 API(/api/internal/notify) 호출 → createNotifications로 위임.
