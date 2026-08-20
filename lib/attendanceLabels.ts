@@ -143,6 +143,59 @@ export function evalColor(autoStatus: string | null, hasCheckOut: boolean): stri
   return "text-emerald-600";
 }
 
+// ── 3축 분리 표시 헬퍼 ──────────────────────────────────────────
+// [평가] 항상 표시(카테고리가 가리지 않음) / [카테고리] 화면당 1회 / [정정배지] 중복 금지.
+//
+// 평가 키 목록. 지각·조퇴는 서로 배타가 아니므로 동시에 나올 수 있다("지각·조퇴").
+// - isLate/isEarlyLeave 중 하나라도 boolean이면 신데이터로 보고 플래그를 신뢰한다.
+// - 둘 다 null인 과거 행은 autoStatus 단독 폴백 — evalLabel과 동일한 결과를 낸다.
+// 빈 배열은 '평가 보류'(기존 '–')를 뜻한다.
+export function evalKeys(
+  autoStatus: string | null,
+  isLate: boolean | null | undefined,
+  isEarlyLeave: boolean | null | undefined,
+  hasCheckOut: boolean
+): EvalStatusKey[] {
+  const hasFlags =
+    typeof isLate === "boolean" || typeof isEarlyLeave === "boolean";
+
+  if (hasFlags) {
+    const keys: EvalStatusKey[] = [];
+    if (isLate) keys.push("late");
+    if (isEarlyLeave) keys.push("early_leave");
+    if (keys.length > 0) return keys;
+    // 플래그가 둘 다 false → 지각·조퇴 아님. 나머지는 autoStatus가 결정한다.
+    if (autoStatus === "absent") return ["absent"];
+    if (autoStatus === "normal") return ["normal"];
+    // working / null → evalLabel과 동일 의미론 (퇴근 있으면 '정상' 추정, 없으면 보류)
+    return hasCheckOut ? ["normal"] : [];
+  }
+
+  // 과거 행(플래그 NULL) — autoStatus 단독 매핑. evalLabel과 1:1로 같아야 한다.
+  if (autoStatus === "late") return ["late"];
+  if (autoStatus === "early_leave") return ["early_leave"];
+  if (autoStatus === "absent") return ["absent"];
+  if (autoStatus === "normal") return ["normal"];
+  if (!hasCheckOut) return [];
+  return ["normal"];
+}
+
+// 평가 라벨을 '·'로 이어붙인 문자열. 빈 배열이면 fallback('–' 등)을 돌려준다.
+export function evalKeysLabel(keys: EvalStatusKey[], fallback = "–"): string {
+  if (keys.length === 0) return fallback;
+  return keys.map((k) => EVAL_STATUS[k].label).join("·");
+}
+
+// 정정 배지 표시 여부.
+// 근태정정 카테고리 배지가 이미 보이는 화면에서는 '정정' 배지가 중복이므로 생략한다.
+export function showCorrectionBadge(
+  originalIn: string | null | undefined,
+  originalOut: string | null | undefined,
+  categoryCode: string | null | undefined
+): boolean {
+  return (!!originalIn || !!originalOut) && categoryCode !== "CORRECTION";
+}
+
 export type ProgressStatus =
   | "working"
   | "away"

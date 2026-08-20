@@ -22,6 +22,8 @@ import {
   isVacationCategory,
   isLabelOnlyCategory,
   evalLabel,
+  evalKeys,
+  evalKeysLabel,
   progressLabel,
   type ProgressStatus,
 } from "@/lib/attendanceLabels";
@@ -82,6 +84,8 @@ interface RealtimeRow {
   todayCheckOut: string | null;
   todayWorkMinutes: number | null;
   todayAutoStatus: string | null;
+  todayIsLate: boolean | null;
+  todayIsEarlyLeave: boolean | null;
   todayCategoryId: number | null;
   todayCategoryCode: string | null;
   todayCategoryName: string | null;
@@ -289,7 +293,15 @@ function renderActivityInfo(r: RealtimeRow): ReactNode {
             ? ` (${formatWorkMinutes(r.todayWorkMinutes)})`
             : ""}
           {r.todayAutoStatus && r.todayAutoStatus !== "working"
-            ? ` · ${evalLabel(r.todayAutoStatus, !!r.todayCheckOut)}`
+            ? ` · ${evalKeysLabel(
+                evalKeys(
+                  r.todayAutoStatus,
+                  r.todayIsLate,
+                  r.todayIsEarlyLeave,
+                  !!r.todayCheckOut
+                ),
+                evalLabel(r.todayAutoStatus, !!r.todayCheckOut)
+              )}`
             : ""}
         </span>
       );

@@ -23,6 +23,9 @@ export type AttendanceRow = {
   wifiCheckOut: string | null;
   workMinutes: number | null;
   autoStatus: string | null;
+  // 지각/조퇴 독립 플래그 (aggregator가 채움). NULL = 미판정(플래그 도입 전 과거 행).
+  isLate: boolean | null;
+  isEarlyLeave: boolean | null;
   isOverridden: boolean;
   categoryId: number | null;
   categoryCode: string | null;
@@ -69,6 +72,8 @@ export async function assembleAttendanceRows(params: {
             originalCheckOut: true,
             workMinutes: true,
             autoStatus: true,
+            isLate: true,
+            isEarlyLeave: true,
             isOverridden: true,
             categoryId: true,
             note: true,
@@ -250,6 +255,8 @@ export async function assembleAttendanceRows(params: {
       wifiCheckOut: ymd === todayYmdKst ? (wifiOutMap.get(a.employeeId)?.toISOString() ?? null) : null,
       workMinutes: a.workMinutes ?? null,
       autoStatus: a.autoStatus ?? null,
+      isLate: a.isLate ?? null,
+      isEarlyLeave: a.isEarlyLeave ?? null,
       isOverridden: a.isOverridden,
       categoryId: a.categoryId ?? null,
       categoryCode: a.category?.code ?? null,

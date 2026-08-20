@@ -5,10 +5,12 @@ import { X } from "lucide-react";
 import {
   correctedRangeLabel,
   formatTime as libFormatTime,
-  AUTO_STATUS_META,
   EVAL_STATUS,
   dayOffsetFromWorkDate,
   dayOffsetTitle,
+  evalKeys,
+  evalKeysLabel,
+  showCorrectionBadge,
 } from "@/lib/attendanceLabels";
 import { todayYmd } from "@/lib/dateUtils";
 import { exportExcel } from "@/lib/excelUtils";
@@ -33,6 +35,8 @@ export interface CalendarDaily {
   originalCheckIn: string | null;
   originalCheckOut: string | null;
   autoStatus: string | null;
+  isLate: boolean | null;
+  isEarlyLeave: boolean | null;
   categoryId: number | null;
   categoryCode: string | null;
   categoryName: string | null;
@@ -87,13 +91,6 @@ function DayOffsetMark({
   );
 }
 
-function autoStatusLabel(s: string | null): string {
-  if (s && s in AUTO_STATUS_META)
-    return AUTO_STATUS_META[s as keyof typeof AUTO_STATUS_META].label;
-  if (s === "working") return "근무중";
-  return "-";
-}
-
 // Phase 6-2K: 한국어 날짜 라벨 ("2026년 6월 1일 (월)")
 function formatDateKorean(ymd: string): string {
   const [y, m, d] = ymd.split("-").map(Number);
@@ -116,31 +113,59 @@ function StatusBadge({
   checkIn,
   checkOut,
   isToday,
+  isLate,
+  isEarlyLeave,
 }: {
   autoStatus: string | null | undefined;
   checkIn: string | null;
   checkOut: string | null;
   isToday: boolean;
+  // 지각/조퇴 독립 플래그. 안 넘기면(undefined) 기존 autoStatus 단독 동작 그대로 —
+  // 기존 호출부는 무수정으로 픽셀 단위 동일하게 렌더된다.
+  isLate?: boolean | null;
+  isEarlyLeave?: boolean | null;
 }) {
   // 평가 축 — 퇴근 기록 유무와 무관하게 항상 표시한다.
-  const evalKey = autoStatus && autoStatus in EVAL_BADGE ? autoStatus : null;
+  // 플래그가 있으면(신데이터) 지각·조퇴를 병기한다.
+  // 플래그가 없는 과거 행은 기존 판정(autoStatus가 평가 4종일 때만 평가로 인정)을
+  // 그대로 재현한다 — evalKeys의 'null+퇴근있음 → 정상' 추정을 여기선 쓰지 않는다.
+  // (그 추정을 적용하면 working/NULL 행의 기존 '🔵 근무중'·'-' 표시가 바뀐다.)
+  const hasFlags =
+    typeof isLate === "boolean" || typeof isEarlyLeave === "boolean";
+  const keys = hasFlags
+    ? evalKeys(autoStatus ?? null, isLate, isEarlyLeave, !!checkOut)
+    : autoStatus && autoStatus in EVAL_BADGE
+    ? [autoStatus as keyof typeof EVAL_BADGE]
+    : [];
   // 진행 축 — 출근O·퇴근X 일 때만. 오늘이면 근무중, 과거면 미퇴근.
   const progress = checkIn && !checkOut ? (isToday ? "근무중" : "미퇴근") : null;
 
   // 둘 다 있음 → 병기 (예: 야간 근무가 넘어가 퇴근이 아직 안 잡힌 지각자)
-  if (evalKey && progress) {
-    const e = EVAL_BADGE[evalKey];
+  if (keys.length > 0 && progress) {
     return (
-      <span className={`text-xs font-medium whitespace-nowrap ${e.cls}`}>
-        {e.label}
+      <span className="text-xs font-medium whitespace-nowrap">
+        {keys.map((k, i) => (
+          <span key={k} className={EVAL_BADGE[k].cls}>
+            {i > 0 && <span className="text-gray-400">·</span>}
+            {EVAL_BADGE[k].label}
+          </span>
+        ))}
         <span className="text-gray-400"> · </span>
         <span className="text-gray-500">{progress}</span>
       </span>
     );
   }
-  if (evalKey) {
-    const e = EVAL_BADGE[evalKey];
-    return <span className={`text-xs font-medium whitespace-nowrap ${e.cls}`}>{e.label}</span>;
+  if (keys.length > 0) {
+    return (
+      <span className="text-xs font-medium whitespace-nowrap">
+        {keys.map((k, i) => (
+          <span key={k} className={EVAL_BADGE[k].cls}>
+            {i > 0 && <span className="text-gray-400">·</span>}
+            {EVAL_BADGE[k].label}
+          </span>
+        ))}
+      </span>
+    );
   }
   if (progress) {
     const cls = progress === "근무중" ? "text-blue-600" : "text-amber-600";
@@ -556,25 +581,34 @@ export default function AttendanceCalendarDayModal({
         if (outOff > 0) outCell += ` (+${outOff})`;
       }
 
-      // 상태/카테고리 — 카테고리 우선, 없으면 autoStatus
-      let statusCell = "";
-      if (hasReq && catName) {
-        statusCell = catName;
-      } else {
-        // 평가 축 + 진행 축 병기 — StatusBadge 와 동일 규칙
-        const parts: string[] = [];
-        if (row?.autoStatus && row.autoStatus in AUTO_STATUS_META) {
-          parts.push(autoStatusLabel(row.autoStatus));
-        }
-        if (row?.checkIn && !row?.checkOut) {
-          parts.push(isToday ? "근무중" : "미퇴근");
-        }
-        if (parts.length === 0 && row?.autoStatus) {
-          parts.push(autoStatusLabel(row.autoStatus));
-        }
-        statusCell = parts.join(" · ");
+      // 상태 — 3축 분리: [평가](항상) + [카테고리](1회) + (정정)
+      // 평가는 카테고리가 있어도 가려지지 않는다. StatusBadge와 동일 규칙.
+      const parts: string[] = [];
+      const evalText = evalKeysLabel(
+        evalKeys(
+          row?.autoStatus ?? null,
+          row?.isLate,
+          row?.isEarlyLeave,
+          !!row?.checkOut
+        ),
+        ""
+      );
+      if (evalText) parts.push(evalText);
+      if (row?.checkIn && !row?.checkOut) {
+        parts.push(isToday ? "근무중" : "미퇴근");
       }
-      if (row?.originalCheckIn || row?.originalCheckOut) statusCell += " (정정)";
+      if (hasReq && catName) parts.push(catName);
+      let statusCell = parts.join(" · ");
+      // 근태정정 카테고리가 이미 적혀 있으면 "(정정)"은 중복이므로 생략.
+      if (
+        showCorrectionBadge(
+          row?.originalCheckIn,
+          row?.originalCheckOut,
+          row?.reqCategoryCode ?? null
+        )
+      ) {
+        statusCell += " (정정)";
+      }
 
       // 비고 — 캘린더 시간 + 사유/note
       const noteParts: string[] = [];
@@ -704,14 +738,25 @@ export default function AttendanceCalendarDayModal({
                       )}
                     </td>
                     <td className="px-3 py-2.5 whitespace-nowrap">
-                      {hasReq && catName ? (
-                        <span className="text-purple-600 font-medium">
+                      {/* 3축 분리: [평가](항상) + [카테고리](1회) + [정정](중복 아닐 때만) */}
+                      <StatusBadge
+                        autoStatus={row?.autoStatus ?? null}
+                        checkIn={row?.checkIn ?? null}
+                        checkOut={row?.checkOut ?? null}
+                        isToday={isToday}
+                        isLate={row?.isLate}
+                        isEarlyLeave={row?.isEarlyLeave}
+                      />
+                      {hasReq && catName && (
+                        <span className="ml-1 text-purple-600 font-medium">
                           {catName}
                         </span>
-                      ) : (
-                        <StatusBadge autoStatus={row?.autoStatus ?? null} checkIn={row?.checkIn ?? null} checkOut={row?.checkOut ?? null} isToday={isToday} />
                       )}
-                      {(row?.originalCheckIn || row?.originalCheckOut) && (
+                      {showCorrectionBadge(
+                        row?.originalCheckIn,
+                        row?.originalCheckOut,
+                        row?.reqCategoryCode ?? null
+                      ) && (
                         <span className="ml-1 text-xs bg-cyan-100 text-cyan-700 px-1.5 py-0.5 rounded-full font-medium">
                           정정
                         </span>
@@ -759,13 +804,29 @@ export default function AttendanceCalendarDayModal({
                       {emp.department?.name ?? "-"}
                     </p>
                   </div>
-                  <div className="shrink-0">
-                    {hasReq && catName ? (
+                  <div className="shrink-0 flex items-center gap-1 flex-wrap justify-end">
+                    {/* 데스크톱 셀과 동일한 3축 규칙 */}
+                    <StatusBadge
+                      autoStatus={row?.autoStatus ?? null}
+                      checkIn={row?.checkIn ?? null}
+                      checkOut={row?.checkOut ?? null}
+                      isToday={isToday}
+                      isLate={row?.isLate}
+                      isEarlyLeave={row?.isEarlyLeave}
+                    />
+                    {hasReq && catName && (
                       <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium">
                         {catName}
                       </span>
-                    ) : (
-                      <StatusBadge autoStatus={row?.autoStatus ?? null} checkIn={row?.checkIn ?? null} checkOut={row?.checkOut ?? null} isToday={isToday} />
+                    )}
+                    {showCorrectionBadge(
+                      row?.originalCheckIn,
+                      row?.originalCheckOut,
+                      row?.reqCategoryCode ?? null
+                    ) && (
+                      <span className="text-xs bg-cyan-100 text-cyan-700 px-1.5 py-0.5 rounded-full font-medium">
+                        정정
+                      </span>
                     )}
                   </div>
                 </div>

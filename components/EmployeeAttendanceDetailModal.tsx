@@ -22,6 +22,8 @@ import {
   AUTO_STATUS_META,
   dayOffsetFromWorkDate,
   dayOffsetTitle,
+  evalKeys,
+  showCorrectionBadge,
 } from "@/lib/attendanceLabels";
 import ExcelButton from "@/components/ExcelButton";
 import AttendanceExportModal from "@/components/AttendanceExportModal";
@@ -53,6 +55,8 @@ interface DetailRow {
   // overview API는 wifi 필드를 계속 반환하지만, 표시 통일(3단계)로 모달은 daily 값을 사용
   workMinutes: number | null;
   autoStatus: string | null;
+  isLate: boolean | null;
+  isEarlyLeave: boolean | null;
   isOverridden: boolean;
   categoryId: number | null;
   categoryCode: string | null;
@@ -171,19 +175,53 @@ function renderTimeCell(
   );
 }
 
+// 평가 칸 — 3축 분리 규칙.
+//  [평가] 항상 표시(플래그 있으면 지각·조퇴 병기, 없으면 autoStatus 단독 폴백)
+//  [카테고리] 근태정정만. 부재 카테고리(연차/출장 등)는 '진행' 칸이 이미 표시하므로
+//             여기서 또 붙이지 않는다(화면당 1회 원칙).
+//  [정정배지] 근태정정 카테고리가 보이면 중복이므로 생략.
 function renderEval(row: DetailRow) {
-  const c =
-    row.autoStatus && row.autoStatus in AUTO_STATUS_META
-      ? AUTO_STATUS_META[row.autoStatus as keyof typeof AUTO_STATUS_META]
-      : undefined;
-  if (c) {
-    return <span className={`text-xs font-medium whitespace-nowrap ${c.cls}`}>{c.label}</span>;
-  }
-  // autoStatus NULL이지만 check_in+check_out 있으면 '정상' 추정 (옛날 데이터 보호)
-  if (row.checkIn && row.checkOut) {
-    return <span className="text-xs font-medium text-emerald-600 whitespace-nowrap">정상</span>;
-  }
-  return <span className="text-xs text-gray-400 whitespace-nowrap">–</span>;
+  // 4번째 인자는 기존 renderEval의 '정상' 추정 조건(check_in+check_out 둘 다)과
+  // 동일하게 맞춘다 — 플래그 없는 과거 행의 표시가 바뀌지 않도록.
+  const keys = evalKeys(
+    row.autoStatus,
+    row.isLate,
+    row.isEarlyLeave,
+    !!row.checkIn && !!row.checkOut
+  );
+  const showCat = row.categoryCode === "CORRECTION" && !!row.categoryName;
+  const showCorr = showCorrectionBadge(
+    row.originalCheckIn,
+    row.originalCheckOut,
+    row.categoryCode
+  );
+
+  return (
+    <span className="inline-flex items-center gap-1 flex-wrap">
+      {keys.length > 0 ? (
+        <span className="text-xs font-medium whitespace-nowrap">
+          {keys.map((k, i) => (
+            <span key={k} className={AUTO_STATUS_META[k].cls}>
+              {i > 0 && <span className="text-gray-400">·</span>}
+              {AUTO_STATUS_META[k].label}
+            </span>
+          ))}
+        </span>
+      ) : (
+        <span className="text-xs text-gray-400 whitespace-nowrap">–</span>
+      )}
+      {showCat && (
+        <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap">
+          {row.categoryName}
+        </span>
+      )}
+      {showCorr && (
+        <span className="text-xs bg-cyan-100 text-cyan-700 px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap">
+          정정
+        </span>
+      )}
+    </span>
+  );
 }
 
 export default function EmployeeAttendanceDetailModal({

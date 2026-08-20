@@ -24,6 +24,8 @@ import {
 //     todayCheckOut: ISO string | null,
 //     todayWorkMinutes: number | null,
 //     todayAutoStatus: string | null,
+//     todayIsLate: boolean | null,          // 지각 플래그 (NULL=미판정 과거 행)
+//     todayIsEarlyLeave: boolean | null,    // 조퇴 플래그 (NULL=미판정 과거 행)
 //     todayCategoryId: number | null,
 //     todayCategoryCode: string | null,
 //     todayCategoryName: string | null,
@@ -125,6 +127,8 @@ export async function GET(request: NextRequest) {
       today_check_out: Date | null;
       today_work_minutes: number | null;
       today_auto_status: string | null;
+      today_is_late: boolean | null;
+      today_is_early_leave: boolean | null;
       today_category_id: number | null;
       today_category_code: string | null;
       today_category_name: string | null;
@@ -174,6 +178,8 @@ export async function GET(request: NextRequest) {
           ad.check_out,
           ad.work_minutes,
           ad.auto_status,
+          ad.is_late,
+          ad.is_early_leave,
           ad.category_id,
           ad.is_overridden,
           ac.code AS category_code,
@@ -224,6 +230,8 @@ export async function GET(request: NextRequest) {
         d.check_out AS today_check_out,
         d.work_minutes AS today_work_minutes,
         d.auto_status AS today_auto_status,
+        d.is_late AS today_is_late,
+        d.is_early_leave AS today_is_early_leave,
         d.category_id AS today_category_id,
         d.category_code AS today_category_code,
         d.category_name AS today_category_name,
@@ -351,6 +359,8 @@ export async function GET(request: NextRequest) {
             ? Number(r.today_work_minutes)
             : null,
         todayAutoStatus: r.today_auto_status ?? null,
+        todayIsLate: r.today_is_late ?? null,
+        todayIsEarlyLeave: r.today_is_early_leave ?? null,
         todayCategoryId: r.today_category_id ?? null,
         todayCategoryCode: r.today_category_code ?? null,
         todayCategoryName: r.today_category_name ?? null,
