@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import {
   correctedRangeLabel,
+  timedRangeLabel,
   formatTime as libFormatTime,
   EVAL_STATUS,
   dayOffsetFromWorkDate,
@@ -558,9 +559,13 @@ export default function AttendanceCalendarDayModal({
       // 비고 본문: row.reason은 빈문자열("")일 수 있으므로 || 로 폴백
       const reasonText = row ? (row.reason || row.note || "") : (req?.reason ?? "");
       const calNote = row
-        ? (row.correctedCheckIn && row.correctedCheckOut
-            ? `${correctedRangeLabel(row.reqCategoryCode, row.reqCategoryName)}: ${formatTime(row.correctedCheckIn)}-${formatTime(row.correctedCheckOut)}`
-            : null)
+        ? timedRangeLabel(
+            row.reqCategoryCode,
+            row.reqCategoryName,
+            row.timedSpanIn,
+            row.timedSpanOut,
+            row.timedCount
+          )
         : calendarTimeNote(req);
 
       let inCell = "";
@@ -684,9 +689,13 @@ export default function AttendanceCalendarDayModal({
                 const catName = row ? row.reqCategoryName : (req?.categoryName ?? null);
                 const reasonText = row ? (row.reason || row.note || "") : (req?.reason ?? "");
                 const calNote = row
-                  ? (row.correctedCheckIn && row.correctedCheckOut
-                      ? `${correctedRangeLabel(row.reqCategoryCode, row.reqCategoryName)}: ${formatTime(row.correctedCheckIn)}-${formatTime(row.correctedCheckOut)}`
-                      : null)
+                  ? timedRangeLabel(
+                      row.reqCategoryCode,
+                      row.reqCategoryName,
+                      row.timedSpanIn,
+                      row.timedSpanOut,
+                      row.timedCount
+                    )
                   : calendarTimeNote(req);
                 return (
                   <tr
@@ -785,9 +794,13 @@ export default function AttendanceCalendarDayModal({
             const catName = row ? row.reqCategoryName : (req?.categoryName ?? null);
             const reasonText = row ? (row.reason || row.note || "") : (req?.reason ?? "");
             const calNote = row
-              ? (row.correctedCheckIn && row.correctedCheckOut
-                  ? `${correctedRangeLabel(row.reqCategoryCode, row.reqCategoryName)}: ${formatTime(row.correctedCheckIn)}-${formatTime(row.correctedCheckOut)}`
-                  : null)
+              ? timedRangeLabel(
+                  row.reqCategoryCode,
+                  row.reqCategoryName,
+                  row.timedSpanIn,
+                  row.timedSpanOut,
+                  row.timedCount
+                )
               : calendarTimeNote(req);
             const hasTimes = row?.checkIn || row?.checkOut;
             return (

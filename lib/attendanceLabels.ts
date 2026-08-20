@@ -8,6 +8,23 @@ export function correctedRangeLabel(
   return categoryName || "일정";
 }
 
+// 시간형 일정 시간대 라벨. 같은 날 여러 건이면 [전체 범위 + (N건)]으로 묶어 보여준다.
+// count <= 1 이면 기존 단건 문자열과 완전히 동일하다(표시 회귀 방지).
+// spanIn/spanOut 중 하나라도 없으면 null (= 표시 안 함).
+export function timedRangeLabel(
+  categoryCode: string | null,
+  categoryName: string | null,
+  spanIn: string | null,
+  spanOut: string | null,
+  count: number
+): string | null {
+  if (!spanIn || !spanOut) return null;
+  const base = `${correctedRangeLabel(categoryCode, categoryName)}: ${formatTime(
+    spanIn
+  )}-${formatTime(spanOut)}`;
+  return count > 1 ? `${base} (${count}건)` : base;
+}
+
 // HH:MM (없으면 fallback). 파일별 폴백("-"/"")을 인자로 흡수.
 export function formatTime(iso: string | null, fallback = "-"): string {
   if (!iso) return fallback;

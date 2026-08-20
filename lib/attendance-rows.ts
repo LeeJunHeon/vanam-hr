@@ -36,6 +36,12 @@ export type AttendanceRow = {
   correctedCheckOut: string | null;
   reqCategoryCode: string | null;
   reqCategoryName: string | null;
+  // 같은 날 시간형 일정이 여러 건일 때의 집계 (1건 이하면 timedCount<=1이라 소비처가
+  // 기존 경로를 그대로 탄다). 시간형이 0건이면 count=0 + 나머지 null.
+  timedCount: number; // 그 날 시간형 요청 건수 (0/1/N)
+  timedSpanIn: string | null; // 전체 최소 시작 ISO
+  timedSpanOut: string | null; // 전체 최대 종료 ISO
+  timedAll: { in: string; out: string; reason: string }[] | null; // 엑셀용 전 건 (시작 오름차순)
   // 2단계 additive — 일별 모달용 (overview 응답에도 실리지만 30일 모달은 읽지 않아 무해)
   dailyId: number;
   originalCheckIn: string | null;
@@ -43,6 +49,35 @@ export type AttendanceRow = {
   note: string | null;
   statusReason: string | null;
 };
+
+// 시간형 집계 → 반환 필드 4개. 정렬은 호출 전에 끝나 있다(시작 오름차순).
+// span_out은 "마지막 요소의 out"이 아니라 전체 out의 최댓값이다 —
+// 정렬 기준이 시작 시각이라 늦게 시작한 건이 더 일찍 끝날 수 있다.
+function timedFields(list: { in: string; out: string; reason: string }[] | undefined): {
+  timedCount: number;
+  timedSpanIn: string | null;
+  timedSpanOut: string | null;
+  timedAll: { in: string; out: string; reason: string }[] | null;
+} {
+  if (!list || list.length === 0) {
+    return {
+      timedCount: 0,
+      timedSpanIn: null,
+      timedSpanOut: null,
+      timedAll: null,
+    };
+  }
+  let maxOut = list[0].out;
+  for (const e of list) {
+    if (Date.parse(e.out) > Date.parse(maxOut)) maxOut = e.out;
+  }
+  return {
+    timedCount: list.length,
+    timedSpanIn: list[0].in,
+    timedSpanOut: maxOut,
+    timedAll: list,
+  };
+}
 
 export async function assembleAttendanceRows(params: {
   employees: AssembleEmployee[];
@@ -117,8 +152,10 @@ export async function assembleAttendanceRows(params: {
 
   // employeeId_YYYY-MM-DD → reason 매핑 (start~end 범위 모든 날짜에 동일 reason)
   // 그리고 같은 키 형식으로 corrected_check_in/out 시간대도 매핑(시간대 일정만 값 존재).
-  // employeeId_YYYY-MM-DD → 대표 요청. 같은 날 여러 건이면 시간형(시작 빠른 순) 우선,
+  // employeeId_YYYY-MM-DD → 대표 요청. 같은 날 여러 건이면 시간형(시작 늦은 순) 우선,
   // 시간형이 없으면 종일. requests는 requestedAt asc 정렬되어 있음.
+  // 대표를 '마지막 건'으로 잡는 이유: 화면 비고는 [전체 범위 + 건수 + 대표 제목] 형태라
+  // 하루가 끝날 때의 일정이 대표 제목으로 더 자연스럽다.
   const reasonMap = new Map<string, string>();
   const correctedMap = new Map<
     string,
@@ -129,6 +166,11 @@ export async function assembleAttendanceRows(params: {
   const reqCategoryMap = new Map<
     string,
     { code: string | null; name: string | null }
+  >();
+  // 키별 시간형 전 건 (대표와 별개로 전부 모은다 — 화면 건수/범위, 엑셀 나열용)
+  const timedAgg = new Map<
+    string,
+    { in: string; out: string; reason: string }[]
   >();
 
   for (const req of requests) {
@@ -146,15 +188,27 @@ export async function assembleAttendanceRows(params: {
       )}-${String(d.getDate()).padStart(2, "0")}`;
       const key = `${req.employeeId}_${ymd}`;
 
+      // 시간형은 대표 선택과 별개로 전부 모은다.
+      if (isTimed) {
+        const list = timedAgg.get(key);
+        const entry = {
+          in: req.correctedCheckIn!.toISOString(),
+          out: req.correctedCheckOut!.toISOString(),
+          reason: req.reason ?? "",
+        };
+        if (list) list.push(entry);
+        else timedAgg.set(key, [entry]);
+      }
+
       const prev = pickMeta.get(key);
-      // 채택 규칙: 시간형이 종일보다 우선, 시간형끼리는 시작 빠른 것 우선.
+      // 채택 규칙: 시간형이 종일보다 우선, 시간형끼리는 시작 늦은 것 우선.
       let take = false;
       if (!prev) {
         take = true;
       } else if (isTimed && !prev.timed) {
         take = true; // 종일 → 시간형으로 교체
-      } else if (isTimed && prev.timed && startMs < prev.startMs) {
-        take = true; // 더 일찍 시작하는 시간형
+      } else if (isTimed && prev.timed && startMs > prev.startMs) {
+        take = true; // 더 늦게 시작하는 시간형 (대표 제목 = 마지막 일정)
       }
 
       if (take) {
@@ -175,6 +229,11 @@ export async function assembleAttendanceRows(params: {
       }
       d.setDate(d.getDate() + 1);
     }
+  }
+
+  // 시간형 집계는 시작 오름차순으로 정렬해 둔다 (엑셀 나열 순서 = 시간순).
+  for (const list of timedAgg.values()) {
+    list.sort((a, b) => Date.parse(a.in) - Date.parse(b.in));
   }
 
   // ── 오늘(KST) WiFi 첫 연결 / 마지막 끊김 ──
@@ -267,6 +326,7 @@ export async function assembleAttendanceRows(params: {
       correctedCheckOut: correctedMap.get(reasonKey)?.out ?? null,
       reqCategoryCode: reqCategoryMap.get(reasonKey)?.code ?? null,
       reqCategoryName: reqCategoryMap.get(reasonKey)?.name ?? null,
+      ...timedFields(timedAgg.get(reasonKey)),
       dailyId: a.id,
       originalCheckIn: a.originalCheckIn ? a.originalCheckIn.toISOString() : null,
       originalCheckOut: a.originalCheckOut ? a.originalCheckOut.toISOString() : null,

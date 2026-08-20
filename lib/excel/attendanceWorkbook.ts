@@ -113,9 +113,22 @@ function evalCell(row: AttendanceRow, todayYmd: string): string {
   });
 }
 
-// 사유 셀 = 첫 번째 비어있지 않은 값.
+// 사유 셀.
+// 같은 날 시간형 일정(출장/외근)이 있으면 전 건을 "HH:MM-HH:MM · 사유" 한 줄씩 나열한다.
+// 화면 비고는 [전체 범위 + 건수 + 대표 제목]으로 줄여 보여주지만, 엑셀은 원장이므로 전부 남긴다.
+// timedAll이 없으면(종일/일정 없음) 기존 동작 그대로 — 한 글자도 달라지지 않는다.
 function reasonCell(row: AttendanceRow): string {
-  return row.statusReason || row.reason || row.note || "";
+  const base = row.statusReason || row.reason || row.note || "";
+  const timed = row.timedAll;
+  if (!timed || timed.length === 0) return base;
+
+  // 시각은 이 파일의 KST 강제 포맷을 재사용한다 (컨테이너 TZ가 UTC여도 안전).
+  const lines = timed.map(
+    (t) => `${hhmmKst(t.in)}-${hhmmKst(t.out)}${t.reason ? ` · ${t.reason}` : ""}`
+  );
+  // base가 이미 나열에 포함된 문구면(대표 건의 reason) 중복이므로 덧붙이지 않는다.
+  if (base && !lines.some((l) => l.includes(base))) lines.push(base);
+  return lines.join("\n");
 }
 
 // startDate~endDate 가 걸치는 달 목록 (과거→현재 오름차순). ["YYYY-MM", ...]
