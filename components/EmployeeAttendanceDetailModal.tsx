@@ -197,7 +197,7 @@ function renderEval(row: DetailRow) {
   );
 
   return (
-    <span className="inline-flex items-center gap-1 flex-wrap">
+    <span className="inline-flex items-center gap-1 whitespace-nowrap">
       {keys.length > 0 ? (
         <span className="text-xs font-medium whitespace-nowrap">
           {keys.map((k, i) => (
@@ -471,7 +471,7 @@ export default function EmployeeAttendanceDetailModal({
                             <td className="px-4 py-2.5 text-center">
                               {renderProgress(r)}
                             </td>
-                            <td className="px-4 py-2.5 text-center">
+                            <td className="px-4 py-2.5 text-center whitespace-nowrap">
                               {renderEval(r)}
                             </td>
                             <td
