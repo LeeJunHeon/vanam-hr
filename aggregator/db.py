@@ -681,6 +681,92 @@ class Database:
             row = c.fetchone()
             return row[0] if row else None
 
+    def has_correction_for_side(self, employee_id: int, work_date: date, side: str) -> bool:
+        """승인된 근태정정 요청이 해당 면(in/out)의 시각을 지정했는지.
+
+        지정했다면 그 면은 '사람 영역'이므로 자유면 지속 추적 대상에서 제외한다.
+        (요청에는 corrected_check_out이 있는데 행의 original_check_out은 아직 NULL로
+         남은 희귀 케이스를 막는 가드 — 이 경우 기존 one-shot 백필만 동작해야 한다.)
+        """
+        # col은 아래 화이트리스트 2값에서만 나온다 — 외부 입력이 SQL에 섞이지 않는다.
+        col = "corrected_check_in" if side == "in" else "corrected_check_out"
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                f"""
+                SELECT 1
+                FROM hr.attendance_requests r
+                JOIN hr.attendance_categories c ON c.id = r.category_id
+                WHERE r.employee_id = %s
+                  AND c.code = 'CORRECTION'
+                  AND r.status IN ('approved', 'auto_approved', 'auto_delegated')
+                  AND r.start_date <= %s
+                  AND r.end_date >= %s
+                  AND r.{col} IS NOT NULL
+                LIMIT 1
+                """,
+                (employee_id, work_date, work_date),
+            )
+            return c.fetchone() is not None
+
+    def sync_free_side_update(
+        self, employee_id: int, work_date: date, free_side: str,
+        check_in, check_out, work_minutes, auto_status,
+        is_late, is_early_leave,
+    ):
+        """반대편이 사람 정정으로 확정된 행에서, 자유면을 raw 계산값으로 동기화.
+
+        SET 절에 자유면과 파생값만 포함 — 사람이 고친 면은 SQL 레벨에서 접근 불가다
+        (컬럼 자체가 UPDATE 문에 등장하지 않으므로 어떤 인자를 넘겨도 덮이지 않는다).
+        WHERE 가드로 '반대편이 사람 정정(original NOT NULL) + 이 면은 자유면(original NULL)'
+        을 다시 확인한다 — 그 사이 사람이 2차 정정했다면 0행 갱신되고 None을 반환한다.
+
+        backfill_missing_side_update와 달리 COALESCE를 쓰지 않는다: 자유면은 이미 값이
+        있어도 raw 기준으로 계속 따라가야 하고, None으로 되돌아가는 것도 허용한다.
+        변경된 행 id 반환, 가드에 막히면 None.
+        """
+        self._ensure_connected()
+        if free_side == "out":
+            sql = """
+                UPDATE hr.attendance_daily
+                SET check_out = %s,
+                    work_minutes = %s,
+                    auto_status = %s,
+                    is_late = %s,
+                    is_early_leave = %s,
+                    updated_at = NOW()
+                WHERE employee_id = %s AND work_date = %s
+                  AND is_overridden = true AND override_source = 'manual'
+                  AND original_check_in IS NOT NULL
+                  AND original_check_out IS NULL
+                RETURNING id
+                """
+            free_val = check_out
+        else:
+            sql = """
+                UPDATE hr.attendance_daily
+                SET check_in = %s,
+                    work_minutes = %s,
+                    auto_status = %s,
+                    is_late = %s,
+                    is_early_leave = %s,
+                    updated_at = NOW()
+                WHERE employee_id = %s AND work_date = %s
+                  AND is_overridden = true AND override_source = 'manual'
+                  AND original_check_out IS NOT NULL
+                  AND original_check_in IS NULL
+                RETURNING id
+                """
+            free_val = check_in
+        with self.conn.cursor() as c:
+            c.execute(
+                sql,
+                (free_val, work_minutes, auto_status, is_late, is_early_leave,
+                 employee_id, work_date),
+            )
+            row = c.fetchone()
+            return row[0] if row else None
+
     def get_holiday(self, work_date: date) -> Optional[str]:
         """Phase 6-2L+ B-3: 해당 날짜의 공휴일 이름 조회 (없으면 None).
 

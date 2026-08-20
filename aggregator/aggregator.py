@@ -794,9 +794,22 @@ class Aggregator:
         shift_info, grace_in_minutes, grace_out_minutes,
         lunch_deduct_enabled, lunch_start_str, lunch_end_str,
     ) -> bool:
-        """manual 정정으로 잠긴 행에서 정정하지 않은 NULL 쪽을 raw로 백필 시도(P0-1).
+        """manual 정정으로 잠긴 행에서 정정하지 않은 쪽('자유면')을 raw로 추적한다.
         정정된 쪽은 안 건드리고 병합값으로 auto_status/work_minutes 재계산.
-        실제로 채웠으면 True."""
+        실제로 바꿨으면 True.
+
+        두 경로가 있다:
+        1) 자유면 지속 동기화 — 반대편이 사람 정정으로 확정된 half-corrected 행이면,
+           자유면은 일반 행과 동일하게 매 사이클 raw를 따라간다(값이 달라졌을 때만 UPDATE).
+           한 번 채워진 뒤 고착되지 않으며, raw 기준 None으로 되돌아가는 것도 허용한다
+           (재출근 → working). 대상은 아래 3중 조건을 전부 만족할 때만이다:
+             (a) is_overridden=true AND override_source='manual'
+             (b) 반대편 original_check_X 가 NOT NULL — 사람이 그쪽을 고친 흔적이 실재
+             (c) 자유면에 대해 승인된 근태정정 요청이 시각을 지정한 게 없음
+           (b)가 핵심 안전장치다: 관리자가 직접 SQL로 잠근 행(양쪽 original NULL)은
+           (b)에서 걸러져 이 경로를 절대 타지 않고, 아래 2)의 기존 동작만 유지된다.
+        2) 기존 one-shot 백필(P0-1) — 위 조건에 해당하지 않는 행의 기존 동작 그대로.
+        """
         existing = self.db.get_daily_for_backfill(emp_id, work_date)
         if not existing:
             return False
@@ -808,6 +821,65 @@ class Aggregator:
         orig_in = existing["original_check_in"]
         orig_out = existing["original_check_out"]
 
+        # ── 자유면 지속 동기화 (half-corrected 행 전용) ──
+        # 반대편에 사람 정정 흔적(original NOT NULL)이 있고, 이 면은 사람이 손대지
+        # 않았으며((c) 요청에도 지정 없음), 그러면 이 면은 일반 행처럼 raw를 따라간다.
+        free_side = None
+        if orig_in is not None and orig_out is None and not self.db.has_correction_for_side(
+            emp_id, work_date, "out"
+        ):
+            free_side = "out"
+        elif orig_out is not None and orig_in is None and not self.db.has_correction_for_side(
+            emp_id, work_date, "in"
+        ):
+            free_side = "in"
+
+        if free_side is not None:
+            # 사람 면은 DB값 고정, 자유면은 computed 값(None 허용)
+            final_in = ex_in if free_side == "out" else computed_check_in
+            final_out = ex_out if free_side == "in" else computed_check_out
+            final_in = _floor_minute(final_in)
+            final_out = _floor_minute(final_out)
+
+            current_free = ex_out if free_side == "out" else ex_in
+            new_free = final_out if free_side == "out" else final_in
+            if new_free == current_free:
+                return False  # 변화 없음 — 무의미한 updated_at 갱신 금지
+
+            sync_status, sync_is_late, sync_is_early = self._determine_auto_status(
+                check_in=final_in, check_out=final_out, shift_info=shift_info,
+                grace_in_minutes=grace_in_minutes, grace_out_minutes=grace_out_minutes,
+                lunch_deduct_enabled=lunch_deduct_enabled,
+                lunch_start_str=lunch_start_str, lunch_end_str=lunch_end_str,
+            )
+            sync_work_minutes = None
+            if final_in is not None and final_out is not None:
+                sync_work_minutes = int((final_out - final_in).total_seconds() // 60)
+                if sync_work_minutes < 0:
+                    # 수동 정정값 + 계산값 조합에서 역전이 생긴 경우. 음수는 저장하지 않는다.
+                    self.logger.warning(
+                        f"  [자유면동기화] 직원 {emp_id}({emp_no}/{emp_name}) "
+                        f"work_date={work_date} — 근무시간 음수({sync_work_minutes}분) 차단: "
+                        f"in={final_in}, out={final_out}"
+                    )
+                    sync_work_minutes = None
+
+            new_id = self.db.sync_free_side_update(
+                employee_id=emp_id, work_date=work_date, free_side=free_side,
+                check_in=final_in, check_out=final_out,
+                work_minutes=sync_work_minutes, auto_status=sync_status,
+                is_late=sync_is_late, is_early_leave=sync_is_early,
+            )
+            if new_id is not None:
+                self.logger.info(
+                    f"  [자유면동기화] 직원 {emp_id}({emp_no}/{emp_name}) "
+                    f"work_date={work_date} — {free_side}: {current_free} → {new_free}, "
+                    f"auto_status={sync_status}"
+                )
+                return True
+            return False
+
+        # ── 이하 기존 one-shot 백필 로직 (무수정) ──
         # 채울 수 있는 쪽: 정정 안 됨(original NULL) + 현재 NULL + raw에 값 있음 + 반대쪽 존재
         fill_out = (orig_out is None and ex_out is None
                     and computed_check_out is not None and ex_in is not None)
