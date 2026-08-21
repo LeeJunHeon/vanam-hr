@@ -25,6 +25,7 @@ import TripReportModal, { type TripReportTarget } from "@/components/TripReportM
 import Pagination from "@/components/Pagination";
 import MyTripsPage from "@/components/MyTripsPage";
 import { buildMemoHeader, extractMemoHeader, extractMemoNotes, composeMemo } from "@/lib/calendar-memo";
+import { groupConsecutiveTripDates, tripDateGroupLabel } from "@/lib/trip-dates";
 
 // Phase 7 2단계: 출장 관리 페이지 — 이벤트 + 참석자(초대/self-join/수락/거절/날짜수정/제거).
 // 결재 처리(approve/reject)와 캘린더/근태 반영은 3·4단계.
@@ -1610,15 +1611,13 @@ function ParticipantRow({
           </div>
           {p.dates.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1">
-              {p.dates.map((d) => (
+              {/* 연속 구간 단위로 묶어 표시 — 그룹 규칙은 attendance_request 생성 단위와 동일 */}
+              {groupConsecutiveTripDates(p.dates).map((g) => (
                 <span
-                  key={d.id}
+                  key={`${g.startDate}_${g.startTime ?? ""}_${g.endTime ?? ""}`}
                   className="text-[11px] font-mono bg-gray-50 text-gray-700 px-1.5 py-0.5 rounded"
                 >
-                  {d.attendDate}
-                  {d.startTime || d.endTime
-                    ? ` ${d.startTime ?? "-"}~${d.endTime ?? "-"}`
-                    : " 종일"}
+                  {tripDateGroupLabel(g)}
                 </span>
               ))}
             </div>
