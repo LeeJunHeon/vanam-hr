@@ -765,11 +765,31 @@ class Aggregator:
                 lunch_deduct_enabled=lunch_deduct_enabled,
                 lunch_start_str=lunch_start_str, lunch_end_str=lunch_end_str,
             )
-            if not backfilled and (check_in is not None or check_out is not None):
+            # 정정(original_* 존재)으로 보호된 쪽을 덮어쓰려던 것은 정상 동작이므로
+            # warning 대상에서 제외한다. 정정하지 않은 쪽인데 값이 못 들어가는 경우만 이상 신호.
+            existing_row = self.db.get_daily_for_backfill(emp_id, work_date)
+            if existing_row is None:
+                drop_in = check_in is not None
+                drop_out = check_out is not None
+            else:
+                drop_in = (
+                    check_in is not None
+                    and existing_row["check_in"] != check_in
+                    and existing_row["original_check_in"] is None
+                )
+                drop_out = (
+                    check_out is not None
+                    and existing_row["check_out"] != check_out
+                    and existing_row["original_check_out"] is None
+                )
+            if not backfilled and (drop_in or drop_out):
+                db_in = existing_row["check_in"] if existing_row else None
+                db_out = existing_row["check_out"] if existing_row else None
                 self.logger.warning(
                     f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} "
                     f"— is_overridden=true 로 보호됨, 계산값 폐기: "
-                    f"check_in={check_in}, check_out={check_out} (backfill 실패)"
+                    f"check_in: DB={db_in} vs 계산={check_in}, "
+                    f"check_out: DB={db_out} vs 계산={check_out} (backfill 실패)"
                 )
             else:
                 self.logger.debug(
