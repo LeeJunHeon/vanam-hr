@@ -917,7 +917,8 @@ export async function PUT(request: NextRequest) {
               isLate: false,
               isEarlyLeave: false,
               isOverridden: true,
-              overrideSource: "manual", // Phase 6-2L+ C-3: 수동 결재 적용 → 보호 대상
+              overrideSource: "calendar", // leave/work는 시각을 주장하지 않으므로 잠그지 않는다.
+              // 'calendar' = 요청 기반 자동 보정 — aggregator 재갱신 허용
               note: `결재 #${updated.id} (${category.name})`,
             },
             update: {
@@ -927,7 +928,8 @@ export async function PUT(request: NextRequest) {
               isLate: false,
               isEarlyLeave: false,
               isOverridden: true,
-              overrideSource: "manual", // Phase 6-2L+ C-3
+              overrideSource: "calendar", // leave/work는 시각을 주장하지 않으므로 잠그지 않는다.
+              // 'calendar' = 요청 기반 자동 보정 — aggregator 재갱신 허용
               note: existing?.note ?? `결재 #${updated.id} (${category.name})`,
             },
           });

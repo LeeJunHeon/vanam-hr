@@ -118,13 +118,17 @@ async function processOne(
               categoryId: t.categoryId, autoStatus: "normal", isOverridden: true,
               // 휴가/외근은 지각·조퇴 판정 면제 → 명시적 false
               isLate: false, isEarlyLeave: false,
-              overrideSource: "manual", note: `결재 #${t.id} (${category.name})`,
+              // leave/work는 시각을 주장하지 않으므로 잠그지 않는다.
+              // 'calendar' = 요청 기반 자동 보정 — aggregator 재갱신 허용
+              overrideSource: "calendar", note: `결재 #${t.id} (${category.name})`,
             },
             update: {
               categoryId: t.categoryId, autoStatus: "normal", isOverridden: true,
               // 휴가/외근은 지각·조퇴 판정 면제 → 명시적 false
               isLate: false, isEarlyLeave: false,
-              overrideSource: "manual",
+              // leave/work는 시각을 주장하지 않으므로 잠그지 않는다.
+              // 'calendar' = 요청 기반 자동 보정 — aggregator 재갱신 허용
+              overrideSource: "calendar",
               note: existing?.note ?? `결재 #${t.id} (${category.name})`,
             },
           });

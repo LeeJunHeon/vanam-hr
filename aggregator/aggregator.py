@@ -765,10 +765,17 @@ class Aggregator:
                 lunch_deduct_enabled=lunch_deduct_enabled,
                 lunch_start_str=lunch_start_str, lunch_end_str=lunch_end_str,
             )
-            self.logger.debug(
-                f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} "
-                f"— is_overridden=true 로 보호됨, 스킵 (backfill={backfilled})"
-            )
+            if not backfilled and (check_in is not None or check_out is not None):
+                self.logger.warning(
+                    f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} "
+                    f"— is_overridden=true 로 보호됨, 계산값 폐기: "
+                    f"check_in={check_in}, check_out={check_out} (backfill 실패)"
+                )
+            else:
+                self.logger.debug(
+                    f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} "
+                    f"— is_overridden=true 로 보호됨, 스킵 (backfill={backfilled})"
+                )
             return "backfilled" if backfilled else "overridden"
         else:
             shift_label = (
