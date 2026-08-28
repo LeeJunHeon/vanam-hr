@@ -1293,6 +1293,7 @@ function TripDetailModal({
       icon={<Plane size={18} className="text-blue-600" />}
       onClose={onClose}
       maxWidth="max-w-2xl"
+      closeOnBackdrop
     >
       {loading && !detail ? (
         <div className="flex items-center justify-center h-32">
@@ -2318,6 +2319,7 @@ function ModalShell({
   children,
   maxWidth = "max-w-md",
   nested = false,
+  closeOnBackdrop = false,
 }: {
   title: string;
   icon?: React.ReactNode;
@@ -2325,12 +2327,13 @@ function ModalShell({
   children: React.ReactNode;
   maxWidth?: string;
   nested?: boolean;
+  closeOnBackdrop?: boolean;
 }) {
   return (
     <div
       className={`fixed inset-0 ${nested ? "z-[60]" : "z-50"} flex items-center justify-center p-4`}
       style={{ backgroundColor: "rgba(0,0,0,0.4)" }}
-      onClick={onClose}
+      onClick={closeOnBackdrop ? onClose : undefined}
     >
       <div
         className={`bg-white rounded-2xl shadow-2xl w-full ${maxWidth} p-5 sm:p-6 space-y-4 max-h-[90vh] overflow-y-auto`}

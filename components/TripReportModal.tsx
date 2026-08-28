@@ -195,11 +195,11 @@ export default function TripReportModal({
   // ESC로 닫기 (저장 중에는 무시)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !saving) onClose();
+      if (e.key === "Escape" && readOnly && !saving) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, saving]);
+  }, [onClose, saving, readOnly]);
 
   const updateRow = (idx: number, patch: Partial<ExpenseRow>) => {
     setExpenses((prev) =>
@@ -285,7 +285,7 @@ export default function TripReportModal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onClick={() => !saving && onClose()}
+      onClick={readOnly && !saving ? onClose : undefined}
     >
       {toast && (
         <div className="fixed bottom-6 right-6 z-[60] bg-emerald-600 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-lg">
