@@ -51,6 +51,9 @@ class Poller:
         self.notifier = Notifier(
             webhook_url=self.config.notifier_webhook_url,
             logger=self.logger,
+            timeout=self.config.notifier_timeout,
+            queue_max=self.config.notifier_queue_max,
+            queue_max_age_min=self.config.notifier_queue_max_age_min,
         )
         self.last_policy_load: datetime | None = None
         self.running = True
@@ -379,7 +382,10 @@ class Poller:
         self.logger.info(
             f"DRY_RUN={self.config.dry_run}, LOG_LEVEL={self.config.log_level}, "
             f"ICC_URL={self.config.icc_url}, SITE_ID={self.config.icc_site_id}, "
-            f"NOTIFIER={'활성' if self.config.notifier_webhook_url else '비활성'}"
+            f"NOTIFIER={'활성' if self.config.notifier_webhook_url else '비활성'} "
+            f"(timeout={self.config.notifier_timeout}s, "
+            f"queue_max={self.config.notifier_queue_max}, "
+            f"max_age={self.config.notifier_queue_max_age_min}분)"
         )
 
         next_run_at = time.monotonic()
@@ -393,6 +399,10 @@ class Poller:
                     next_run_at += interval
 
                     self.run_once()
+
+                    # 이전 사이클에서 발송 실패한 알림 재전송 시도
+                    # (즉시 리턴, 실제 HTTP는 별도 스레드 — 메인 루프 블로킹 없음)
+                    self.notifier.flush()
 
                     behind = time.monotonic() - next_run_at
                     if behind > 0:

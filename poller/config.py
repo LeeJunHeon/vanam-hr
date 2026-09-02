@@ -29,6 +29,10 @@ class Config:
     log_level: str
     log_file: str
     dry_run: bool
+    # 알림 재전송 큐
+    notifier_timeout: int
+    notifier_queue_max: int
+    notifier_queue_max_age_min: int
 
 
 def load_config() -> Config:
@@ -76,6 +80,16 @@ def load_config() -> Config:
     except ValueError:
         raise SystemExit(f"ICC_SITE_ID가 정수가 아닙니다: {icc_site_id_raw}")
 
+    def _positive_int(name: str, default: int) -> int:
+        raw = os.environ.get(name, str(default))
+        try:
+            value = int(raw)
+        except ValueError:
+            raise SystemExit(f"{name}이(가) 정수가 아닙니다: {raw}")
+        if value <= 0:
+            raise SystemExit(f"{name}은(는) 1 이상이어야 합니다: {raw}")
+        return value
+
     return Config(
         db_host=db_host,
         db_port=db_port,
@@ -91,4 +105,7 @@ def load_config() -> Config:
         log_level=os.environ.get("POLLER_LOG_LEVEL", "INFO"),
         log_file=os.environ.get("POLLER_LOG_FILE", "poller.log"),
         dry_run=os.environ.get("POLLER_DRY_RUN", "false").lower() == "true",
+        notifier_timeout=_positive_int("NOTIFIER_TIMEOUT", 3),
+        notifier_queue_max=_positive_int("NOTIFIER_QUEUE_MAX", 50),
+        notifier_queue_max_age_min=_positive_int("NOTIFIER_QUEUE_MAX_AGE_MIN", 60),
     )
