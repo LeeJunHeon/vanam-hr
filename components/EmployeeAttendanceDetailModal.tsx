@@ -143,13 +143,15 @@ function renderProgress(row: DetailRow) {
   );
   // 오늘 + 근무중이면 실시간 연결 상태를 병기한다 (실시간 현황 카드와 동일 배지).
   // "근무중"은 attendance_daily 기준(출근O·퇴근X)이라 지금 연결됐는지는 말해주지 않는다.
-  if (label === "근무중" && row.realtimeStatus) {
+  // 끊긴 경우에만 병기한다(compact). 연결 중이면 배지가 null 이라 라벨만 남는다.
+  if (label === "근무중" && row.realtimeStatus === "disconnected") {
     return (
       <span className="inline-flex flex-col items-center gap-0.5">
         {labelEl}
         <RealtimeConnectionBadge
           status={row.realtimeStatus}
           latestCheckedAt={row.latestCheckedAt}
+          compact
         />
       </span>
     );
