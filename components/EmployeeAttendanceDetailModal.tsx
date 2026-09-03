@@ -13,6 +13,9 @@ import { todayYmd, ymdFromDate } from "@/lib/dateUtils";
 import {
   settledProgressLabel,
   SETTLED_PROGRESS_STYLE,
+  progressDotColor,
+  progressTextColor,
+  progressCategoryStyle,
 } from "@/lib/attendanceProgress";
 import {
   correctedRangeLabel,
@@ -149,56 +152,31 @@ function renderProgress(row: DetailRow) {
     return renderRealtimeProgress(
       row.progressStatus,
       row.categoryName,
-      row.categoryCode
+      row.categoryCode,
+      row.categoryColor
     );
   }
   return labelEl;
 }
 
-// 실시간 진행 상태 렌더 — AttendanceOverviewPage 의 progressLabel / progressDotColor 와
-// 문구·색을 그대로 맞춘다 (목록과 모달이 갈리지 않게).
-function realtimeProgressDot(s: ProgressStatus): string {
-  switch (s) {
-    case "working":
-      return "bg-emerald-500";
-    case "away":
-      return "bg-amber-500";
-    case "completed":
-      return "bg-blue-500";
-    case "absent_today":
-      return "bg-gray-400";
-    case "category_working":
-    case "category_completed":
-      return "bg-purple-500";
-  }
-}
-
-function realtimeProgressText(s: ProgressStatus): string {
-  switch (s) {
-    case "working":
-      return "text-emerald-700";
-    case "away":
-      return "text-amber-700";
-    case "completed":
-      return "text-blue-700";
-    case "absent_today":
-      return "text-gray-600";
-    case "category_working":
-    case "category_completed":
-      return "text-purple-700";
-  }
-}
-
+// 실시간 진행 상태 렌더 — 실시간 현황 카드와 문구·색을 공유한다(lib/attendanceProgress).
+// category_* 이고 categoryColor 가 있으면 purple fallback 을 덮는 것까지 목록과 동일.
 function renderRealtimeProgress(
   s: ProgressStatus,
   categoryName: string | null,
-  categoryCode: string | null
+  categoryCode: string | null,
+  categoryColor: string | null
 ) {
+  const catStyle = progressCategoryStyle(s, categoryColor, "text");
   return (
     <span
-      className={`inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${realtimeProgressText(s)}`}
+      className={`inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${progressTextColor(s)}`}
+      style={catStyle}
     >
-      <span className={`w-2 h-2 rounded-full ${realtimeProgressDot(s)}`} />
+      <span
+        className={`w-2 h-2 rounded-full ${progressDotColor(s)}`}
+        style={catStyle ? { backgroundColor: categoryColor ?? undefined } : undefined}
+      />
       {progressLabel(s, categoryName, categoryCode)}
     </span>
   );

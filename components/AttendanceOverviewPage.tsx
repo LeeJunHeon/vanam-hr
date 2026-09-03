@@ -27,6 +27,11 @@ import {
   progressLabel,
   type ProgressStatus,
 } from "@/lib/attendanceLabels";
+import {
+  progressDotColor,
+  progressBadgeClass,
+  progressCategoryStyle,
+} from "@/lib/attendanceProgress";
 
 // ───────────────────────── 타입 ─────────────────────────
 
@@ -167,41 +172,7 @@ function categoryIcon(code: string | null): string {
   }
 }
 
-// 진행 상태 점 색상 (category 분기는 categoryColor 없을 때 fallback purple)
-function progressDotColor(s: ProgressStatus): string {
-  switch (s) {
-    case "working":
-      return "bg-emerald-500";
-    case "away":
-      return "bg-amber-500";
-    case "completed":
-      return "bg-blue-500";
-    case "absent_today":
-      return "bg-gray-400";
-    case "category_working":
-    case "category_completed":
-      return "bg-purple-500"; // categoryColor 있으면 inline style로 덮어씀
-  }
-}
-
-// 진행 상태 배지 클래스 (category 분기는 categoryColor 있으면 inline style 덮어씀)
-function progressBadgeClass(s: ProgressStatus): string {
-  const base =
-    "inline-flex items-center text-xs px-2 py-0.5 rounded-md font-medium shrink-0";
-  switch (s) {
-    case "working":
-      return `${base} bg-emerald-50 text-emerald-700`;
-    case "away":
-      return `${base} bg-amber-50 text-amber-700`;
-    case "completed":
-      return `${base} bg-blue-50 text-blue-700`;
-    case "absent_today":
-      return `${base} bg-gray-50 text-gray-600`;
-    case "category_working":
-    case "category_completed":
-      return `${base} bg-purple-50 text-purple-700`;
-  }
-}
+// progressDotColor / progressBadgeClass 는 lib/attendanceProgress로 이동 (모달과 공용).
 
 // 직원 카드/표의 "마지막 활동" 한 줄 (아이콘 + 정보)
 // Phase 6-2B: 캘린더 보정 우선 표시 → 아이콘 + 카테고리명 + 사유 + 시간/종일
@@ -705,16 +676,11 @@ export default function AttendanceOverviewPage() {
                 {/* 상태 배지 (카테고리 보정 시 categoryColor 우선) */}
                 <span
                   className={progressBadgeClass(r.progressStatus)}
-                  style={
-                    (r.progressStatus === "category_working" ||
-                      r.progressStatus === "category_completed") &&
-                    r.todayCategoryColor
-                      ? {
-                          backgroundColor: `${r.todayCategoryColor}20`,
-                          color: r.todayCategoryColor,
-                        }
-                      : undefined
-                  }
+                  style={progressCategoryStyle(
+                    r.progressStatus,
+                    r.todayCategoryColor,
+                    "badge"
+                  )}
                 >
                   {progressLabel(r.progressStatus, r.todayCategoryName ?? null, r.todayCategoryCode ?? null)}
                 </span>
