@@ -24,9 +24,9 @@ import {
   dayOffsetTitle,
   evalKeys,
   showCorrectionBadge,
+  progressLabel,
 } from "@/lib/attendanceLabels";
-import RealtimeConnectionBadge from "@/components/RealtimeConnectionBadge";
-import type { RealtimeStatus } from "@/lib/realtime-presence";
+import type { RealtimeStatus, ProgressStatus } from "@/lib/realtime-presence";
 import ExcelButton from "@/components/ExcelButton";
 import AttendanceExportModal from "@/components/AttendanceExportModal";
 
@@ -75,6 +75,8 @@ interface DetailRow {
   realtimeStatus: RealtimeStatus | null;
   latestCheckedAt: string | null;
   latestLocation: string | null;
+  /** 오늘 행 전용 실시간 진행 상태 (목록의 실시간 현황 카드와 동일 판정). 과거 행은 null. */
+  progressStatus: ProgressStatus | null;
 }
 
 // isVacationCategory / formatTime / formatWorkMinutes 는 lib/attendanceLabels로 이동(3단계 dedupe).
@@ -141,22 +143,65 @@ function renderProgress(row: DetailRow) {
       {label}
     </span>
   );
-  // 오늘 + 근무중이면 실시간 연결 상태를 병기한다 (실시간 현황 카드와 동일 배지).
-  // "근무중"은 attendance_daily 기준(출근O·퇴근X)이라 지금 연결됐는지는 말해주지 않는다.
-  // 끊긴 경우에만 병기한다(compact). 연결 중이면 배지가 null 이라 라벨만 남는다.
-  if (label === "근무중" && row.realtimeStatus === "disconnected") {
-    return (
-      <span className="inline-flex flex-col items-center gap-0.5">
-        {labelEl}
-        <RealtimeConnectionBadge
-          status={row.realtimeStatus}
-          latestCheckedAt={row.latestCheckedAt}
-          compact
-        />
-      </span>
+  // 오늘 행은 실시간 진행 상태를 그대로 쓴다 — 목록(실시간 현황 카드)과 같은 판정/문구/색.
+  // "근무중"(attendance_daily 기준: 출근O·퇴근X)만으로는 지금 자리에 있는지 알 수 없다.
+  if (row.progressStatus) {
+    return renderRealtimeProgress(
+      row.progressStatus,
+      row.categoryName,
+      row.categoryCode
     );
   }
   return labelEl;
+}
+
+// 실시간 진행 상태 렌더 — AttendanceOverviewPage 의 progressLabel / progressDotColor 와
+// 문구·색을 그대로 맞춘다 (목록과 모달이 갈리지 않게).
+function realtimeProgressDot(s: ProgressStatus): string {
+  switch (s) {
+    case "working":
+      return "bg-emerald-500";
+    case "away":
+      return "bg-amber-500";
+    case "completed":
+      return "bg-blue-500";
+    case "absent_today":
+      return "bg-gray-400";
+    case "category_working":
+    case "category_completed":
+      return "bg-purple-500";
+  }
+}
+
+function realtimeProgressText(s: ProgressStatus): string {
+  switch (s) {
+    case "working":
+      return "text-emerald-700";
+    case "away":
+      return "text-amber-700";
+    case "completed":
+      return "text-blue-700";
+    case "absent_today":
+      return "text-gray-600";
+    case "category_working":
+    case "category_completed":
+      return "text-purple-700";
+  }
+}
+
+function renderRealtimeProgress(
+  s: ProgressStatus,
+  categoryName: string | null,
+  categoryCode: string | null
+) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${realtimeProgressText(s)}`}
+    >
+      <span className={`w-2 h-2 rounded-full ${realtimeProgressDot(s)}`} />
+      {progressLabel(s, categoryName, categoryCode)}
+    </span>
+  );
 }
 
 // 평가 컬럼. Phase 6-2B: 캘린더 보정 시 카테고리명 표시 (Q5c).

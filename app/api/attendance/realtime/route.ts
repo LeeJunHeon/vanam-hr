@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { computeRealtimeStatus } from "@/lib/realtime-presence";
+import {
+  computeRealtimeStatus,
+  computeProgressStatus,
+} from "@/lib/realtime-presence";
 import {
   requireSession,
   canViewAllEmployees,
@@ -264,75 +267,18 @@ export async function GET(request: NextRequest) {
         now,
       });
 
-      // progressStatus: 클라이언트 편의 분류
-      // 캘린더 보정(is_overridden + category_id) 우선. 그 안에서:
-      //  - 시간대 일정(corrected_check_in/out 둘 다 있음, 예 외근 09:00~12:00):
-      //    * now < cal_in            → 일정 시작 전: 캘린더 분기 skip, 일반 WiFi 로직으로 흐름
-      //    * cal_in <= now < cal_out → "category_working"
-      //    * now >= cal_out:
-      //        realtimeStatus='working'             → "working"  (복귀해 자리에 있음)
-      //        elif check_out > cal_out             → "completed" (복귀 후 정상 퇴근)
-      //        else                                  → "category_completed" (미복귀)
-      //  - 종일 일정(corrected 없음, 예 휴가): check_out 유무로 working/completed (기존 동작)
-      // 일반(WiFi) 분기:
-      //  - latestStatus 없음 → absent_today
-      //  - online → working
-      //  - offline + grace 미경과 → away / 경과 → completed
-      let progressStatus:
-        | "working"
-        | "away"
-        | "completed"
-        | "absent_today"
-        | "category_working"
-        | "category_completed"
-        | null = null;
-
-      if (r.today_is_overridden && r.today_category_id !== null) {
-        const calIn = r.today_corrected_in;
-        const calOut = r.today_corrected_out;
-        const isTimedCalendar = !!(calIn && calOut);
-        if (isTimedCalendar) {
-          const calInMs = calIn!.getTime();
-          const calOutMs = calOut!.getTime();
-          if (now < calInMs) {
-            // 일정 시작 전 — 캘린더 분기 skip, 아래 WiFi 로직으로 흐른다.
-            progressStatus = null;
-          } else if (now < calOutMs) {
-            progressStatus = "category_working";
-          } else {
-            // 종료 후
-            if (realtimeStatus === "working") {
-              progressStatus = "working";
-            } else if (
-              r.today_check_out &&
-              r.today_check_out.getTime() > calOutMs
-            ) {
-              progressStatus = "completed";
-            } else {
-              progressStatus = "category_completed";
-            }
-          }
-        } else {
-          // 종일 일정 — 기존 동작 유지
-          progressStatus = r.today_check_out
-            ? "category_completed"
-            : "category_working";
-        }
-      }
-
-      if (progressStatus === null) {
-        if (r.latest_status === null) {
-          progressStatus = "absent_today";
-        } else if (r.latest_status === "online") {
-          progressStatus = "working";
-        } else if (r.latest_status === "offline" && r.latest_checked_at) {
-          const elapsed = now - r.latest_checked_at.getTime();
-          progressStatus = elapsed < graceMs ? "away" : "completed";
-        } else {
-          // offline인데 checked_at이 없는 비정상 케이스 → 미출근 취급
-          progressStatus = "absent_today";
-        }
-      }
+      // 공용 판정 (lib/realtime-presence). 상세 모달 오늘 행과 동일 규칙.
+      const progressStatus = computeProgressStatus({
+        latestStatus: r.latest_status,
+        latestCheckedAt: r.latest_checked_at,
+        todayCheckOut: r.today_check_out,
+        todayIsOverridden: r.today_is_overridden ?? false,
+        todayCategoryId: r.today_category_id ?? null,
+        todayCorrectedIn: r.today_corrected_in,
+        todayCorrectedOut: r.today_corrected_out,
+        graceMs,
+        now,
+      });
 
       return {
         employeeId: r.employee_id,

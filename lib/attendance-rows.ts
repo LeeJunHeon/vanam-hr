@@ -1,5 +1,10 @@
 import { prisma } from "@/lib/prisma";
-import { computeRealtimeStatus, type RealtimeStatus } from "@/lib/realtime-presence";
+import {
+  computeRealtimeStatus,
+  computeProgressStatus,
+  type RealtimeStatus,
+  type ProgressStatus,
+} from "@/lib/realtime-presence";
 
 // 근태 화면 공용 "행 조립" 모듈 (리팩터링 1단계).
 // overview API의 조립 로직을 그대로 이동한 것 — 동작 동일. (이후 단계에서 calendar/realtime도 이 모듈로 전환 예정)
@@ -26,6 +31,8 @@ export type AttendanceRow = {
   // 오늘 행 전용 실시간 연결 상태 (과거 행은 전부 null).
   // realtime API 와 동일 판정(lib/realtime-presence) + 동일 "오늘" 기준(work_date_cutoff_hour).
   realtimeStatus: RealtimeStatus | null;
+  /** 오늘 행 전용 실시간 진행 상태. 실시간 현황 카드와 동일 판정(lib/realtime-presence). */
+  progressStatus: ProgressStatus | null;
   latestCheckedAt: string | null;
   latestLocation: string | null;
   workMinutes: number | null;
@@ -248,9 +255,16 @@ export async function assembleAttendanceRows(params: {
   // 판정 = computeRealtimeStatus(debounce_minutes grace). 조회 범위가 오늘을 포함할 때만 실행.
   const realtimeMap = new Map<
     number,
-    { status: RealtimeStatus; checkedAt: Date | null; location: string | null }
+    {
+      status: RealtimeStatus;
+      checkedAt: Date | null;
+      location: string | null;
+      latestStatus: string | null;
+    }
   >();
   let todayYmdCutoff: string | null = null;
+  let realtimeGraceMs = 60 * 60 * 1000;
+  let realtimeNowMs = Date.now();
 
   if (employeeIds.length > 0) {
     const policies = await prisma.policySetting.findMany({
@@ -298,8 +312,10 @@ export async function assembleAttendanceRows(params: {
       ORDER BY employee_id, checked_at DESC
     `;
 
-    const nowMs = Date.now();
-    const graceMs = graceMinutes * 60 * 1000;
+    realtimeNowMs = Date.now();
+    realtimeGraceMs = graceMinutes * 60 * 1000;
+    const nowMs = realtimeNowMs;
+    const graceMs = realtimeGraceMs;
     for (const r of latest) {
       todayYmdCutoff = r.today_ymd;
       realtimeMap.set(r.employee_id, {
@@ -311,6 +327,7 @@ export async function assembleAttendanceRows(params: {
         }),
         checkedAt: r.latest_checked_at,
         location: r.latest_location,
+        latestStatus: r.latest_status,
       });
     }
   }
@@ -334,10 +351,34 @@ export async function assembleAttendanceRows(params: {
       wifiCheckOut: null,
       ...(() => {
         const rt = ymd === todayYmdCutoff ? realtimeMap.get(a.employeeId) : undefined;
+        if (!rt) {
+          return {
+            realtimeStatus: null,
+            latestCheckedAt: null,
+            latestLocation: null,
+            progressStatus: null,
+          };
+        }
         return {
-          realtimeStatus: rt?.status ?? null,
-          latestCheckedAt: rt?.checkedAt ? rt.checkedAt.toISOString() : null,
-          latestLocation: rt?.location ?? null,
+          realtimeStatus: rt.status,
+          latestCheckedAt: rt.checkedAt ? rt.checkedAt.toISOString() : null,
+          latestLocation: rt.location,
+          // 실시간 현황 카드와 동일 판정 — 같은 순간 두 화면이 다른 상태를 보이지 않게 한다.
+          progressStatus: computeProgressStatus({
+            latestStatus: rt.latestStatus,
+            latestCheckedAt: rt.checkedAt,
+            todayCheckOut: a.checkOut,
+            todayIsOverridden: a.isOverridden,
+            todayCategoryId: a.categoryId ?? null,
+            todayCorrectedIn: correctedMap.get(reasonKey)?.in
+              ? new Date(correctedMap.get(reasonKey)!.in!)
+              : null,
+            todayCorrectedOut: correctedMap.get(reasonKey)?.out
+              ? new Date(correctedMap.get(reasonKey)!.out!)
+              : null,
+            graceMs: realtimeGraceMs,
+            now: realtimeNowMs,
+          }),
         };
       })(),
       workMinutes: a.workMinutes ?? null,
