@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { computeRealtimeStatus } from "@/lib/realtime-presence";
 import {
   requireSession,
   canViewAllEmployees,
@@ -255,16 +256,13 @@ export async function GET(request: NextRequest) {
 
     const rows = latestRows.map((r) => {
       const emp = empMap.get(r.employee_id);
-      let realtimeStatus: "working" | "disconnected" = "disconnected";
-
-      if (r.latest_status === "online") {
-        realtimeStatus = "working";
-      } else if (r.latest_status === "offline" && r.latest_checked_at) {
-        const elapsed = now - r.latest_checked_at.getTime();
-        if (elapsed < graceMs) {
-          realtimeStatus = "working"; // grace 이내 끊김
-        }
-      }
+      // 공용 판정 (lib/realtime-presence). attendance-rows 의 오늘 행과 동일 규칙.
+      const realtimeStatus = computeRealtimeStatus({
+        latestStatus: r.latest_status,
+        latestCheckedAt: r.latest_checked_at,
+        graceMs,
+        now,
+      });
 
       // progressStatus: 클라이언트 편의 분류
       // 캘린더 보정(is_overridden + category_id) 우선. 그 안에서:

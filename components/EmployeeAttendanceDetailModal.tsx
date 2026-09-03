@@ -25,6 +25,8 @@ import {
   evalKeys,
   showCorrectionBadge,
 } from "@/lib/attendanceLabels";
+import RealtimeConnectionBadge from "@/components/RealtimeConnectionBadge";
+import type { RealtimeStatus } from "@/lib/realtime-presence";
 import ExcelButton from "@/components/ExcelButton";
 import AttendanceExportModal from "@/components/AttendanceExportModal";
 
@@ -69,6 +71,10 @@ interface DetailRow {
   correctedCheckOut: string | null;
   reqCategoryCode: string | null;
   reqCategoryName: string | null;
+  // 오늘 행 전용 실시간 연결 상태 (overview API 가 realtime API 와 동일 판정으로 채움). 과거 행은 null.
+  realtimeStatus: RealtimeStatus | null;
+  latestCheckedAt: string | null;
+  latestLocation: string | null;
 }
 
 // isVacationCategory / formatTime / formatWorkMinutes 는 lib/attendanceLabels로 이동(3단계 dedupe).
@@ -127,7 +133,7 @@ function renderProgress(row: DetailRow) {
     isToday: row.workDate === todayYmd(),
   });
   const style = SETTLED_PROGRESS_STYLE[label];
-  return (
+  const labelEl = (
     <span
       className={`inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${style.text}`}
     >
@@ -135,6 +141,20 @@ function renderProgress(row: DetailRow) {
       {label}
     </span>
   );
+  // 오늘 + 근무중이면 실시간 연결 상태를 병기한다 (실시간 현황 카드와 동일 배지).
+  // "근무중"은 attendance_daily 기준(출근O·퇴근X)이라 지금 연결됐는지는 말해주지 않는다.
+  if (label === "근무중" && row.realtimeStatus) {
+    return (
+      <span className="inline-flex flex-col items-center gap-0.5">
+        {labelEl}
+        <RealtimeConnectionBadge
+          status={row.realtimeStatus}
+          latestCheckedAt={row.latestCheckedAt}
+        />
+      </span>
+    );
+  }
+  return labelEl;
 }
 
 // 평가 컬럼. Phase 6-2B: 캘린더 보정 시 카테고리명 표시 (Q5c).

@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { computeRealtimeStatus, type RealtimeStatus } from "@/lib/realtime-presence";
 
 // 근태 화면 공용 "행 조립" 모듈 (리팩터링 1단계).
 // overview API의 조립 로직을 그대로 이동한 것 — 동작 동일. (이후 단계에서 calendar/realtime도 이 모듈로 전환 예정)
@@ -19,8 +20,14 @@ export type AttendanceRow = {
   workDate: string;
   checkIn: string | null;
   checkOut: string | null;
+  // @deprecated 소비처 없음. 응답 스키마 호환을 위해 항상 null. (판정은 realtimeStatus 로 통일)
   wifiCheckIn: string | null;
   wifiCheckOut: string | null;
+  // 오늘 행 전용 실시간 연결 상태 (과거 행은 전부 null).
+  // realtime API 와 동일 판정(lib/realtime-presence) + 동일 "오늘" 기준(work_date_cutoff_hour).
+  realtimeStatus: RealtimeStatus | null;
+  latestCheckedAt: string | null;
+  latestLocation: string | null;
   workMinutes: number | null;
   autoStatus: string | null;
   // 지각/조퇴 독립 플래그 (aggregator가 채움). NULL = 미판정(플래그 도입 전 과거 행).
@@ -236,62 +243,75 @@ export async function assembleAttendanceRows(params: {
     list.sort((a, b) => Date.parse(a.in) - Date.parse(b.in));
   }
 
-  // ── 오늘(KST) WiFi 첫 연결 / 마지막 끊김 ──
-  const _nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
-  const _ky = _nowKst.getUTCFullYear();
-  const _km = _nowKst.getUTCMonth();
-  const _kd = _nowKst.getUTCDate();
-  const _pad = (n: number) => String(n).padStart(2, "0");
-  const todayYmdKst = `${_ky}-${_pad(_km + 1)}-${_pad(_kd)}`;
-  const todayStartUtc = new Date(Date.UTC(_ky, _km, _kd) - 9 * 60 * 60 * 1000);
-  const todayEndUtc = new Date(todayStartUtc.getTime() + 24 * 60 * 60 * 1000);
+  // ── 오늘 행 전용 실시간 연결 상태 ──
+  // realtime API 와 완전히 같은 기준: "오늘" = work_date_cutoff_hour(04:00) 기준 work_date,
+  // 판정 = computeRealtimeStatus(debounce_minutes grace). 조회 범위가 오늘을 포함할 때만 실행.
+  const realtimeMap = new Map<
+    number,
+    { status: RealtimeStatus; checkedAt: Date | null; location: string | null }
+  >();
+  let todayYmdCutoff: string | null = null;
 
-  const firstOnlineMap = new Map<number, Date>();
-  const lastOnlineMap = new Map<number, Date>();
-  const lastOfflineMap = new Map<number, Date>();
   if (employeeIds.length > 0) {
-    const [firstOnline, lastOffline] = await Promise.all([
-      prisma.presenceRaw.groupBy({
-        by: ["employeeId"],
-        where: {
-          employeeId: { in: employeeIds },
-          status: "online",
-          checkedAt: { gte: todayStartUtc, lt: todayEndUtc },
-        },
-        _min: { checkedAt: true },
-        _max: { checkedAt: true },
-      }),
-      prisma.presenceRaw.groupBy({
-        by: ["employeeId"],
-        where: {
-          employeeId: { in: employeeIds },
-          status: "offline",
-          checkedAt: { gte: todayStartUtc, lt: todayEndUtc },
-        },
-        _max: { checkedAt: true },
-      }),
-    ]);
-    for (const row of firstOnline) {
-      if (row.employeeId != null && row._min.checkedAt) {
-        firstOnlineMap.set(row.employeeId, row._min.checkedAt);
-      }
-      if (row.employeeId != null && row._max.checkedAt) {
-        lastOnlineMap.set(row.employeeId, row._max.checkedAt);
-      }
-    }
-    for (const row of lastOffline) {
-      if (row.employeeId != null && row._max.checkedAt) {
-        lastOfflineMap.set(row.employeeId, row._max.checkedAt);
-      }
-    }
-  }
+    const policies = await prisma.policySetting.findMany({
+      where: { key: { in: ["debounce_minutes", "work_date_cutoff_hour"] } },
+      select: { key: true, value: true },
+    });
+    const pol = new Map(policies.map((p) => [p.key, p.value]));
+    const graceRaw = pol.get("debounce_minutes");
+    const graceMinutes = graceRaw && /^\d+$/.test(graceRaw) ? parseInt(graceRaw, 10) : 60;
+    const cutoffRaw = pol.get("work_date_cutoff_hour");
+    const cutoffHour = cutoffRaw && /^\d+$/.test(cutoffRaw) ? parseInt(cutoffRaw, 10) : 4;
 
-  // 마지막 끊김이 마지막 연결보다 나중일 때만 "퇴근"으로 인정 (재연결 시 제외)
-  const wifiOutMap = new Map<number, Date>();
-  for (const [empId, lastOff] of lastOfflineMap) {
-    const lastOn = lastOnlineMap.get(empId);
-    if (!lastOn || lastOff > lastOn) {
-      wifiOutMap.set(empId, lastOff);
+    type LatestRow = {
+      employee_id: number;
+      latest_status: string | null;
+      latest_checked_at: Date | null;
+      latest_location: string | null;
+      today_ymd: string;
+    };
+    const latest = await prisma.$queryRaw<LatestRow[]>`
+      WITH today_kst AS (
+        SELECT CASE
+          WHEN EXTRACT(HOUR FROM (NOW() AT TIME ZONE 'Asia/Seoul')) < ${cutoffHour}
+          THEN ((NOW() AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '1 day')::date
+          ELSE (NOW() AT TIME ZONE 'Asia/Seoul')::date
+        END AS d
+      ),
+      today_raw AS (
+        SELECT employee_id, checked_at, status, location
+        FROM hr.presence_raw
+        WHERE employee_id = ANY(${employeeIds}::int[])
+          AND CASE
+            WHEN EXTRACT(HOUR FROM (checked_at AT TIME ZONE 'Asia/Seoul')) < ${cutoffHour}
+            THEN ((checked_at AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '1 day')::date
+            ELSE (checked_at AT TIME ZONE 'Asia/Seoul')::date
+          END = (SELECT d FROM today_kst)
+      )
+      SELECT DISTINCT ON (employee_id)
+        employee_id,
+        status AS latest_status,
+        checked_at AS latest_checked_at,
+        location AS latest_location,
+        to_char((SELECT d FROM today_kst), 'YYYY-MM-DD') AS today_ymd
+      FROM today_raw
+      ORDER BY employee_id, checked_at DESC
+    `;
+
+    const nowMs = Date.now();
+    const graceMs = graceMinutes * 60 * 1000;
+    for (const r of latest) {
+      todayYmdCutoff = r.today_ymd;
+      realtimeMap.set(r.employee_id, {
+        status: computeRealtimeStatus({
+          latestStatus: r.latest_status,
+          latestCheckedAt: r.latest_checked_at,
+          graceMs,
+          now: nowMs,
+        }),
+        checkedAt: r.latest_checked_at,
+        location: r.latest_location,
+      });
     }
   }
 
@@ -310,8 +330,16 @@ export async function assembleAttendanceRows(params: {
       workDate: ymd,
       checkIn: a.checkIn ? a.checkIn.toISOString() : null,
       checkOut: a.checkOut ? a.checkOut.toISOString() : null,
-      wifiCheckIn: ymd === todayYmdKst ? (firstOnlineMap.get(a.employeeId)?.toISOString() ?? null) : null,
-      wifiCheckOut: ymd === todayYmdKst ? (wifiOutMap.get(a.employeeId)?.toISOString() ?? null) : null,
+      wifiCheckIn: null,
+      wifiCheckOut: null,
+      ...(() => {
+        const rt = ymd === todayYmdCutoff ? realtimeMap.get(a.employeeId) : undefined;
+        return {
+          realtimeStatus: rt?.status ?? null,
+          latestCheckedAt: rt?.checkedAt ? rt.checkedAt.toISOString() : null,
+          latestLocation: rt?.location ?? null,
+        };
+      })(),
       workMinutes: a.workMinutes ?? null,
       autoStatus: a.autoStatus ?? null,
       isLate: a.isLate ?? null,
