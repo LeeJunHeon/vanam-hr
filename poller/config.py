@@ -23,6 +23,7 @@ class Config:
     icc_user: str
     icc_password: str
     icc_site_id: int
+    icc_hq_site_id: int  # 본사 ICC 관측용 (0=비활성)
     # Google Chat Webhook (알림용, 선택적)
     notifier_webhook_url: str
     # 로깅/기타
@@ -101,6 +102,7 @@ def load_config() -> Config:
         icc_user=icc_user,
         icc_password=icc_password,
         icc_site_id=icc_site_id,
+        icc_hq_site_id=int(os.environ.get("ICC_HQ_SITE_ID", "0") or "0"),
         notifier_webhook_url=notifier_webhook,
         log_level=os.environ.get("POLLER_LOG_LEVEL", "INFO"),
         log_file=os.environ.get("POLLER_LOG_FILE", "poller.log"),

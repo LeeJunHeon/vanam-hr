@@ -48,6 +48,15 @@ class Poller:
             password=self.config.icc_password,
             site_id=self.config.icc_site_id,
         )
+        # 본사 ICC 관측 전용 (판정 무관, ICC_HQ_SITE_ID=0이면 None)
+        self.icc_hq: IccClient | None = None
+        if self.config.icc_hq_site_id > 0:
+            self.icc_hq = IccClient(
+                url=self.config.icc_url,
+                user=self.config.icc_user,
+                password=self.config.icc_password,
+                site_id=self.config.icc_hq_site_id,
+            )
         self.notifier = Notifier(
             webhook_url=self.config.notifier_webhook_url,
             logger=self.logger,
@@ -190,6 +199,71 @@ class Poller:
                 )
             return None
 
+    def _observe_icc_hq(self, snmp_macs: set[str] | None, devices: list[dict]) -> None:
+        """본사 ICC(site_id=ICC_HQ_SITE_ID) 관측 → hr.icc_hq_observe 적재.
+
+        판정에 전혀 관여하지 않는다. 실패는 warning 1줄만 남기고 삼킨다.
+        SNMP 결과와 나란히 기록해 두 소스의 차이를 사후 분석하기 위한 것.
+        """
+        if self.icc_hq is None:
+            return
+        try:
+            t0 = time.time()
+            stations = self.icc_hq.get_stations()
+            call_time = time.time() - t0
+
+            # MAC(소문자 12자리) → station dict
+            by_mac: dict[str, dict] = {}
+            for s in stations:
+                m = (s.get("mac") or "").replace(":", "").replace("-", "").lower()
+                if len(m) == 12:
+                    by_mac[m] = s
+
+            snmp_set = snmp_macs if snmp_macs is not None else set()
+            cycle_id = int(t0)
+            rows: list[tuple] = []
+            matched = 0
+
+            for d in devices:
+                mac = (d.get("mac_address") or "").replace(":", "").replace("-", "").lower()
+                if not mac:
+                    continue
+                st = by_mac.get(mac)
+                in_icc = st is not None
+                if in_icc:
+                    matched += 1
+                conn = (st or {}).get("connection") or {}
+                wl = conn.get("wireless") or {}
+                wd = conn.get("wired") or {}
+                info = (st or {}).get("info") or {}
+                rows.append((
+                    cycle_id,
+                    d["id"],
+                    d["employee_id"],
+                    mac,
+                    mac in snmp_set,
+                    in_icc,
+                    conn.get("type"),
+                    wl.get("bss"),
+                    wl.get("rssi"),
+                    wl.get("duration"),
+                    info.get("ip") or None,
+                    (info.get("name") or None) if info.get("name") else None,
+                    wl.get("down_bytes", wd.get("down_bytes")),
+                    wl.get("up_bytes", wd.get("up_bytes")),
+                ))
+
+            inserted = 0
+            if not self.config.dry_run:
+                inserted = self.db.insert_icc_observe(rows)
+
+            self.logger.info(
+                f"  [3c] 본사 ICC 관측: {call_time:.3f}s "
+                f"(응답 {len(stations)}건, 등록기기 매칭 {matched}/{len(rows)}, 적재 {inserted}행)"
+            )
+        except Exception as e:
+            self.logger.warning(f"  [3c] 본사 ICC 관측 실패 (무시): {e}")
+
     def run_once(self):
         """폴링 1회 실행: SNMP + ICC → OR 연산 → presence_raw 적재."""
         cycle_start = time.time()
@@ -221,6 +295,9 @@ class Poller:
         snmp_macs = self._call_snmp()
         # [3b] 공덕 ICC 호출
         icc_macs = self._call_icc()
+
+        # [3c] 본사 ICC 관측 (판정 무관, 기록 전용 — 실패해도 사이클 진행)
+        self._observe_icc_hq(snmp_macs, devices)
 
         # 둘 다 실패: 사이클 SKIP (false offline 방지)
         if snmp_macs is None and icc_macs is None:
@@ -382,6 +459,7 @@ class Poller:
         self.logger.info(
             f"DRY_RUN={self.config.dry_run}, LOG_LEVEL={self.config.log_level}, "
             f"ICC_URL={self.config.icc_url}, SITE_ID={self.config.icc_site_id}, "
+            f"ICC_HQ_SITE_ID={self.config.icc_hq_site_id}, "
             f"NOTIFIER={'활성' if self.config.notifier_webhook_url else '비활성'} "
             f"(timeout={self.config.notifier_timeout}s, "
             f"queue_max={self.config.notifier_queue_max}, "
