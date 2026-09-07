@@ -213,3 +213,18 @@ class Database:
                 rows,
             )
         return len(rows)
+
+    def cleanup_icc_observe(self, retain_days: int) -> int:
+        """hr.icc_hq_observe 에서 retain_days 보다 오래된 행 삭제. 삭제 행 수 반환.
+
+        관측 전용 테이블이라 실패해도 호출자가 삼킨다.
+        삭제 대상이 없으면 0을 반환하고 즉시 끝난다.
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                "DELETE FROM hr.icc_hq_observe "
+                "WHERE observed_at < now() - make_interval(days => %s)",
+                (retain_days,),
+            )
+            return c.rowcount or 0

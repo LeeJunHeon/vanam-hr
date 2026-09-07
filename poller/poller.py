@@ -57,6 +57,10 @@ class Poller:
                 password=self.config.icc_password,
                 site_id=self.config.icc_hq_site_id,
             )
+        # 관측은 폴링(60초)보다 성긴 주기로 적재한다. 0.0 = 첫 사이클에 바로 1회 수행.
+        self._icc_hq_last_observe: float = 0.0
+        # 관측 데이터 정리를 수행한 날짜(KST 'YYYY-MM-DD'). 날짜가 바뀌면 하루 1회 실행.
+        self._icc_hq_last_cleanup_date: str | None = None
         self.notifier = Notifier(
             webhook_url=self.config.notifier_webhook_url,
             logger=self.logger,
@@ -204,9 +208,19 @@ class Poller:
 
         판정에 전혀 관여하지 않는다. 실패는 warning 1줄만 남기고 삼킨다.
         SNMP 결과와 나란히 기록해 두 소스의 차이를 사후 분석하기 위한 것.
+
+        ICC_HQ_OBSERVE_INTERVAL_SEC(기본 300초) 간격으로만 적재한다.
+        매 폴링 사이클(60초)마다 넣으면 하루 28,000행이 쌓여 DB가 과도하게 커진다.
         """
         if self.icc_hq is None:
             return
+        # 적재 간격 게이트. 두 소스의 끊김 시차가 6~11분 단위라 5분 해상도로 충분하다.
+        now_ts = time.time()
+        if now_ts - self._icc_hq_last_observe < self.config.icc_hq_observe_interval_sec:
+            return
+        # try 밖에서 먼저 갱신한다. ICC 장애 시 매 사이클 재시도하지 않도록.
+        self._icc_hq_last_observe = now_ts
+        self._cleanup_icc_observe()
         try:
             t0 = time.time()
             stations = self.icc_hq.get_stations()
@@ -263,6 +277,29 @@ class Poller:
             )
         except Exception as e:
             self.logger.warning(f"  [3c] 본사 ICC 관측 실패 (무시): {e}")
+
+    def _cleanup_icc_observe(self) -> None:
+        """관측 데이터 보존 기간 정리. KST 날짜 기준 하루 1회만 수행.
+
+        관측 테이블을 만드는 쪽이 치우도록 폴러에 둔다(aggregator 무관).
+        실패해도 warning 1줄만 남기고 관측·판정은 그대로 진행한다.
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._icc_hq_last_cleanup_date == today:
+            return
+        # 실패해도 오늘은 재시도하지 않는다(매 관측마다 DELETE 시도하는 것 방지).
+        self._icc_hq_last_cleanup_date = today
+        if self.config.dry_run:
+            return
+        try:
+            deleted = self.db.cleanup_icc_observe(self.config.icc_hq_observe_retain_days)
+            if deleted > 0:
+                self.logger.info(
+                    f"  [3c] 관측 데이터 정리: {deleted}행 삭제 "
+                    f"({self.config.icc_hq_observe_retain_days}일 이전)"
+                )
+        except Exception as e:
+            self.logger.warning(f"  [3c] 관측 데이터 정리 실패 (무시): {e}")
 
     def run_once(self):
         """폴링 1회 실행: SNMP + ICC → OR 연산 → presence_raw 적재."""
@@ -459,7 +496,9 @@ class Poller:
         self.logger.info(
             f"DRY_RUN={self.config.dry_run}, LOG_LEVEL={self.config.log_level}, "
             f"ICC_URL={self.config.icc_url}, SITE_ID={self.config.icc_site_id}, "
-            f"ICC_HQ_SITE_ID={self.config.icc_hq_site_id}, "
+            f"ICC_HQ_SITE_ID={self.config.icc_hq_site_id}"
+            f"({self.config.icc_hq_observe_interval_sec}s 간격, "
+            f"{self.config.icc_hq_observe_retain_days}일 보존), "
             f"NOTIFIER={'활성' if self.config.notifier_webhook_url else '비활성'} "
             f"(timeout={self.config.notifier_timeout}s, "
             f"queue_max={self.config.notifier_queue_max}, "
