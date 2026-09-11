@@ -4,6 +4,7 @@ import { applyCorrectionToDaily } from "@/lib/attendance-correction";
 import { getRemainingDays, getHolidaySet, countBusinessDays } from "@/lib/annual-leave";
 import { resolveApprovers } from "@/lib/approval-resolver";
 import { getBusinessTripCategoryId } from "@/lib/trip-calendar";
+import { createCalendarEvent } from "@/lib/calendar-event";
 
 function parseDate(s: string | null | undefined): Date | null {
   if (!s || typeof s !== "string") return null;
@@ -289,6 +290,55 @@ export async function createAttendanceRequest(
 
     return req;
   });
+
+  // 자동승인 + 캘린더 정보 있으면 → Google Calendar 등록
+  // (approvals/route.ts 의 결재 승인 시 캘린더 등록과 동일한 조건/로직.
+  //  자동승인 신청은 approvals API를 거치지 않으므로 여기서 반드시 처리해야
+  //  누락되지 않는다 — 트랜잭션 밖에서 실행, 실패해도 신청 생성 자체는 유지)
+  if (isAutoApproved) {
+    const finalRequest = await prisma.attendanceRequest.findUnique({
+      where: { id: created.id },
+      include: {
+        calendarSource: { select: { calendarId: true, calendarName: true } },
+      },
+    });
+
+    if (
+      finalRequest?.calendarSource &&
+      finalRequest.calendarEventTitle &&
+      !finalRequest.externalEventId // 이미 등록된 경우 중복 방지
+    ) {
+      try {
+        const calendarEventId = await createCalendarEvent({
+          calendarId: finalRequest.calendarSource.calendarId,
+          summary: finalRequest.calendarEventTitle,
+          description: finalRequest.calendarEventDescription ?? "",
+          startDate: finalRequest.startDate,
+          endDate: finalRequest.endDate,
+          correctedCheckIn: finalRequest.correctedCheckIn,
+          correctedCheckOut: finalRequest.correctedCheckOut,
+        });
+        if (calendarEventId) {
+          await prisma.attendanceRequest.update({
+            where: { id: created.id },
+            data: {
+              externalSource: "hr",
+              externalEventId: calendarEventId,
+            },
+          });
+          console.log(
+            `[create-attendance-request] 캘린더 등록 완료: eventId=${calendarEventId}`
+          );
+        }
+      } catch (e) {
+        console.error(
+          `[create-attendance-request] 캘린더 등록 실패 (신청은 유지):`,
+          e
+        );
+        // 캘린더 실패해도 신청은 유지 (멱등적 — 관리자가 수동 등록하면 됨)
+      }
+    }
+  }
 
   // 결재 요청 알림 — 자동승인이 아니고 결재자가 있을 때만
   if (!isAutoApproved && approverIds.length > 0) {

@@ -9,6 +9,7 @@ import { createNotifications } from "@/lib/notify";
 import { applyCorrectionToDaily } from "@/lib/attendance-correction";
 import { sweepEligibleDelegations } from "@/lib/sweep-delegations";
 import { getRemainingDays, getHolidaySet, countBusinessDays } from "@/lib/annual-leave";
+import { createCalendarEvent } from "@/lib/calendar-event";
 
 // 결재함 조회 시 위임 자동 마감을 throttle로 트리거(B). 모듈 레벨 상태.
 const DELEGATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 결재함 조회 트리거 throttle
@@ -28,73 +29,6 @@ const TRIP_CATEGORY = {
 function hhmmFromTime(d: Date | null | undefined): string | null {
   if (!d) return null;
   return d.toISOString().slice(11, 16);
-}
-
-// Phase 6-2E: 캘린더 일정 등록 (calendar-syncer POST 호출).
-// 성공 시 event_id 반환. 실패 시 throw (호출자가 try/catch로 결재 자체는 유지).
-interface CreateEventParams {
-  calendarId: string;
-  summary: string;
-  description: string;
-  startDate: Date;
-  endDate: Date;
-  correctedCheckIn: Date | null;
-  correctedCheckOut: Date | null;
-}
-
-async function createCalendarEvent(
-  p: CreateEventParams
-): Promise<string | null> {
-  const base = process.env.CALENDAR_SYNCER_URL;
-  if (!base) throw new Error("CALENDAR_SYNCER_URL env not set");
-
-  // 종일 vs 시간 지정 판단
-  // Phase 6-2G: 한쪽만 있어도 종일로 안전 처리 (런타임 에러 방지 — null!.toISOString() 방지)
-  const isAllDay = !p.correctedCheckIn || !p.correctedCheckOut;
-
-  let startObj: Record<string, string>;
-  let endObj: Record<string, string>;
-  if (isAllDay) {
-    // 종일: start.date, end.date (Google API exclusive end → +1일)
-    const sYmd = p.startDate.toISOString().split("T")[0];
-    const eDate = new Date(p.endDate);
-    eDate.setUTCDate(eDate.getUTCDate() + 1);
-    const eYmd = eDate.toISOString().split("T")[0];
-    startObj = { date: sYmd };
-    endObj = { date: eYmd };
-  } else {
-    // 시간 지정: dateTime + timeZone (KST)
-    startObj = {
-      dateTime: p.correctedCheckIn!.toISOString(),
-      timeZone: "Asia/Seoul",
-    };
-    endObj = {
-      dateTime: p.correctedCheckOut!.toISOString(),
-      timeZone: "Asia/Seoul",
-    };
-  }
-
-  const url = `${base}/internal/calendar-event`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Internal-Token": process.env.INTERNAL_API_TOKEN ?? "",
-    },
-    body: JSON.stringify({
-      calendar_id: p.calendarId,
-      vanam_source: "hr",
-      summary: p.summary,
-      description: p.description,
-      start: startObj,
-      end: endObj,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`calendar-syncer POST failed: ${res.status}`);
-  }
-  const data = await res.json();
-  return data.eventId ?? data.event_id ?? data.id ?? null;
 }
 
 // Phase 7 3단계: 출장 결재 항목 1개(이벤트 묶음)를 빌드.
