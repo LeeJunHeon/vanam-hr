@@ -80,6 +80,9 @@ class Poller:
         self.icc_state: str = "ok"
         self.snmp_fail_started_at: datetime | None = None
         self.icc_fail_started_at: datetime | None = None
+        # 본사 ICC 판정 상태 (ICC_HQ_SITE_ID>0 일 때만 사용, 상태 전환 알림용)
+        self.icc_hq_presence_state = "ok"
+        self.icc_hq_presence_fail_started_at: datetime | None = None
 
     def _ensure_initial_states_loaded(self):
         """폴러 시작 후 첫 사이클에 활성 디바이스의 마지막 상태+location 로드."""
@@ -200,6 +203,58 @@ class Poller:
                     f"시각: {datetime.now():%Y-%m-%d %H:%M:%S} KST\n"
                     f"에러: {e}\n"
                     f"조치: ICC 컨테이너/공덕 라우터 상태 확인 필요"
+                )
+            return None
+
+    def _call_icc_hq_presence(self) -> set[str] | None:
+        """본사 ICC(site_id=ICC_HQ_SITE_ID) 판정용 호출. 성공 시 MAC set 반환, 실패 시 None.
+
+        _observe_icc_hq() 와는 별개 경로다 — 그쪽은 6분 간격 관측 전용이고,
+        이 메서드는 매 사이클(60초) 판정에 쓰인다. self.icc_hq(IccClient)만 공유한다.
+
+        상태 전환 시 (ok→fail, fail→ok) 알림 발송. self.icc_hq 가 None
+        (ICC_HQ_SITE_ID=0)이면 항상 None 반환 — 호출부에서 이를 "판정 비활성"으로 처리한다.
+        """
+        if self.icc_hq is None:
+            return None
+        try:
+            t0 = time.time()
+            stations = self.icc_hq.get_stations()
+            call_time = time.time() - t0
+            macs = {
+                (s.get("mac") or "").replace(":", "").replace("-", "").lower()
+                for s in stations
+                if s.get("mac")
+            }
+            self.logger.info(
+                f"  [3d] 본사 ICC 판정: {call_time:.3f}s ({len(macs)}건 응답)"
+            )
+            if self.icc_hq_presence_state == "fail":
+                downtime = (
+                    datetime.now() - self.icc_hq_presence_fail_started_at
+                    if self.icc_hq_presence_fail_started_at
+                    else None
+                )
+                downtime_str = f"{downtime.total_seconds():.0f}초" if downtime else "?"
+                self.notifier.send(
+                    f"✅ [HR Poller] 본사 ICC(판정) 복구\n"
+                    f"시각: {datetime.now():%Y-%m-%d %H:%M:%S} KST\n"
+                    f"다운타임: {downtime_str}\n"
+                    f"이 기간 동안 본사 판정은 SNMP로 자동 폴백되었습니다."
+                )
+                self.icc_hq_presence_state = "ok"
+                self.icc_hq_presence_fail_started_at = None
+            return macs
+        except Exception as e:
+            self.logger.warning(f"  [3d] 본사 ICC 판정 실패 (SNMP로 폴백): {e}")
+            if self.icc_hq_presence_state == "ok":
+                self.icc_hq_presence_state = "fail"
+                self.icc_hq_presence_fail_started_at = datetime.now()
+                self.notifier.send(
+                    f"🚨 [HR Poller] 본사 ICC(판정) 실패\n"
+                    f"시각: {datetime.now():%Y-%m-%d %H:%M:%S} KST\n"
+                    f"에러: {e}\n"
+                    f"본사 판정을 SNMP 단독으로 임시 전환합니다. 이중화 상실 상태이니 확인 필요."
                 )
             return None
 
@@ -332,12 +387,17 @@ class Poller:
         snmp_macs = self._call_snmp()
         # [3b] 공덕 ICC 호출
         icc_macs = self._call_icc()
+        # [3d] 본사 ICC 판정 호출 (ICC_HQ_SITE_ID=0 이면 항상 None → 아래서 SNMP 그대로 사용)
+        icc_hq_macs = self._call_icc_hq_presence()
 
         # [3c] 본사 ICC 관측 (판정 무관, 기록 전용 — 실패해도 사이클 진행)
         self._observe_icc_hq(snmp_macs, devices)
 
-        # 둘 다 실패: 사이클 SKIP (false offline 방지)
-        if snmp_macs is None and icc_macs is None:
+        # 본사(SNMP, ICC_HQ)와 공덕(ICC) 모두 실패했을 때만 SKIP (false offline 방지).
+        # ICC_HQ_SITE_ID=0(비활성)이면 icc_hq_macs는 항상 None이므로, 이 조건은
+        # 기존과 동일하게 "SNMP도 공덕 ICC도 실패"로 좁혀진다.
+        hq_all_failed = snmp_macs is None and (self.icc_hq is None or icc_hq_macs is None)
+        if hq_all_failed and icc_macs is None:
             self.logger.warning(
                 "  [⚠️ SKIP] 본사 + 공덕 모두 실패 — 이번 사이클 처리 안 함"
             )
@@ -350,9 +410,22 @@ class Poller:
             return
 
         # [4] OR 연산 + location 결정
-        # snmp_macs / icc_macs는 set 또는 None
-        snmp_set = snmp_macs if snmp_macs is not None else set()
+        # snmp_macs / icc_macs(공덕)는 set 또는 None
         icc_set = icc_macs if icc_macs is not None else set()
+
+        # 본사 판정 소스 결정: ICC_HQ가 응답했으면 그 결과를 쓴다(스테일 없음).
+        # ICC_HQ가 비활성(None)이거나 이번 사이클 호출이 실패했으면 SNMP로 폴백한다.
+        # 단순 OR이 아니라 "우선순위"인 이유: SNMP가 유령(stale)으로 True를 내면
+        # OR 결과도 True가 되어버려 스테일이 전혀 안 잡히기 때문이다(09-01, 09-10 사고).
+        if self.icc_hq is not None and icc_hq_macs is not None:
+            hq_set = icc_hq_macs
+            hq_source_is_icc = True
+        else:
+            hq_set = snmp_macs if snmp_macs is not None else set()
+            hq_source_is_icc = False
+        snmp_set = hq_set  # 이하 기존 코드가 참조하는 snmp_set 이름은 유지한다.
+        if not hq_source_is_icc and self.icc_hq is not None:
+            self.logger.info("  [4] 본사 판정: SNMP 폴백 사용 (ICC_HQ 실패)")
 
         # 양쪽 동시 감지 체크 (이상 케이스, 알림)
         # 단, 운영 시작 초기에는 거의 발생 안 함. devices 테이블의 MAC 기준만 체크.
@@ -499,6 +572,7 @@ class Poller:
             f"ICC_HQ_SITE_ID={self.config.icc_hq_site_id}"
             f"({self.config.icc_hq_observe_interval_sec}s 간격, "
             f"{self.config.icc_hq_observe_retain_days}일 보존), "
+            f"본사판정={'ICC우선/SNMP폴백' if self.config.icc_hq_site_id > 0 else 'SNMP단독'}, "
             f"NOTIFIER={'활성' if self.config.notifier_webhook_url else '비활성'} "
             f"(timeout={self.config.notifier_timeout}s, "
             f"queue_max={self.config.notifier_queue_max}, "
