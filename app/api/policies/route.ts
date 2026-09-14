@@ -63,20 +63,35 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    const trimmed = String(value).trim();
+
+    // 알림 채널 키(notify_{type}_{app|email|push})는 코드에서 알림 타입을 추가할 때마다
+    // 새로 생기므로, 행이 없어도 생성을 허용한다. 그 외 키는 기존대로 DB 직접 작업만 허용.
+    const isNotifyChannelKey = /^notify_[a-z0-9_]+_(app|email|push)$/.test(key);
+
     const exists = await prisma.policySetting.findUnique({
       where: { key },
     });
-    if (!exists) {
+
+    if (!exists && !isNotifyChannelKey) {
       return NextResponse.json(
         { error: `정책 "${key}"가 존재하지 않습니다. 정책 추가는 DB 직접 작업이 필요합니다.` },
         { status: 404 }
       );
     }
 
-    const policy = await prisma.policySetting.update({
-      where: { key },
-      data: { value: String(value).trim() },
-    });
+    const policy = exists
+      ? await prisma.policySetting.update({
+          where: { key },
+          data: { value: trimmed },
+        })
+      : await prisma.policySetting.create({
+          data: {
+            key,
+            value: trimmed,
+            description: `알림 채널 설정 (${key}) — 설정 화면에서 자동 생성`,
+          },
+        });
 
     return NextResponse.json({
       key: policy.key,
