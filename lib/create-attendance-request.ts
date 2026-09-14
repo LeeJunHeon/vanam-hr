@@ -5,6 +5,7 @@ import { getRemainingDays, getHolidaySet, countBusinessDays } from "@/lib/annual
 import { resolveApprovers } from "@/lib/approval-resolver";
 import { getBusinessTripCategoryId } from "@/lib/trip-calendar";
 import { createCalendarEvent } from "@/lib/calendar-event";
+import { notifyTeamOfApprovedRequest } from "@/lib/team-schedule-notify";
 
 function parseDate(s: string | null | undefined): Date | null {
   if (!s || typeof s !== "string") return null;
@@ -338,6 +339,11 @@ export async function createAttendanceRequest(
         // 캘린더 실패해도 신청은 유지 (멱등적 — 관리자가 수동 등록하면 됨)
       }
     }
+  }
+
+  // 자동승인이면 팀 일정 알림 (트랜잭션 밖, 실패해도 신청 유지)
+  if (isAutoApproved) {
+    await notifyTeamOfApprovedRequest(created.id, "create-attendance-request");
   }
 
   // 결재 요청 알림 — 자동승인이 아니고 결재자가 있을 때만

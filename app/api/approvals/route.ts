@@ -11,6 +11,7 @@ import { getRemainingDays, getHolidaySet, countBusinessDays } from "@/lib/annual
 import {
   applyApprovedRequestToDaily,
   syncApprovedRequestToCalendar,
+  notifyTeamOfApprovedRequest,
 } from "@/lib/finalize-approval";
 
 // 결재함 조회 시 위임 자동 마감을 throttle로 트리거(B). 모듈 레벨 상태.
@@ -814,6 +815,7 @@ export async function PUT(request: NextRequest) {
     let calendarEventId: string | null = null;
     if (action === "approve") {
       calendarEventId = await syncApprovedRequestToCalendar(idNum, "approval");
+      await notifyTeamOfApprovedRequest(idNum, "approval");
     }
 
     // ── 결재 결과 알림 (신청자에게) ──────────────────────────

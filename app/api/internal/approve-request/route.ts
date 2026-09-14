@@ -5,6 +5,7 @@ import { resolveHrIdentity } from "@/lib/internal-identity";
 import {
   applyApprovedRequestToDaily,
   syncApprovedRequestToCalendar,
+  notifyTeamOfApprovedRequest,
 } from "@/lib/finalize-approval";
 import { createNotifications } from "@/lib/notify";
 
@@ -103,6 +104,7 @@ async function processOne(
     // 캘린더 등록 (트랜잭션 밖). approvals 경로와 동일 — 여기 빠져 있어서
     // 내부 API 승인 건이 캘린더에 반영되지 않던 버그 수정(2026-09).
     await syncApprovedRequestToCalendar(t.id, "internal-approve");
+    await notifyTeamOfApprovedRequest(t.id, "internal-approve");
 
     if (t.employeeId !== approverId) {
       try {

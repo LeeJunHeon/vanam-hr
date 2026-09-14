@@ -424,6 +424,7 @@ model AttendanceRequest {
   approvedByIds            Int[]     @default([]) @map("approved_by_ids")
   approvedAt               DateTime? @map("approved_at") @db.Timestamptz(6)
   rejectReason             String?   @map("reject_reason")
+  teamNotifiedAt           DateTime? @map("team_notified_at") @db.Timestamptz(6)
   requestedAt              DateTime  @default(now()) @map("requested_at") @db.Timestamptz(6)
   updatedAt                DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 

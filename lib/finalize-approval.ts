@@ -173,3 +173,6 @@ export async function syncApprovedRequestToCalendar(
     return null;
   }
 }
+
+// 팀 일정 알림 — 호출부가 finalize-approval 하나만 import 하면 되도록 re-export.
+export { notifyTeamOfApprovedRequest } from "@/lib/team-schedule-notify";

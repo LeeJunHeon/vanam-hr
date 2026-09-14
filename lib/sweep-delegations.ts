@@ -3,6 +3,7 @@ import { createNotifications } from "@/lib/notify";
 import {
   applyApprovedRequestToDaily,
   syncApprovedRequestToCalendar,
+  notifyTeamOfApprovedRequest,
 } from "@/lib/finalize-approval";
 
 // 대리 위임 자동 마감 스윕 공용 함수.
@@ -81,6 +82,7 @@ export async function sweepEligibleDelegations(): Promise<number> {
       // 캘린더 등록 (트랜잭션 밖). approvals 경로와 동일 — 여기 빠져 있어서
       // 대리 24h 자동마감 건이 캘린더에 반영되지 않던 버그 수정(2026-09).
       await syncApprovedRequestToCalendar(req.id, "sweep-delegation");
+      await notifyTeamOfApprovedRequest(req.id, "sweep-delegation");
 
       // 결재 결과 알림 (신청자에게). 본인=대리결재자면 스킵.
       if (req.employeeId !== deputyId) {
