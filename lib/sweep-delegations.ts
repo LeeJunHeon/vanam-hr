@@ -1,21 +1,13 @@
 import { prisma } from "@/lib/prisma";
 import { createNotifications } from "@/lib/notify";
-import { applyCorrectionToDaily } from "@/lib/attendance-correction";
+import {
+  applyApprovedRequestToDaily,
+  syncApprovedRequestToCalendar,
+} from "@/lib/finalize-approval";
 
 // 대리 위임 자동 마감 스윕 공용 함수.
 // 대리결재자가 이미 승인했는데 위임 창(autoDelegateHours, 기본 24h) 경과 시점에
 // 자동 확정이 안 되는 구멍을 메운다. 결재함 조회 트리거(B)와 aggregator(A)가 공용으로 호출.
-
-// YYYY-MM-DD 배열 생성 (startDate ~ endDate inclusive) — approvals route와 동일 로직.
-function daysBetween(start: Date, end: Date): string[] {
-  const days: string[] = [];
-  const cur = new Date(start);
-  while (cur <= end) {
-    days.push(cur.toISOString().split("T")[0]);
-    cur.setUTCDate(cur.getUTCDate() + 1);
-  }
-  return days;
-}
 
 // 조건을 만족하는 pending 요청들을 최종 승인 처리한다. 처리 건수 반환.
 export async function sweepEligibleDelegations(): Promise<number> {
@@ -70,59 +62,25 @@ export async function sweepEligibleDelegations(): Promise<number> {
         });
         if (upd.count === 0) return false;
 
-        if (category.type === "correction") {
-          await applyCorrectionToDaily(tx, {
-            employeeId: req.employeeId,
-            workDate: req.startDate,
-            correctedCheckIn: req.correctedCheckIn,
-            correctedCheckOut: req.correctedCheckOut,
-            requestId: req.id,
-          });
-        } else if (category.type === "leave" || category.type === "work") {
-          const days = daysBetween(req.startDate, req.endDate);
-          for (const ymd of days) {
-            const wd = new Date(ymd + "T00:00:00.000Z");
-            const existing = await tx.attendanceDaily.findUnique({
-              where: {
-                employeeId_workDate: { employeeId: req.employeeId, workDate: wd },
-              },
-            });
-            await tx.attendanceDaily.upsert({
-              where: {
-                employeeId_workDate: { employeeId: req.employeeId, workDate: wd },
-              },
-              create: {
-                employeeId: req.employeeId,
-                workDate: wd,
-                checkIn: null,
-                checkOut: null,
-                categoryId: req.categoryId,
-                autoStatus: "normal",
-                // 휴가/외근은 지각·조퇴 판정 면제 → 명시적 false
-                isLate: false,
-                isEarlyLeave: false,
-                isOverridden: true,
-                overrideSource: "manual",
-                note: `결재 #${req.id} (${category.name})`,
-              },
-              update: {
-                categoryId: req.categoryId,
-                autoStatus: "normal",
-                // 휴가/외근은 지각·조퇴 판정 면제 → 명시적 false
-                isLate: false,
-                isEarlyLeave: false,
-                isOverridden: true,
-                overrideSource: "manual",
-                note: existing?.note ?? `결재 #${req.id} (${category.name})`,
-              },
-            });
-          }
-        }
+        await applyApprovedRequestToDaily(tx, {
+          id: req.id,
+          employeeId: req.employeeId,
+          categoryId: req.categoryId,
+          startDate: req.startDate,
+          endDate: req.endDate,
+          correctedCheckIn: req.correctedCheckIn,
+          correctedCheckOut: req.correctedCheckOut,
+          category: { type: category.type, name: category.name },
+        });
         return true;
       });
 
       // 이미 다른 경로에서 확정됐으면 알림/카운트 없이 다음으로.
       if (!didFinalize) continue;
+
+      // 캘린더 등록 (트랜잭션 밖). approvals 경로와 동일 — 여기 빠져 있어서
+      // 대리 24h 자동마감 건이 캘린더에 반영되지 않던 버그 수정(2026-09).
+      await syncApprovedRequestToCalendar(req.id, "sweep-delegation");
 
       // 결재 결과 알림 (신청자에게). 본인=대리결재자면 스킵.
       if (req.employeeId !== deputyId) {

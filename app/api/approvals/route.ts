@@ -6,10 +6,12 @@ import {
   rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
 import { createNotifications } from "@/lib/notify";
-import { applyCorrectionToDaily } from "@/lib/attendance-correction";
 import { sweepEligibleDelegations } from "@/lib/sweep-delegations";
 import { getRemainingDays, getHolidaySet, countBusinessDays } from "@/lib/annual-leave";
-import { createCalendarEvent } from "@/lib/calendar-event";
+import {
+  applyApprovedRequestToDaily,
+  syncApprovedRequestToCalendar,
+} from "@/lib/finalize-approval";
 
 // 결재함 조회 시 위임 자동 마감을 throttle로 트리거(B). 모듈 레벨 상태.
 const DELEGATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 결재함 조회 트리거 throttle
@@ -757,17 +759,6 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    // YYYY-MM-DD 배열 생성 (startDate ~ endDate inclusive)
-    function daysBetween(start: Date, end: Date): string[] {
-      const days: string[] = [];
-      const cur = new Date(start);
-      while (cur <= end) {
-        days.push(cur.toISOString().split("T")[0]);
-        cur.setUTCDate(cur.getUTCDate() + 1);
-      }
-      return days;
-    }
-
     const result = await prisma.$transaction(async (tx) => {
       // 1) attendance_request 상태 업데이트
       //    Phase 6-2E: 결재자가 캘린더 정보 수정한 경우 함께 반영 (undefined는 유지)
@@ -804,73 +795,16 @@ export async function PUT(request: NextRequest) {
         return { updated, applied: 0 };
       }
 
-      let applied = 0;
-
-      if (category.type === "correction") {
-        await applyCorrectionToDaily(tx, {
-          employeeId: target.employeeId,
-          workDate: target.startDate,
-          correctedCheckIn: target.correctedCheckIn,
-          correctedCheckOut: target.correctedCheckOut,
-          requestId: updated.id,
-        });
-        applied = 1;
-      } else if (category.type === "leave" || category.type === "work") {
-        // 휴가 / 외근·출장·재택: startDate~endDate 각 날 categoryId 세팅
-        // 출퇴근 시각은 기존값 유지 (있으면 그대로, 없으면 NULL)
-        // auto_status='normal' 강제 (휴가/외근은 정상 처리)
-        const days = daysBetween(target.startDate, target.endDate);
-
-        for (const ymd of days) {
-          const wd = new Date(ymd + "T00:00:00.000Z");
-
-          const existing = await tx.attendanceDaily.findUnique({
-            where: {
-              employeeId_workDate: {
-                employeeId: target.employeeId,
-                workDate: wd,
-              },
-            },
-          });
-
-          await tx.attendanceDaily.upsert({
-            where: {
-              employeeId_workDate: {
-                employeeId: target.employeeId,
-                workDate: wd,
-              },
-            },
-            create: {
-              employeeId: target.employeeId,
-              workDate: wd,
-              checkIn: null,
-              checkOut: null,
-              categoryId: target.categoryId,
-              autoStatus: "normal",
-              // 휴가/외근은 지각·조퇴 판정 면제 → 명시적 false
-              isLate: false,
-              isEarlyLeave: false,
-              isOverridden: true,
-              overrideSource: "calendar", // leave/work는 시각을 주장하지 않으므로 잠그지 않는다.
-              // 'calendar' = 요청 기반 자동 보정 — aggregator 재갱신 허용
-              note: `결재 #${updated.id} (${category.name})`,
-            },
-            update: {
-              categoryId: target.categoryId,
-              autoStatus: "normal",
-              // 휴가/외근은 지각·조퇴 판정 면제 → 명시적 false
-              isLate: false,
-              isEarlyLeave: false,
-              isOverridden: true,
-              overrideSource: "calendar", // leave/work는 시각을 주장하지 않으므로 잠그지 않는다.
-              // 'calendar' = 요청 기반 자동 보정 — aggregator 재갱신 허용
-              note: existing?.note ?? `결재 #${updated.id} (${category.name})`,
-            },
-          });
-          applied++;
-        }
-      }
-      // 그 외 카테고리 type (없음 — correction/leave/work 3종만)
+      const applied = await applyApprovedRequestToDaily(tx, {
+        id: updated.id,
+        employeeId: target.employeeId,
+        categoryId: target.categoryId,
+        startDate: target.startDate,
+        endDate: target.endDate,
+        correctedCheckIn: target.correctedCheckIn,
+        correctedCheckOut: target.correctedCheckOut,
+        category: { type: category.type, name: category.name },
+      });
 
       return { updated, applied };
     });
@@ -879,45 +813,7 @@ export async function PUT(request: NextRequest) {
     // (transaction 밖에서 실행 — 외부 API 호출은 트랜잭션 안에 두지 않음)
     let calendarEventId: string | null = null;
     if (action === "approve") {
-      const finalRequest = await prisma.attendanceRequest.findUnique({
-        where: { id: idNum },
-        include: {
-          calendarSource: { select: { calendarId: true, calendarName: true } },
-        },
-      });
-
-      if (
-        finalRequest?.calendarSource &&
-        finalRequest.calendarEventTitle &&
-        !finalRequest.externalEventId // 이미 등록된 경우 중복 방지
-      ) {
-        try {
-          calendarEventId = await createCalendarEvent({
-            calendarId: finalRequest.calendarSource.calendarId,
-            summary: finalRequest.calendarEventTitle,
-            description: finalRequest.calendarEventDescription ?? "",
-            startDate: finalRequest.startDate,
-            endDate: finalRequest.endDate,
-            correctedCheckIn: finalRequest.correctedCheckIn,
-            correctedCheckOut: finalRequest.correctedCheckOut,
-          });
-          if (calendarEventId) {
-            await prisma.attendanceRequest.update({
-              where: { id: idNum },
-              data: {
-                externalSource: "hr",
-                externalEventId: calendarEventId,
-              },
-            });
-            console.log(
-              `[approval] 캘린더 등록 완료: eventId=${calendarEventId}`
-            );
-          }
-        } catch (e) {
-          console.error(`[approval] 캘린더 등록 실패 (결재는 유지):`, e);
-          // 캘린더 실패해도 결재는 유지 (멱등적 — 관리자가 수동 등록하면 됨)
-        }
-      }
+      calendarEventId = await syncApprovedRequestToCalendar(idNum, "approval");
     }
 
     // ── 결재 결과 알림 (신청자에게) ──────────────────────────

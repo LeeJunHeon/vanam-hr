@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireHrWriteAuth } from "@/lib/internal-write-auth";
 import { resolveHrIdentity } from "@/lib/internal-identity";
-import { applyCorrectionToDaily } from "@/lib/attendance-correction";
+import {
+  applyApprovedRequestToDaily,
+  syncApprovedRequestToCalendar,
+} from "@/lib/finalize-approval";
 import { createNotifications } from "@/lib/notify";
 
 export const dynamic = "force-dynamic";
@@ -13,23 +16,12 @@ function isDelegationElapsed(requestedAt: Date, hours: number): boolean {
   return elapsed >= hours * 60 * 60 * 1000;
 }
 
-// startDate~endDate inclusive YYYY-MM-DD 배열 (웹 approvals 라우트와 동일)
-function daysBetween(start: Date, end: Date): string[] {
-  const days: string[] = [];
-  const cur = new Date(start);
-  while (cur <= end) {
-    days.push(cur.toISOString().split("T")[0]);
-    cur.setUTCDate(cur.getUTCDate() + 1);
-  }
-  return days;
-}
-
 type ProcessResult =
   | { ok: true; id: number; status: string; finalized: boolean }
   | { ok: false; id: number; reason: string };
 
 // 근태 신청 1건 결재. 웹 PUT(kind=attendance) finalize 규칙과 동일.
-// ⚠️ 캘린더 등록(Google)만 제외 — 웹에서 처리. correction/leave/work의 attendance_daily 반영은 동일.
+// attendance_daily 반영 + 캘린더 등록 모두 lib/finalize-approval 공용 함수로 처리 (웹과 동일).
 async function processOne(
   t: {
     id: number; employeeId: number; categoryId: number;
@@ -96,45 +88,21 @@ async function processOne(
         },
       });
 
-      if (category.type === "correction") {
-        await applyCorrectionToDaily(tx, {
-          employeeId: t.employeeId,
-          workDate: t.startDate,
-          correctedCheckIn: t.correctedCheckIn,
-          correctedCheckOut: t.correctedCheckOut,
-          requestId: t.id,
-        });
-      } else if (category.type === "leave" || category.type === "work") {
-        const days = daysBetween(t.startDate, t.endDate);
-        for (const ymd of days) {
-          const wd = new Date(ymd + "T00:00:00.000Z");
-          const existing = await tx.attendanceDaily.findUnique({
-            where: { employeeId_workDate: { employeeId: t.employeeId, workDate: wd } },
-          });
-          await tx.attendanceDaily.upsert({
-            where: { employeeId_workDate: { employeeId: t.employeeId, workDate: wd } },
-            create: {
-              employeeId: t.employeeId, workDate: wd, checkIn: null, checkOut: null,
-              categoryId: t.categoryId, autoStatus: "normal", isOverridden: true,
-              // 휴가/외근은 지각·조퇴 판정 면제 → 명시적 false
-              isLate: false, isEarlyLeave: false,
-              // leave/work는 시각을 주장하지 않으므로 잠그지 않는다.
-              // 'calendar' = 요청 기반 자동 보정 — aggregator 재갱신 허용
-              overrideSource: "calendar", note: `결재 #${t.id} (${category.name})`,
-            },
-            update: {
-              categoryId: t.categoryId, autoStatus: "normal", isOverridden: true,
-              // 휴가/외근은 지각·조퇴 판정 면제 → 명시적 false
-              isLate: false, isEarlyLeave: false,
-              // leave/work는 시각을 주장하지 않으므로 잠그지 않는다.
-              // 'calendar' = 요청 기반 자동 보정 — aggregator 재갱신 허용
-              overrideSource: "calendar",
-              note: existing?.note ?? `결재 #${t.id} (${category.name})`,
-            },
-          });
-        }
-      }
+      await applyApprovedRequestToDaily(tx, {
+        id: t.id,
+        employeeId: t.employeeId,
+        categoryId: t.categoryId,
+        startDate: t.startDate,
+        endDate: t.endDate,
+        correctedCheckIn: t.correctedCheckIn,
+        correctedCheckOut: t.correctedCheckOut,
+        category: { type: category.type, name: category.name },
+      });
     });
+
+    // 캘린더 등록 (트랜잭션 밖). approvals 경로와 동일 — 여기 빠져 있어서
+    // 내부 API 승인 건이 캘린더에 반영되지 않던 버그 수정(2026-09).
+    await syncApprovedRequestToCalendar(t.id, "internal-approve");
 
     if (t.employeeId !== approverId) {
       try {
