@@ -109,6 +109,9 @@ export async function computeSystemUsedDays(
       status: { in: ["approved", "auto_approved", "auto_delegated"] },
       startDate: { gte: yearStart, lte: yearEnd },
       category: { annualLeaveDeduct: { gt: 0 } },
+      // 연차는 HR 시스템 신청만 차감한다. 구글 캘린더에 따로 적어둔 같은 일정을
+      // syncer 가 자동 생성한 요청(calendar_auto)까지 합산하면 이중 차감된다.
+      requestType: { not: "calendar_auto" },
     },
     select: {
       startDate: true,
@@ -215,6 +218,8 @@ export async function getLeaveDetailItems(
       status: { in: ["approved", "auto_approved", "auto_delegated"] },
       startDate: { gte: yearStart, lte: yearEnd },
       category: { annualLeaveDeduct: { gt: 0 } },
+      // 위와 동일 — 집계와 목록이 어긋나지 않도록 같은 필터
+      requestType: { not: "calendar_auto" },
     },
     orderBy: [{ startDate: "desc" }],
     select: {

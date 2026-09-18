@@ -177,8 +177,42 @@ class Database:
             corrected_check_out: 시간 지정 일정의 종료 시각 (TIMESTAMPTZ), 종일은 None
 
         Returns:
-            INSERT/UPDATE된 attendance_request id
+            INSERT/UPDATE된 attendance_request id (HR 신청과 겹쳐 생성하지 않으면 -1)
         """
+        # HR 시스템에서 이미 신청·승인된 같은 기간의 요청이 있으면 새로 만들지 않는다.
+        # (연차를 HR 에 신청하고 구글 캘린더에도 적어두는 관행 때문에 중복이 생겼고,
+        #  연차 이중 차감으로 이어졌다. 2026-09 수정)
+        # 단, 이 이벤트로 이미 만들어 둔 행이 있으면 UPDATE 해야 하므로 검사에서 제외한다.
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                SELECT id FROM hr.attendance_requests
+                WHERE employee_id = %s
+                  AND request_type <> 'calendar_auto'
+                  AND status IN ('approved', 'auto_approved', 'auto_delegated', 'pending')
+                  AND start_date <= %s::date
+                  AND end_date   >= %s::date
+                LIMIT 1
+                """,
+                (employee_id, end_date, start_date),
+            )
+            if c.fetchone():
+                # 이미 HR 신청이 있는 기간 → 캘린더발 요청을 만들지 않는다.
+                # 기존에 만들어 둔 행이 있으면 그 id 를 그대로 반환(갱신 경로 유지).
+                c.execute(
+                    """
+                    SELECT id FROM hr.attendance_requests
+                    WHERE external_source = 'google_calendar'
+                      AND external_event_id = %s
+                      AND employee_id = %s
+                    LIMIT 1
+                    """,
+                    (external_event_id, employee_id),
+                )
+                existing = c.fetchone()
+                return existing[0] if existing else -1
+
         sql = """
             INSERT INTO hr.attendance_requests (
                 employee_id, category_id, request_type,

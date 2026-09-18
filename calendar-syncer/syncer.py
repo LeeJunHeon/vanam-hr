@@ -734,10 +734,16 @@ class Syncer:
                             corrected_check_in=corrected_check_in,
                             corrected_check_out=corrected_check_out,
                         )
-                        per_event_matched += 1
-                        per_event_results.append(
-                            f"emp={emp_id}({email}) → req#{request_id} ✅"
-                        )
+                        if request_id > 0:
+                            per_event_matched += 1
+                            per_event_results.append(
+                                f"emp={emp_id}({email}) → req#{request_id} ✅"
+                            )
+                        else:
+                            # HR 신청과 기간이 겹쳐 생성하지 않음 (db.upsert_attendance_request 참조)
+                            per_event_results.append(
+                                f"emp={emp_id}({email}) → skip (HR 신청과 겹침)"
+                            )
                     except Exception as e:
                         self.logger.exception(
                             f"  [{cal_name}] UPSERT 실패 (emp={emp_id}, email={email}): {e}"
