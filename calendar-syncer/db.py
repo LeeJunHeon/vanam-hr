@@ -165,6 +165,8 @@ class Database:
 
         UNIQUE (external_source, external_event_id)로 중복 방지.
         캘린더 일정 수정 시 자동 UPDATE (employee/category/날짜/이유 모두 갱신).
+        신규 생성 시에는 같은 카테고리의 HR 신청과 기간이 겹치는지 검사해, 겹치면 만들지 않는다
+        (연차 이중 차감 방지). 이미 만들어 둔 행은 검사 없이 갱신한다.
 
         Args:
             employee_id: 매칭된 직원 ID
@@ -177,42 +179,9 @@ class Database:
             corrected_check_out: 시간 지정 일정의 종료 시각 (TIMESTAMPTZ), 종일은 None
 
         Returns:
-            INSERT/UPDATE된 attendance_request id (HR 신청과 겹쳐 생성하지 않으면 -1)
+            INSERT/UPDATE된 attendance_request id.
+            신규 생성인데 같은 카테고리의 HR 신청과 기간이 겹치면 -1 (생성하지 않음).
         """
-        # HR 시스템에서 이미 신청·승인된 같은 기간의 요청이 있으면 새로 만들지 않는다.
-        # (연차를 HR 에 신청하고 구글 캘린더에도 적어두는 관행 때문에 중복이 생겼고,
-        #  연차 이중 차감으로 이어졌다. 2026-09 수정)
-        # 단, 이 이벤트로 이미 만들어 둔 행이 있으면 UPDATE 해야 하므로 검사에서 제외한다.
-        self._ensure_connected()
-        with self.conn.cursor() as c:
-            c.execute(
-                """
-                SELECT id FROM hr.attendance_requests
-                WHERE employee_id = %s
-                  AND request_type <> 'calendar_auto'
-                  AND status IN ('approved', 'auto_approved', 'auto_delegated', 'pending')
-                  AND start_date <= %s::date
-                  AND end_date   >= %s::date
-                LIMIT 1
-                """,
-                (employee_id, end_date, start_date),
-            )
-            if c.fetchone():
-                # 이미 HR 신청이 있는 기간 → 캘린더발 요청을 만들지 않는다.
-                # 기존에 만들어 둔 행이 있으면 그 id 를 그대로 반환(갱신 경로 유지).
-                c.execute(
-                    """
-                    SELECT id FROM hr.attendance_requests
-                    WHERE external_source = 'google_calendar'
-                      AND external_event_id = %s
-                      AND employee_id = %s
-                    LIMIT 1
-                    """,
-                    (external_event_id, employee_id),
-                )
-                existing = c.fetchone()
-                return existing[0] if existing else -1
-
         sql = """
             INSERT INTO hr.attendance_requests (
                 employee_id, category_id, request_type,
@@ -242,6 +211,42 @@ class Database:
         """
         self._ensure_connected()
         with self.conn.cursor() as c:
+            # 이 구글 이벤트로 이미 만들어 둔 행이 있으면 겹침 검사 없이 그대로 UPSERT(=UPDATE) 한다.
+            # 캘린더에서 일정을 수정했을 때 그 변경이 반영되어야 하기 때문이다.
+            c.execute(
+                """
+                SELECT id FROM hr.attendance_requests
+                WHERE external_source = 'google_calendar'
+                  AND external_event_id = %s
+                  AND employee_id = %s
+                LIMIT 1
+                """,
+                (external_event_id, employee_id),
+            )
+            already_exists = c.fetchone() is not None
+
+            if not already_exists:
+                # 신규 생성일 때만 HR 신청과의 중복을 검사한다.
+                # 연차를 HR 에 신청하고 구글 캘린더에도 적어두는 관행 때문에 같은 일정이
+                # 2건이 되어 연차가 이중 차감됐다(215/224, 237/348). 2026-09 수정.
+                # 카테고리가 같을 때만 중복으로 본다 — 연차 기간에 겹치는 출장·재택 등
+                # 다른 종류의 일정까지 막으면 안 된다.
+                c.execute(
+                    """
+                    SELECT id FROM hr.attendance_requests
+                    WHERE employee_id = %s
+                      AND category_id = %s
+                      AND request_type <> 'calendar_auto'
+                      AND status IN ('approved', 'auto_approved', 'auto_delegated', 'pending')
+                      AND start_date <= %s::date
+                      AND end_date   >= %s::date
+                    LIMIT 1
+                    """,
+                    (employee_id, category_id, end_date, start_date),
+                )
+                if c.fetchone():
+                    return -1  # HR 신청과 같은 카테고리·겹치는 기간 → 캘린더발 요청을 만들지 않음
+
             c.execute(sql, (
                 employee_id, category_id,
                 start_date, end_date, reason,
