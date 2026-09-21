@@ -328,7 +328,8 @@ class Database:
         활성 직원 목록. 연차/출장/외근(category 있음)·휴무(행 없음)는 직전 근무일
         탐색에서 자동 제외된다.
 
-        반환: [{id, name, email, work_date(date), auto_status}, ...]
+        반환: [{id, name, email, work_date(date), auto_status, is_late, is_early_leave}, ...]
+              is_late/is_early_leave 는 알림 문구 조합용(auto_status 는 하나만 담기므로).
         - work_date < CURRENT_DATE (오늘 이전; CURRENT_DATE는 KST 날짜)
         - 직전 근무일 = category_id IS NULL AND auto_status IS NOT NULL 인 가장 최근 일자
         - 공휴일(hr.holidays)은 직전 근무일 탐색에서 제외
@@ -339,10 +340,12 @@ class Database:
             c.execute(
                 """
                 SELECT e.id, e.name, e.email,
-                       sub.work_date, sub.auto_status
+                       sub.work_date, sub.auto_status,
+                       sub.is_late, sub.is_early_leave
                 FROM hr.employees e
                 JOIN LATERAL (
-                    SELECT d.work_date, d.auto_status
+                    SELECT d.work_date, d.auto_status,
+                           d.is_late, d.is_early_leave
                     FROM hr.attendance_daily d
                     WHERE d.employee_id = e.id
                       AND d.category_id IS NULL

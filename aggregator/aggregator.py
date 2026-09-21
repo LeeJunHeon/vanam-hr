@@ -1207,7 +1207,19 @@ class Aggregator:
 
             # 알림 본문 작성 (기존 톤 유지) → createNotifications 경유로 발송
             name = p.get("name", "")
-            status_label = status_kr.get(status, status)
+            # auto_status 는 하나만 담기므로(지각이면 조퇴 검사를 건너뜀) 문구는
+            # is_late / is_early_leave 불린을 조합해 만든다. 화면(전체 근태 조회)과 동일 기준.
+            # 결근은 지각·조퇴와 동시에 나올 수 없어 단독 표시.
+            if status == "absent":
+                status_label = status_kr["absent"]
+            else:
+                labels = []
+                if p.get("is_late"):
+                    labels.append(status_kr["late"])
+                if p.get("is_early_leave"):
+                    labels.append(status_kr["early_leave"])
+                # 불린이 비어 있으면(이론상 없음) auto_status 로 폴백
+                status_label = "·".join(labels) if labels else status_kr.get(status, status)
             try:
                 dow = weekday_kr[work_date.weekday()]
                 wd_str = f"{work_date.strftime('%Y-%m-%d')}({dow})"
