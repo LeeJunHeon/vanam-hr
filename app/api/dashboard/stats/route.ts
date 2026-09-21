@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth-helpers";
 import { loadWorkDayChecker } from "@/lib/annual-leave";
+import { isLeaveCategoryType, isNonWorkDayLeave } from "@/lib/category-kind";
 
 // GET /api/dashboard/stats?period=day|month|year&targetDate=YYYY-MM-DD&targetMonth=YYYY-MM&targetYear=YYYY
 //
@@ -91,7 +92,7 @@ export async function GET(request: NextRequest) {
             },
           },
           category: {
-            select: { code: true, name: true, annualLeaveDeduct: true },
+            select: { code: true, name: true, type: true },
           },
         },
         orderBy: { workDate: "desc" },
@@ -181,12 +182,7 @@ export async function GET(request: NextRequest) {
     const leaveEmpIds = Array.from(
       new Set(
         dailies
-          .filter(
-            (d) =>
-              d.category?.annualLeaveDeduct != null &&
-              d.category?.code !== "BUSINESS_TRIP" &&
-              d.category?.code !== "EXTERNAL_WORK"
-          )
+          .filter((d) => isLeaveCategoryType(d.category?.type))
           .map((d) => d.employeeId)
       )
     );
@@ -199,7 +195,7 @@ export async function GET(request: NextRequest) {
     for (const d of dailies) {
       const code = d.category?.code ?? null;
       const categoryName = d.category?.name ?? null;
-      const isLeave = d.category?.annualLeaveDeduct != null;
+      const isLeave = isLeaveCategoryType(d.category?.type);
 
       // 휴가/출장/외근 (category 기준) — 이 행들은 auto_status가 normal이라
       // 결근/지각/조퇴 분류와 공존하지 않음
@@ -209,7 +205,7 @@ export async function GET(request: NextRequest) {
           ...base(d), categoryName, reason: null,
           checkIn: t?.in ?? null, checkOut: t?.out ?? null,
         });
-      } else if (isLeave && isWorkDay(d.employeeId, d.workDate)) {
+      } else if (isLeave && !isNonWorkDayLeave(d.category?.type, isWorkDay(d.employeeId, d.workDate))) {
         details.leave.push({ ...base(d), categoryName });
       }
 

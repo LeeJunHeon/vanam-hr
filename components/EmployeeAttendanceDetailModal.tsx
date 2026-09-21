@@ -30,6 +30,7 @@ import {
   progressLabel,
 } from "@/lib/attendanceLabels";
 import type { RealtimeStatus, ProgressStatus } from "@/lib/realtime-presence";
+import { isNonWorkDayLeave } from "@/lib/category-kind";
 import ExcelButton from "@/components/ExcelButton";
 import AttendanceExportModal from "@/components/AttendanceExportModal";
 
@@ -67,6 +68,9 @@ interface DetailRow {
   categoryCode: string | null;
   categoryName: string | null;
   categoryColor: string | null;
+  // 요약 카드 집계용 (lib/attendance-rows). 없으면 기존처럼 센다.
+  categoryType?: string | null;
+  isWorkDay?: boolean;
   reason: string | null;
   // 외근/출장 등 시간대 일정의 시간대(예 09:00~12:00) — 출퇴근 시각과 별개로 노출.
   // 시간대 없는 종일 일정은 둘 다 null.
@@ -344,7 +348,10 @@ export default function EmployeeAttendanceDetailModal({
   const stats = useMemo(() => {
     return rows.reduce(
       (acc, r) => {
+        // 출근 기록은 실제로 나온 것이므로 항상 센다.
         if (r.checkIn) acc.attended += 1;
+        // 휴무일의 휴가 줄(캘린더 표시용)은 정상·외근/휴가 요약에서 뺀다. 필드가 없으면 기존처럼 센다.
+        if (isNonWorkDayLeave(r.categoryType ?? null, r.isWorkDay ?? true)) return acc;
         if (r.autoStatus === "normal") acc.normal += 1;
         else if (r.autoStatus === "late") acc.late += 1;
         else if (r.autoStatus === "absent") acc.absent += 1;

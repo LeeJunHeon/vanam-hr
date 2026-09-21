@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
 import { progressLabel, type ProgressStatus } from "@/lib/attendanceLabels";
+import { loadWorkDayChecker } from "@/lib/annual-leave";
+import { isNonWorkDayLeave } from "@/lib/category-kind";
 
 export const dynamic = "force-dynamic";
 
@@ -203,30 +205,46 @@ export async function GET() {
       row.today_category_code
     );
 
-    // ── 이번주(월~일, KST) attendance_daily auto_status 집계 (기존 그대로) ──
+    // ── 이번주(월~일, KST) attendance_daily 집계 ──
+    // 휴무일의 휴가 줄(캘린더 표시용)은 세지 않는다 (lib/category-kind isNonWorkDayLeave).
     const weekRows = await prisma.$queryRaw<
-      { auto_status: string | null; cnt: bigint }[]
+      {
+        work_date: Date;
+        auto_status: string | null;
+        category_type: string | null;
+        monday: Date;
+        sunday: Date;
+      }[]
     >`
       WITH bounds AS (
         SELECT
           (date_trunc('week', (NOW() AT TIME ZONE 'Asia/Seoul')))::date AS monday,
           (date_trunc('week', (NOW() AT TIME ZONE 'Asia/Seoul')) + interval '6 days')::date AS sunday
       )
-      SELECT auto_status, COUNT(*)::bigint AS cnt
-      FROM hr.attendance_daily, bounds
-      WHERE employee_id = ${empId}
-        AND work_date >= (SELECT monday FROM bounds)
-        AND work_date <= (SELECT sunday FROM bounds)
-      GROUP BY auto_status
+      SELECT ad.work_date, ad.auto_status, ac.type AS category_type, b.monday, b.sunday
+      FROM hr.attendance_daily ad
+      CROSS JOIN bounds b
+      LEFT JOIN hr.attendance_categories ac ON ac.id = ad.category_id
+      WHERE ad.employee_id = ${empId}
+        AND ad.work_date >= b.monday
+        AND ad.work_date <= b.sunday
     `;
 
     const week = { normal: 0, late: 0, earlyLeave: 0, absent: 0 };
-    for (const w of weekRows) {
-      const c = Number(w.cnt);
-      if (w.auto_status === "normal") week.normal = c;
-      else if (w.auto_status === "late") week.late = c;
-      else if (w.auto_status === "early_leave") week.earlyLeave = c;
-      else if (w.auto_status === "absent") week.absent = c;
+    if (weekRows.length > 0) {
+      const ymd = (d: Date) => d.toISOString().split("T")[0];
+      const isWorkDay = await loadWorkDayChecker(
+        [empId],
+        ymd(weekRows[0].monday),
+        ymd(weekRows[0].sunday)
+      );
+      for (const w of weekRows) {
+        if (isNonWorkDayLeave(w.category_type, isWorkDay(empId, w.work_date))) continue;
+        if (w.auto_status === "normal") week.normal += 1;
+        else if (w.auto_status === "late") week.late += 1;
+        else if (w.auto_status === "early_leave") week.earlyLeave += 1;
+        else if (w.auto_status === "absent") week.absent += 1;
+      }
     }
 
     return NextResponse.json(

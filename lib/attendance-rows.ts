@@ -5,6 +5,7 @@ import {
   type RealtimeStatus,
   type ProgressStatus,
 } from "@/lib/realtime-presence";
+import { loadWorkDayChecker } from "@/lib/annual-leave";
 
 // 근태 화면 공용 "행 조립" 모듈 (리팩터링 1단계).
 // overview API의 조립 로직을 그대로 이동한 것 — 동작 동일. (이후 단계에서 calendar/realtime도 이 모듈로 전환 예정)
@@ -45,6 +46,11 @@ export type AttendanceRow = {
   categoryCode: string | null;
   categoryName: string | null;
   categoryColor: string | null;
+  // 카테고리 종류(leave/work/correction). 휴가 판정은 lib/category-kind 로 한다.
+  categoryType: string | null;
+  // 이 직원의 근무일인가 (시프트상 근무 + 공휴일 아님, lib/annual-leave loadWorkDayChecker).
+  // 요약 숫자를 셀 때 휴무일 휴가 줄을 가려내는 데 쓴다. 표시에는 쓰지 않는다.
+  isWorkDay: boolean;
   reason: string | null;
   correctedCheckIn: string | null;
   correctedCheckOut: string | null;
@@ -132,12 +138,19 @@ export async function assembleAttendanceRows(params: {
                 code: true,
                 name: true,
                 displayColor: true,
+                type: true,
               },
             },
           },
           orderBy: [{ workDate: "desc" }, { employeeId: "asc" }],
         })
       : [];
+
+  // 줄별 근무일 판정기 (요약 집계에서 휴무일 휴가 줄을 가려내는 용도). 한 번만 로드.
+  const workDayChecker =
+    attendance.length > 0
+      ? await loadWorkDayChecker(employeeIds, startDate, endDate)
+      : () => true;
 
   // 캘린더 자동 등록 사유 조회 (calendar_auto + auto_approved + google_calendar)
   // start_date~end_date 범위가 조회 기간과 겹치는 모든 요청 가져옴
@@ -390,6 +403,8 @@ export async function assembleAttendanceRows(params: {
       categoryCode: a.category?.code ?? null,
       categoryName: a.category?.name ?? null,
       categoryColor: a.category?.displayColor ?? null,
+      categoryType: a.category?.type ?? null,
+      isWorkDay: workDayChecker(a.employeeId, a.workDate),
       reason: reasonMap.get(reasonKey) ?? null,
       correctedCheckIn: correctedMap.get(reasonKey)?.in ?? null,
       correctedCheckOut: correctedMap.get(reasonKey)?.out ?? null,

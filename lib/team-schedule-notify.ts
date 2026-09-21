@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { createNotifications } from "@/lib/notify";
+import { isLeaveCategoryType } from "@/lib/category-kind";
 
 // ─────────────────────────────────────────────────────────────
 // 팀 일정 알림 — 근태 신청이 승인 확정되면 같은 부서 동료에게 알린다.
@@ -57,7 +58,7 @@ export async function getTeamScheduleSettings(): Promise<TeamScheduleSettings> {
 
 // 기본 규칙: leave 타입이면서 출장/외근 계열이 아닌 것. (설정 API 의 "현재 선택" 표시에도 공용)
 export function isDefaultTeamScheduleCategory(c: { code: string; type: string }): boolean {
-  return c.type === "leave" && !TEAM_SCHEDULE_DEFAULT_EXCLUDE_CODE_RE.test(c.code);
+  return isLeaveCategoryType(c.type) && !TEAM_SCHEDULE_DEFAULT_EXCLUDE_CODE_RE.test(c.code);
 }
 
 // 설정된 code 목록 → categoryId Set. 미설정(null)이면 기본 규칙.

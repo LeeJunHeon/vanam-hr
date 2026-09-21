@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireHrPortalAuth } from "@/lib/internal-portal-auth";
 import { resolveHrIdentity } from "@/lib/internal-identity";
 import { canViewAllEmployees } from "@/lib/auth-helpers";
+import { isLeaveCategoryType, isWorkCategoryType } from "@/lib/category-kind";
 
 export const dynamic = "force-dynamic";
 
@@ -62,7 +63,7 @@ export async function GET(request: NextRequest) {
       employeeId: true,
       checkIn: true,
       autoStatus: true,
-      category: { select: { name: true, code: true, annualLeaveDeduct: true } },
+      category: { select: { name: true, code: true, type: true } },
     },
   });
   const dailyMap = new Map<number, (typeof dailies)[number]>();
@@ -79,8 +80,8 @@ export async function GET(request: NextRequest) {
   for (const e of employees) {
     const d = dailyMap.get(e.id);
     const cat = d?.category;
-    const isLeaveCat =
-      !!cat && (cat.annualLeaveDeduct != null || cat.code === "BUSINESS_TRIP" || cat.code === "EXTERNAL_WORK");
+    // 오늘 일정(휴가·출장·외근·재택)이 있는 사람 — 근태정정(correction) 외 모든 카테고리.
+    const isLeaveCat = !!cat && (isLeaveCategoryType(cat.type) || isWorkCategoryType(cat.type));
     if (isLeaveCat) {
       leave++;
       leaveList.push({ name: e.name, categoryName: cat?.name ?? null });
