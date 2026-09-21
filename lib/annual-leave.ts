@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@/app/generated/prisma/client";
+import { resolveShiftPoint, isWorkPoint } from "@/lib/shift-schedule";
 
 export interface AnnualLeavePolicyValues {
   baseDays: number;
@@ -27,6 +29,7 @@ export async function getHolidaySet(fromYmd: string, toYmd: string): Promise<Set
   return new Set(rows.map((h) => h.holidayDate.toISOString().split("T")[0]));
 }
 
+// 시프트를 보지 않는 달력 기준 근무일. 연차 차감에는 countWorkDays 를 쓸 것.
 // [start, end] inclusive에서 토(6)·일(0)·공휴일을 제외한 근무일 수.
 export function countBusinessDays(start: Date, end: Date, holidays: Set<string>): number {
   let count = 0;
@@ -39,6 +42,126 @@ export function countBusinessDays(start: Date, end: Date, holidays: Set<string>)
     cur.setUTCDate(cur.getUTCDate() + 1);
   }
   return count;
+}
+
+// 연차 "사용"으로 인정하는 요청 조건 — 모든 연차 집계가 이것 하나를 쓴다.
+// HR 신청만 차감(calendar_auto 제외, 2026-09 방침).
+function usedLeaveRequestWhere(employeeId: number): Prisma.AttendanceRequestWhereInput {
+  return {
+    employeeId,
+    status: { in: ["approved", "auto_approved", "auto_delegated"] },
+    category: { annualLeaveDeduct: { gt: 0 } },
+    requestType: { not: "calendar_auto" },
+  };
+}
+
+type ShiftAssignmentRow = {
+  employee_id: number;
+  start_date: Date;
+  end_date: Date | null;
+  cycle_days: number;
+  schedule: unknown;
+};
+
+// 연차는 본인이 원래 일하는 날만 센다 (2026-09 방침).
+// 근무일 = 그 날을 덮는 시프트 배정상 근무(isWorkPoint) AND 공휴일 아님.
+// 그 날을 덮는 배정이 없으면 기존 규칙(토·일 제외, 공휴일 제외) — 시프트 미배정 직원 동작 유지.
+export async function loadWorkDayChecker(
+  employeeIds: number[],
+  fromYmd: string,
+  toYmd: string
+): Promise<(employeeId: number, day: Date) => boolean> {
+  const holidays = await getHolidaySet(fromYmd, toYmd);
+
+  const byEmployee = new Map<number, ShiftAssignmentRow[]>();
+  if (employeeIds.length > 0) {
+    // loadShiftAndGrace 와 같은 조건(pattern is_active) + 기간 겹침. start_date DESC 라
+    // 날짜별로 첫 매칭 행을 고르면 LIMIT 1 과 같은 선택이 된다.
+    const rows = await prisma.$queryRaw<ShiftAssignmentRow[]>`
+      SELECT es.employee_id, es.start_date, es.end_date, sp.cycle_days, sp.schedule
+      FROM hr.employee_shifts es
+      JOIN hr.shift_patterns sp ON sp.id = es.pattern_id
+      WHERE es.employee_id = ANY(${employeeIds}::int[])
+        AND es.start_date <= ${toYmd}::date
+        AND (es.end_date IS NULL OR es.end_date >= ${fromYmd}::date)
+        AND sp.is_active = true
+      ORDER BY es.start_date DESC
+    `;
+    for (const r of rows) {
+      const list = byEmployee.get(r.employee_id);
+      if (list) list.push(r);
+      else byEmployee.set(r.employee_id, [r]);
+    }
+  }
+
+  return (employeeId: number, day: Date): boolean => {
+    const d = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate()));
+    const ymd = d.toISOString().split("T")[0];
+    if (holidays.has(ymd)) return false;
+    const row = byEmployee
+      .get(employeeId)
+      ?.find((r) => r.start_date <= d && (r.end_date == null || r.end_date >= d));
+    if (row) {
+      return isWorkPoint(resolveShiftPoint(row.start_date, row.cycle_days, row.schedule, d));
+    }
+    const dow = d.getUTCDay(); // 0=일, 6=토
+    return dow !== 0 && dow !== 6;
+  };
+}
+
+// [start, end] inclusive 중 근무일 수.
+export function countWorkDays(
+  isWorkDay: (employeeId: number, day: Date) => boolean,
+  employeeId: number,
+  start: Date,
+  end: Date
+): number {
+  let count = 0;
+  const cur = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
+  const last = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()));
+  while (cur <= last) {
+    if (isWorkDay(employeeId, cur)) count++;
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return count;
+}
+
+// [from, toExclusive) 기간과 겹치는 연차 요청의, 기간 안 근무일 × 차감계수 합.
+// 연차 관리와 같은 요청 필터·같은 근무일 판정을 쓴다.
+export async function computeLeaveDaysInPeriod(
+  employeeId: number,
+  from: Date,
+  toExclusive: Date
+): Promise<number> {
+  const reqs = await prisma.attendanceRequest.findMany({
+    where: {
+      ...usedLeaveRequestWhere(employeeId),
+      startDate: { lt: toExclusive },
+      endDate: { gte: from },
+    },
+    select: {
+      startDate: true,
+      endDate: true,
+      category: { select: { annualLeaveDeduct: true } },
+    },
+  });
+  if (reqs.length === 0) return 0;
+  const lastDay = new Date(toExclusive.getTime() - 86400000);
+  const isWorkDay = await loadWorkDayChecker(
+    [employeeId],
+    from.toISOString().split("T")[0],
+    lastDay.toISOString().split("T")[0]
+  );
+  let total = 0;
+  for (const r of reqs) {
+    const deduct = r.category.annualLeaveDeduct ? Number(r.category.annualLeaveDeduct) : 0;
+    if (deduct <= 0) continue;
+    const s = r.startDate > from ? r.startDate : from;
+    const e = r.endDate < lastDay ? r.endDate : lastDay;
+    if (s > e) continue;
+    total += countWorkDays(isWorkDay, employeeId, s, e) * deduct;
+  }
+  return total;
 }
 
 // targetYear의 부여량 계산.
@@ -105,13 +228,8 @@ export async function computeSystemUsedDays(
   const yearEnd = new Date(Date.UTC(year, 11, 31, 23, 59, 59));
   const reqs = await prisma.attendanceRequest.findMany({
     where: {
-      employeeId,
-      status: { in: ["approved", "auto_approved", "auto_delegated"] },
+      ...usedLeaveRequestWhere(employeeId),
       startDate: { gte: yearStart, lte: yearEnd },
-      category: { annualLeaveDeduct: { gt: 0 } },
-      // 연차는 HR 시스템 신청만 차감한다. 구글 캘린더에 따로 적어둔 같은 일정을
-      // syncer 가 자동 생성한 요청(calendar_auto)까지 합산하면 이중 차감된다.
-      requestType: { not: "calendar_auto" },
     },
     select: {
       startDate: true,
@@ -122,7 +240,8 @@ export async function computeSystemUsedDays(
   if (reqs.length === 0) return 0;
   const minStart = new Date(Math.min(...reqs.map((r) => r.startDate.getTime())));
   const maxEnd = new Date(Math.max(...reqs.map((r) => r.endDate.getTime())));
-  const holidays = await getHolidaySet(
+  const isWorkDay = await loadWorkDayChecker(
+    [employeeId],
     minStart.toISOString().split("T")[0],
     maxEnd.toISOString().split("T")[0]
   );
@@ -132,7 +251,7 @@ export async function computeSystemUsedDays(
       ? Number(r.category.annualLeaveDeduct)
       : 0;
     if (deduct <= 0) continue;
-    total += countBusinessDays(r.startDate, r.endDate, holidays) * deduct;
+    total += countWorkDays(isWorkDay, employeeId, r.startDate, r.endDate) * deduct;
   }
   return total;
 }
@@ -214,12 +333,8 @@ export async function getLeaveDetailItems(
   const yearEnd = new Date(Date.UTC(year, 11, 31, 23, 59, 59));
   const reqs = await prisma.attendanceRequest.findMany({
     where: {
-      employeeId,
-      status: { in: ["approved", "auto_approved", "auto_delegated"] },
+      ...usedLeaveRequestWhere(employeeId),
       startDate: { gte: yearStart, lte: yearEnd },
-      category: { annualLeaveDeduct: { gt: 0 } },
-      // 위와 동일 — 집계와 목록이 어긋나지 않도록 같은 필터
-      requestType: { not: "calendar_auto" },
     },
     orderBy: [{ startDate: "desc" }],
     select: {
@@ -232,7 +347,8 @@ export async function getLeaveDetailItems(
   if (reqs.length === 0) return { totalUsed: 0, items: [] };
   const minStart = new Date(Math.min(...reqs.map((r) => r.startDate.getTime())));
   const maxEnd = new Date(Math.max(...reqs.map((r) => r.endDate.getTime())));
-  const holidays = await getHolidaySet(
+  const isWorkDay = await loadWorkDayChecker(
+    [employeeId],
     minStart.toISOString().split("T")[0],
     maxEnd.toISOString().split("T")[0]
   );
@@ -240,7 +356,7 @@ export async function getLeaveDetailItems(
   let totalUsed = 0;
   const items = reqs.map((r) => {
     const deduct = r.category?.annualLeaveDeduct ? Number(r.category.annualLeaveDeduct) : 0;
-    const used = countBusinessDays(r.startDate, r.endDate, holidays) * deduct;
+    const used = countWorkDays(isWorkDay, employeeId, r.startDate, r.endDate) * deduct;
     totalUsed += used;
     return {
       startDate: r.startDate.toISOString().split("T")[0],

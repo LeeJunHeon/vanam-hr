@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/app/generated/prisma/client";
+import { resolveShiftPoint } from "@/lib/shift-schedule";
 
 // 분 단위 절삭 — 화면 표시(HH:MM)와 동일 기준으로 판정/계산
 // (aggregator의 _floor_minute와 동일 정책. setSeconds는 초/밀리초만 조작하므로 TZ 무관)
@@ -93,25 +94,11 @@ async function loadShiftAndGrace(
 
   if (shiftRows.length > 0) {
     const { start_date, cycle_days, schedule } = shiftRows[0];
-    if (Array.isArray(schedule) && cycle_days >= 1) {
-      // Python weekday(): 월=0..일=6. JS getUTCDay(): 일=0..토=6 → (d+6)%7 로 월=0 맞춤.
-      const startWeekday = (start_date.getUTCDay() + 6) % 7;
-      const anchor = new Date(start_date);
-      anchor.setUTCDate(anchor.getUTCDate() - startWeekday);
-      const dayOffset =
-        Math.floor((workDate.getTime() - anchor.getTime()) / 86400000) % cycle_days;
+    const point = resolveShiftPoint(start_date, cycle_days, schedule, workDate);
 
-      const point = (schedule as Array<{
-        dayIndex?: number;
-        type?: string;
-        start?: string | null;
-        end?: string | null;
-      }>).find((p) => p && p.dayIndex === dayOffset);
-
-      if (point && point.type !== "off") {
-        shiftStartHHMM = point.start ?? null;
-        shiftEndHHMM = point.end ?? null;
-      }
+    if (point && point.type !== "off") {
+      shiftStartHHMM = point.start ?? null;
+      shiftEndHHMM = point.end ?? null;
     }
   }
   let graceInMinutes = 10;

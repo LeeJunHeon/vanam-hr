@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { createNotifications } from "@/lib/notify";
 import { applyCorrectionToDaily } from "@/lib/attendance-correction";
-import { getRemainingDays, getHolidaySet, countBusinessDays } from "@/lib/annual-leave";
+import { getRemainingDays, loadWorkDayChecker, countWorkDays } from "@/lib/annual-leave";
 import { resolveApprovers } from "@/lib/approval-resolver";
 import { getBusinessTripCategoryId } from "@/lib/trip-calendar";
 import { createCalendarEvent } from "@/lib/calendar-event";
@@ -88,8 +88,8 @@ export async function createAttendanceRequest(
     : 0;
   if (deductPerDay > 0) {
     // 신청 일수 (startDate~endDate 근무일: 주말·공휴일 제외)
-    const holidays = await getHolidaySet(ymdFromDate(startD), ymdFromDate(endD));
-    const requestAmount = countBusinessDays(startD, endD, holidays) * deductPerDay;
+    const isWorkDay = await loadWorkDayChecker([employeeIdNum], ymdFromDate(startD), ymdFromDate(endD));
+    const requestAmount = countWorkDays(isWorkDay, employeeIdNum, startD, endD) * deductPerDay;
     // 신청 시작 연도 기준 잔여 (역년)
     const reqYear = startD.getUTCFullYear();
     const { granted, remaining } = await getRemainingDays(

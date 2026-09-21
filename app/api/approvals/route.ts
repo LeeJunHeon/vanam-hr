@@ -7,7 +7,7 @@ import {
 } from "@/lib/trip-calendar";
 import { createNotifications } from "@/lib/notify";
 import { sweepEligibleDelegations } from "@/lib/sweep-delegations";
-import { getRemainingDays, getHolidaySet, countBusinessDays } from "@/lib/annual-leave";
+import { getRemainingDays, loadWorkDayChecker, countWorkDays } from "@/lib/annual-leave";
 import {
   applyApprovedRequestToDaily,
   syncApprovedRequestToCalendar,
@@ -398,8 +398,8 @@ export async function GET(request: NextRequest) {
         const endD = new Date(it.endDate + "T00:00:00.000Z");
         const startYear = startD.getUTCFullYear();
         const { granted, remaining } = await getRemainingDays(it.employeeId, startYear);
-        const holidays = await getHolidaySet(it.startDate, it.endDate);
-        const amount = countBusinessDays(startD, endD, holidays) * it.leaveDeductPerDay;
+        const isWorkDay = await loadWorkDayChecker([it.employeeId], it.startDate, it.endDate);
+        const amount = countWorkDays(isWorkDay, it.employeeId, startD, endD) * it.leaveDeductPerDay;
         it.leaveGranted = granted;
         it.leaveRemaining = remaining;
         it.leaveRequestAmount = amount;

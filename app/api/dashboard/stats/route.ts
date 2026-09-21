@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth-helpers";
+import { loadWorkDayChecker } from "@/lib/annual-leave";
 
 // GET /api/dashboard/stats?period=day|month|year&targetDate=YYYY-MM-DD&targetMonth=YYYY-MM&targetYear=YYYY
 //
@@ -175,6 +176,26 @@ export async function GET(request: NextRequest) {
       >,
     };
 
+    // 휴가자 집계는 근무일이 아닌 날(시프트 휴무·주말·공휴일)의 휴가 행은 세지 않는다.
+    // (aggregator 는 캘린더 표시용으로 주말에도 연차 행을 만든다)
+    const leaveEmpIds = Array.from(
+      new Set(
+        dailies
+          .filter(
+            (d) =>
+              d.category?.annualLeaveDeduct != null &&
+              d.category?.code !== "BUSINESS_TRIP" &&
+              d.category?.code !== "EXTERNAL_WORK"
+          )
+          .map((d) => d.employeeId)
+      )
+    );
+    const isWorkDay = await loadWorkDayChecker(
+      leaveEmpIds,
+      rangeStart.toISOString().split("T")[0],
+      new Date(rangeEnd.getTime() - 86400000).toISOString().split("T")[0]
+    );
+
     for (const d of dailies) {
       const code = d.category?.code ?? null;
       const categoryName = d.category?.name ?? null;
@@ -188,7 +209,7 @@ export async function GET(request: NextRequest) {
           ...base(d), categoryName, reason: null,
           checkIn: t?.in ?? null, checkOut: t?.out ?? null,
         });
-      } else if (isLeave) {
+      } else if (isLeave && isWorkDay(d.employeeId, d.workDate)) {
         details.leave.push({ ...base(d), categoryName });
       }
 

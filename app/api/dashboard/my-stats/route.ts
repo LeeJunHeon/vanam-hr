@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
+import { computeLeaveDaysInPeriod } from "@/lib/annual-leave";
 
 // GET /api/dashboard/my-stats?period=day|month|year&targetDate=...&targetMonth=...&targetYear=...
 //
@@ -78,7 +79,7 @@ export async function GET(request: NextRequest) {
 
     const [
       myAttended,
-      myLeaveRaw,
+      myLeaveDays,
       myPendingRequests,
       myCompletedRequests,
     ] = await Promise.all([
@@ -89,14 +90,7 @@ export async function GET(request: NextRequest) {
           checkIn: { not: null },
         },
       }),
-      prisma.attendanceDaily.findMany({
-        where: {
-          employeeId: employeeId as number,
-          workDate: { gte: rangeStart, lt: rangeEnd },
-          category: { annualLeaveDeduct: { not: null } },
-        },
-        include: { category: { select: { annualLeaveDeduct: true } } },
-      }),
+      computeLeaveDaysInPeriod(employeeId as number, rangeStart, rangeEnd),
       prisma.attendanceRequest.count({
         where: {
           employeeId: employeeId as number,
@@ -112,11 +106,6 @@ export async function GET(request: NextRequest) {
         },
       }),
     ]);
-
-    const myLeaveDays = myLeaveRaw.reduce(
-      (sum, d) => sum + Number(d.category?.annualLeaveDeduct ?? 0),
-      0
-    );
 
     return NextResponse.json({
       employeeId,

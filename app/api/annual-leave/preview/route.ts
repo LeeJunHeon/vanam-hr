@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
-import { getRemainingDays, getHolidaySet, countBusinessDays } from "@/lib/annual-leave";
+import { getRemainingDays, loadWorkDayChecker, countWorkDays } from "@/lib/annual-leave";
 
 export const dynamic = "force-dynamic";
 
@@ -46,8 +46,9 @@ export async function GET(request: NextRequest) {
   }
 
   const ymd = (d: Date) => d.toISOString().split("T")[0];
-  const holidays = await getHolidaySet(ymd(startD), ymd(endD));
-  const businessDays = countBusinessDays(startD, endD, holidays);
+  const isWorkDay = await loadWorkDayChecker([employeeId as number], ymd(startD), ymd(endD));
+  // 필드명은 프론트 호환을 위해 businessDays 유지 (의미: 본인 시프트상 근무일)
+  const businessDays = countWorkDays(isWorkDay, employeeId as number, startD, endD);
   const requestAmount = businessDays * deductPerDay;
 
   return NextResponse.json({
