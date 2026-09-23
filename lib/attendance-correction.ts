@@ -58,8 +58,6 @@ export function determineAutoStatus(
   return "normal";
 }
 
-// 정정 날짜 기준 시프트(HH:MM) + grace 정책 로드.
-// tx 안/밖 어디서든 호출 가능하도록 prisma(또는 tx)를 인자로 받는다.
 // 정정 승인 시 is_late / is_early_leave 플래그 판정.
 // aggregator/aggregator.py _determine_auto_status 와 같은 임계값 식을 쓴다
 // (floorMinute, shiftMinutes<=0 이면 +24h, lateThreshold, requiredMinutes) —
@@ -121,6 +119,8 @@ export function shiftEndBoundary(
   return end;
 }
 
+// 정정 날짜 기준 시프트(HH:MM) + grace 정책 로드.
+// tx 안/밖 어디서든 호출 가능하도록 prisma(또는 tx)를 인자로 받는다.
 export async function loadShiftAndGrace(
   db: Prisma.TransactionClient | typeof prisma,
   employeeId: number,
