@@ -60,7 +60,68 @@ export function determineAutoStatus(
 
 // 정정 날짜 기준 시프트(HH:MM) + grace 정책 로드.
 // tx 안/밖 어디서든 호출 가능하도록 prisma(또는 tx)를 인자로 받는다.
-async function loadShiftAndGrace(
+// 정정 승인 시 is_late / is_early_leave 플래그 판정.
+// aggregator/aggregator.py _determine_auto_status 와 같은 임계값 식을 쓴다
+// (floorMinute, shiftMinutes<=0 이면 +24h, lateThreshold, requiredMinutes) —
+// 같은 입력에서 determineAutoStatus 의 결과와 모순되지 않아야 하기 때문이다.
+// null 은 "판정 불가/모름", false 는 "판정했고 해당 없음"을 뜻한다.
+// 주의: 점심 공제(lunch_deduct_enabled)는 aggregator 에만 있음
+//       — 정책 활성화 시 양쪽 동기화 필요.
+export function determineAttendanceFlags(
+  checkIn: Date | null,
+  checkOut: Date | null,
+  startHHMM: string | null,
+  endHHMM: string | null,
+  graceIn: number,
+  graceOut: number,
+  isHoliday: boolean = false
+): { isLate: boolean | null; isEarlyLeave: boolean | null } {
+  checkIn = floorMinute(checkIn);
+  checkOut = floorMinute(checkOut);
+  // 공휴일·시프트 없음 → 지각/조퇴 판정 면제가 확정된 상태
+  if (isHoliday || !startHHMM || !endHHMM) {
+    return { isLate: false, isEarlyLeave: false };
+  }
+  // 출근이 없으면(결근·퇴근만 있는 이상 상태) 판정 불가
+  if (!checkIn) return { isLate: null, isEarlyLeave: null };
+  const [shH, shM] = startHHMM.split(":").map(Number);
+  const [ehH, ehM] = endHHMM.split(":").map(Number);
+  if ([shH, shM, ehH, ehM].some(isNaN)) return { isLate: null, isEarlyLeave: null };
+  let shiftMinutes = ehH * 60 + ehM - (shH * 60 + shM);
+  if (shiftMinutes <= 0) shiftMinutes += 24 * 60;
+  const shiftStart = new Date(checkIn);
+  shiftStart.setHours(shH, shM, 0, 0);
+  const lateThreshold = new Date(shiftStart.getTime() + graceIn * 60 * 1000);
+  const isLate = checkIn > lateThreshold;
+  // 퇴근 전에는 조퇴를 판정할 수 없다
+  if (!checkOut) return { isLate, isEarlyLeave: null };
+  const actualMinutes = Math.floor(
+    (checkOut.getTime() - checkIn.getTime()) / (60 * 1000)
+  );
+  const requiredMinutes = shiftMinutes - graceOut;
+  return { isLate, isEarlyLeave: actualMinutes < requiredMinutes };
+}
+
+// 그 날 시프트 종료 시각의 Date. 자정을 넘는 시프트(end <= start)는 다음날로 계산한다.
+// 근태정정 "출근 시각이 근무 종료 이후" 가드에 쓴다 (determineAutoStatus 와 같은 기준).
+export function shiftEndBoundary(
+  day: Date,
+  startHHMM: string | null,
+  endHHMM: string | null
+): Date | null {
+  if (!startHHMM || !endHHMM) return null;
+  const [shH, shM] = startHHMM.split(":").map(Number);
+  const [ehH, ehM] = endHHMM.split(":").map(Number);
+  if ([shH, shM, ehH, ehM].some(isNaN)) return null;
+  const end = new Date(day);
+  end.setHours(ehH, ehM, 0, 0);
+  if (ehH * 60 + ehM <= shH * 60 + shM) {
+    end.setDate(end.getDate() + 1); // 자정 넘는 시프트
+  }
+  return end;
+}
+
+export async function loadShiftAndGrace(
   db: Prisma.TransactionClient | typeof prisma,
   employeeId: number,
   workDate: Date
@@ -180,6 +241,18 @@ export async function applyCorrectionToDaily(
     !!holidayRow
   );
 
+  // aggregator 의 백필은 "반대쪽 시각이 비어 있다가 채워질 때"만 돌아서, 퇴근이 찍힌 뒤
+  // 정정하면 플래그가 NULL 로 남았다. 여기서 auto_status 와 같은 기준으로 함께 채운다.
+  const newFlags = determineAttendanceFlags(
+    newCheckIn,
+    newCheckOut,
+    shiftStartHHMM,
+    shiftEndHHMM,
+    graceInMinutes,
+    graceOutMinutes,
+    !!holidayRow
+  );
+
   // 실제로 정정한 항목만 original에 백업한다.
   // - 출근 정정(correctedCheckIn 있음) + 아직 originalCheckIn 백업 전 → 출근 원본 백업
   // - 퇴근 정정(correctedCheckOut 있음) + 아직 originalCheckOut 백업 전 → 퇴근 원본 백업
@@ -204,9 +277,9 @@ export async function applyCorrectionToDaily(
       checkOut: newCheckOut,
       workMinutes: newWorkMinutes,
       autoStatus: newAutoStatus,
-      // 판정 주체는 aggregator이므로 여기선 '모름'으로 비운다(이후 백필이 채움)
-      isLate: null,
-      isEarlyLeave: null,
+      // auto_status 와 같은 기준으로 판정해 함께 저장 (null = 판정 불가)
+      isLate: newFlags.isLate,
+      isEarlyLeave: newFlags.isEarlyLeave,
       isOverridden: true,
       overrideSource: "manual",
       note: `결재정정 #${requestId}`,
@@ -216,9 +289,9 @@ export async function applyCorrectionToDaily(
       checkOut: newCheckOut,
       workMinutes: newWorkMinutes,
       autoStatus: newAutoStatus,
-      // 판정 주체는 aggregator이므로 여기선 '모름'으로 비운다(이후 백필이 채움)
-      isLate: null,
-      isEarlyLeave: null,
+      // auto_status 와 같은 기준으로 판정해 함께 저장 (null = 판정 불가)
+      isLate: newFlags.isLate,
+      isEarlyLeave: newFlags.isEarlyLeave,
       isOverridden: true,
       overrideSource: "manual",
       note: existing?.note ?? `결재정정 #${requestId}`,

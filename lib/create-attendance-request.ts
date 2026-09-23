@@ -1,6 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { createNotifications } from "@/lib/notify";
-import { applyCorrectionToDaily } from "@/lib/attendance-correction";
+import {
+  applyCorrectionToDaily,
+  loadShiftAndGrace,
+  shiftEndBoundary,
+} from "@/lib/attendance-correction";
 import { getRemainingDays, loadWorkDayChecker, countWorkDays } from "@/lib/annual-leave";
 import { resolveApprovers } from "@/lib/approval-resolver";
 import { getBusinessTripCategoryId } from "@/lib/trip-calendar";
@@ -132,6 +136,43 @@ export async function createAttendanceRequest(
     if (cciDate && ccoDate && ccoDate <= cciDate) {
       return { ok: false, error: "정정 퇴근 시각은 정정 출근 시각 이후여야 합니다.", status: 400 };
     }
+    // 규칙 A — 정정은 이미 지난 일을 고치는 행위다. 미래 시각은 오전/오후 착오다.
+    // (2026-09-23 사례: 13:46 에 09:00 대신 21:00 으로 신청 → 즉시 승인)
+    const now = new Date();
+    if (cciDate && cciDate > now) {
+      return {
+        ok: false,
+        error: "정정 출근 시각이 현재 시각보다 미래입니다. 오전/오후를 확인해주세요.",
+        status: 400,
+      };
+    }
+    if (ccoDate && ccoDate > now) {
+      return {
+        ok: false,
+        error: "정정 퇴근 시각이 현재 시각보다 미래입니다. 오전/오후를 확인해주세요.",
+        status: 400,
+      };
+    }
+    // 규칙 B — 출근 정정이 그날 근무 종료 시각을 넘을 수는 없다.
+    // 퇴근 정정에는 적용하지 않는다(야근 후 퇴근 정정은 정상).
+    if (cciDate) {
+      const { shiftStartHHMM, shiftEndHHMM } = await loadShiftAndGrace(
+        prisma,
+        employeeIdNum,
+        startD
+      );
+      const endBoundary = shiftEndBoundary(cciDate, shiftStartHHMM, shiftEndHHMM);
+      if (endBoundary && cciDate > endBoundary) {
+        return {
+          ok: false,
+          error:
+            `정정 출근 시각이 해당 일자의 근무 종료 시각(${shiftEndHHMM}) 이후입니다. ` +
+            "오전/오후를 확인해주세요.",
+          status: 400,
+        };
+      }
+    }
+
     // 한쪽만 정정하는 경우 반대쪽은 기존 attendance_daily 값과 병합된다.
     // 병합된 최종값이 역전이면 work_minutes가 음수가 되므로 여기서 막는다.
     // (2026-07-24 사례: 출근만 21:00으로 정정 → 기존 퇴근 14:36과 합쳐져 -384분)

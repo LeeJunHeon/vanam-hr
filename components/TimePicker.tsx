@@ -10,6 +10,7 @@ interface TimePickerProps {
   placeholder?: string;
   className?: string;
   allowMidnight?: boolean;         // true면 "24:00" 빠른 선택 버튼 노출 (시프트 종료용)
+  minuteStep?: number;             // 분 휠 간격(기본 5). 1이면 1분 단위
 }
 
 // "HH:MM" → 한글 보조 라벨
@@ -38,6 +39,7 @@ export default function TimePicker({
   placeholder = "시간 선택",
   className = "",
   allowMidnight = false,
+  minuteStep = 5,
 }: TimePickerProps) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -110,11 +112,11 @@ export default function TimePicker({
       }
       if (minScrollRef.current && !isMidnight) {
         const itemHeight = 32;
-        // 5분 단위로 표시하므로 인덱스 계산
-        minScrollRef.current.scrollTop = Math.floor(curMin / 5) * itemHeight;
+        // minuteStep 단위로 표시하므로 인덱스 계산
+        minScrollRef.current.scrollTop = Math.floor(curMin / minuteStep) * itemHeight;
       }
     }, 50);
-  }, [open, curHour, curMin, isMidnight]);
+  }, [open, curHour, curMin, isMidnight, minuteStep]);
 
   const selectHour = (h: number) => {
     const mm = String(curMin).padStart(2, "0");
@@ -243,7 +245,7 @@ export default function TimePicker({
                 </div>
               </div>
 
-              {/* 분 (5분 단위) */}
+              {/* 분 (minuteStep 단위, 기본 5) */}
               <div>
                 <div className="text-[10px] text-gray-400 text-center mb-1">분</div>
                 <div
@@ -251,7 +253,7 @@ export default function TimePicker({
                   className="h-40 overflow-y-auto border border-gray-100 rounded-lg"
                   style={{ scrollSnapType: "y mandatory" }}
                 >
-                  {Array.from({ length: 12 }, (_, i) => i * 5).map((m) => (
+                  {Array.from({ length: Math.ceil(60 / minuteStep) }, (_, i) => i * minuteStep).map((m) => (
                     <button
                       key={m}
                       type="button"

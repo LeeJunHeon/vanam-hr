@@ -7,6 +7,7 @@ import {
 } from "@/lib/auth-helpers";
 import { createNotifications } from "@/lib/notify";
 import { createAttendanceRequest } from "@/lib/create-attendance-request";
+import { loadShiftAndGrace, shiftEndBoundary } from "@/lib/attendance-correction";
 
 function parseDate(s: string | null | undefined): Date | null {
   if (!s || typeof s !== "string") return null;
@@ -605,6 +606,47 @@ export async function PUT(request: NextRequest) {
           { error: "종료 시간은 시작 시간 이후여야 합니다." },
           { status: 400 }
         );
+      }
+    } else {
+      // 정정(correction) — POST 경로와 같은 규칙 A/B. 미래 시각 + 근무 종료 이후 출근 차단.
+      const finalCci =
+        data.correctedCheckIn !== undefined
+          ? data.correctedCheckIn
+          : before.correctedCheckIn;
+      const finalCco =
+        data.correctedCheckOut !== undefined
+          ? data.correctedCheckOut
+          : before.correctedCheckOut;
+      const now = new Date();
+      if (finalCci && finalCci > now) {
+        return NextResponse.json(
+          { error: "정정 출근 시각이 현재 시각보다 미래입니다. 오전/오후를 확인해주세요." },
+          { status: 400 }
+        );
+      }
+      if (finalCco && finalCco > now) {
+        return NextResponse.json(
+          { error: "정정 퇴근 시각이 현재 시각보다 미래입니다. 오전/오후를 확인해주세요." },
+          { status: 400 }
+        );
+      }
+      if (finalCci) {
+        const { shiftStartHHMM, shiftEndHHMM } = await loadShiftAndGrace(
+          prisma,
+          before.employeeId,
+          finalStart
+        );
+        const endBoundary = shiftEndBoundary(finalCci, shiftStartHHMM, shiftEndHHMM);
+        if (endBoundary && finalCci > endBoundary) {
+          return NextResponse.json(
+            {
+              error:
+                `정정 출근 시각이 해당 일자의 근무 종료 시각(${shiftEndHHMM}) 이후입니다. ` +
+                "오전/오후를 확인해주세요.",
+            },
+            { status: 400 }
+          );
+        }
       }
     }
 

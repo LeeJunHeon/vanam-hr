@@ -629,6 +629,39 @@ export default function RequestPage() {
           return;
         }
       }
+      // 미래 시각 차단 — 모바일 time input 의 오전/오후 착오를 잡는다(서버도 동일 검증).
+      const nowTs = Date.now();
+      const hhmmToTs = (hhmm: string) => new Date(`${form.startDate}T${hhmm}:00`).getTime();
+      if (needIn && form.correctedCheckIn) {
+        const t = hhmmToTs(form.correctedCheckIn);
+        if (!isNaN(t) && t > nowTs) {
+          setFormError("정정 출근 시각이 현재 시각보다 미래입니다. 오전/오후를 확인해주세요.");
+          return;
+        }
+      }
+      if (needOut && form.correctedCheckOut) {
+        const t = hhmmToTs(form.correctedCheckOut);
+        if (!isNaN(t) && t > nowTs) {
+          setFormError("정정 퇴근 시각이 현재 시각보다 미래입니다. 오전/오후를 확인해주세요.");
+          return;
+        }
+      }
+      // 한쪽만 정정할 때 기존 기록과 역전되는지 — 병합 후 음수 근무시간이 되는 것을 막는다.
+      const hhmmOf = (iso: string) => formatDateTime(iso).split(" ")[1]?.slice(0, 5) ?? "";
+      if (form.correctionType === "in_only" && form.correctedCheckIn && currentDaily?.checkOut) {
+        const outHHMM = hhmmOf(currentDaily.checkOut);
+        if (outHHMM && form.correctedCheckIn > outHHMM) {
+          setFormError(`기존 퇴근 기록(${outHHMM})보다 늦은 출근 시각입니다.`);
+          return;
+        }
+      }
+      if (form.correctionType === "out_only" && form.correctedCheckOut && currentDaily?.checkIn) {
+        const inHHMM = hhmmOf(currentDaily.checkIn);
+        if (inHHMM && form.correctedCheckOut < inHHMM) {
+          setFormError(`기존 출근 기록(${inHHMM})보다 이른 퇴근 시각입니다.`);
+          return;
+        }
+      }
     } else if (
       // Phase 6-2G: 정정 외 + 시간 입력 허용 카테고리에서 시간 한쪽만 입력 차단
       selectedCategory &&
@@ -1201,13 +1234,13 @@ export default function RequestPage() {
                         <label className="block text-xs font-semibold text-blue-700 mb-1">
                           새 출근 시각 <span className="text-rose-500">*</span>
                         </label>
-                        <input
-                          type="time"
+                        <TimePicker
                           value={form.correctedCheckIn}
-                          onChange={(e) =>
-                            setForm((f) => ({ ...f, correctedCheckIn: e.target.value }))
+                          onChange={(val) =>
+                            setForm((f) => ({ ...f, correctedCheckIn: val }))
                           }
-                          className="w-full px-3 py-2 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                          minuteStep={1}
+                          placeholder="HH:MM"
                         />
                       </div>
                     )}
@@ -1216,14 +1249,13 @@ export default function RequestPage() {
                         <label className="block text-xs font-semibold text-blue-700 mb-1">
                           새 퇴근 시각 <span className="text-rose-500">*</span>
                         </label>
-                        <input
-                          type="time"
+                        <TimePicker
                           value={form.correctedCheckOut}
-                          min={form.correctedCheckIn || undefined}
-                          onChange={(e) =>
-                            setForm((f) => ({ ...f, correctedCheckOut: e.target.value }))
+                          onChange={(val) =>
+                            setForm((f) => ({ ...f, correctedCheckOut: val }))
                           }
-                          className="w-full px-3 py-2 border border-blue-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-400"
+                          minuteStep={1}
+                          placeholder="HH:MM"
                         />
                       </div>
                     )}
