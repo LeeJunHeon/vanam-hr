@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireHrWriteAuth } from "@/lib/internal-write-auth";
 import { resolveHrIdentity } from "@/lib/internal-identity";
 import {
-  createTripParticipantAttendanceRequests,
+  syncTripParticipantAttendance,
   rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
 import { createNotifications } from "@/lib/notify";
@@ -119,13 +119,13 @@ export async function POST(request: Request) {
     return res.count;
   });
 
-  // 승인 시: 참석자별 근태 생성 + 이벤트 캘린더 재구성 (트랜잭션 밖)
+  // 승인 시: 참석자별 근태 동기화 + 이벤트 캘린더 재구성 (트랜잭션 밖)
   if (action === "approve" && targetIds.length > 0) {
     for (const pid of targetIds) {
       try {
-        await createTripParticipantAttendanceRequests(pid);
+        await syncTripParticipantAttendance(pid);
       } catch (e) {
-        console.error(`[approve-trip] createTripParticipantAttendanceRequests(${pid}) 실패:`, e);
+        console.error(`[approve-trip] syncTripParticipantAttendance(${pid}) 실패:`, e);
       }
     }
     try {

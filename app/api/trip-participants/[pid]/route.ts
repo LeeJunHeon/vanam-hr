@@ -7,10 +7,10 @@ import {
   notifyTripApprovalRequested,
 } from "@/lib/trip-helpers";
 import {
-  cleanupTripParticipantAttendanceFuture,
-  collectParticipantFutureEventIds,
-  createTripParticipantAttendanceRequests,
+  syncTripParticipantAttendance,
+  replaceParticipantDates,
   rebuildTripEventCalendar,
+  kstTodayMidnightUtc,
 } from "@/lib/trip-calendar";
 import { resolveTripParticipantApprovers } from "@/lib/approval-resolver";
 import { createNotifications } from "@/lib/notify";
@@ -21,9 +21,11 @@ import { createNotifications } from "@/lib/notify";
 //     - 'accept'        : invite_status='accepted'. dates 최소 1개 필요(없으면 400).
 //                         body.dates가 오면 그 값으로 전체 교체.
 //     - 'decline'       : invite_status='declined'. (이후 다시 accept 가능)
-//     - 'update_dates'  : body.dates로 전체 교체. approval_status가 'approved'면
-//                         'pending'으로 되돌림(재승인 필요).
+//     - 'update_dates'  : 오늘(KST) 이후 날짜만 body.dates 에 맞춤. 지난 날짜를 바꾸려 하면 400.
+//                         approval_status 가 'approved' 면 날짜를 빼기만 한 경우 승인 유지,
+//                         추가·시각 변경이면 'pending' 으로 되돌림(재승인 필요 + 결재자 알림).
 // DELETE /api/trip-participants/[pid]: 본인/이벤트 생성자/admin/ceo 가능.
+//   출장보고서가 있거나 지난 날짜가 근태에 기록된 참석자는 제거 불가(409).
 
 async function loadParticipant(participantId: number) {
   return prisma.tripParticipant.findUnique({
@@ -174,14 +176,8 @@ export async function PATCH(
       }
     }
 
-    // approval_status 재승인 되돌림: update_dates에서 approved → pending
+    // approval_status: update_dates 의 approved → pending 여부는 날짜 교체 결과(빼기만인지)로 아래에서 정한다.
     let nextApprovalStatus = participant.approvalStatus;
-    if (
-      action === "update_dates" &&
-      participant.approvalStatus === "approved"
-    ) {
-      nextApprovalStatus = "pending";
-    }
 
     // accept이고 이 참여자가 결재 대상(pending)이면, 수락 시점에 부서 결재선을 계산해 저장(방법 B).
     // (이미 approver_ids가 채워져 있으면 중복 저장 방지를 위해 비어있을 때만 계산.)
@@ -204,65 +200,32 @@ export async function PATCH(
       }
     }
 
-    // update_dates 시 옛 근태(attendance_request) 정리(과거 보존).
-    // - approved였다가 pending으로 되돌리는 경우 (재승인 필요)
-    // - not_required 유지 케이스(admin self-join 등): cleanup 후 새 dates 기준으로 재생성
-    // 두 경우 모두 트랜잭션에서 dates를 갈아엎기 전에 정리해야 함.
-    // pending이었으면 근태/캘린더가 없어서 cleanup은 no-op.
-    if (
-      action === "update_dates" &&
-      (participant.approvalStatus === "approved" ||
-        participant.approvalStatus === "not_required")
-    ) {
-      try {
-        await cleanupTripParticipantAttendanceFuture(pid);
-      } catch (e) {
-        console.error(
-          `[trip-participants PATCH] attendance cleanup 실패 (pid=${pid}):`,
-          e
-        );
-      }
-    }
-
-    // update_dates는 트랜잭션에서 dates를 전부 지우고 다시 만든다(calendar_event_id NULL).
-    // 트랜잭션 후 rebuild가 호출되는데, 그 시점엔 옛 dates의 calendar_event_id가
-    // 사라져 단독 참석자의 캘린더 일정이 고아로 남는다. → 트랜잭션 시작 전에
-    // 미래 event_id를 미리 수집해 rebuild의 extra로 넘긴다.
-    let removedEventIds: string[] = [];
-    if (action === "update_dates") {
-      try {
-        removedEventIds = await collectParticipantFutureEventIds(pid);
-      } catch (e) {
-        console.error(
-          `[trip-participants PATCH(update_dates)] collectParticipantFutureEventIds(${pid}) 실패:`,
-          e
-        );
-      }
-    }
-
-    const updated = await prisma.$transaction(async (tx) => {
-      // 날짜 교체가 필요한 경우만 삭제 후 재생성
-      if (parsedDates !== null) {
-        await tx.tripParticipantDate.deleteMany({
-          where: { tripParticipantId: pid },
-        });
-        if (parsedDates.length > 0) {
-          await tx.tripParticipantDate.createMany({
-            data: parsedDates.map((d) => ({
-              tripParticipantId: pid,
-              attendDate: d.attendDate,
-              startTime: d.startTime,
-              endTime: d.endTime,
-            })),
-          });
+    // 날짜 교체 + 참여 상태 저장 — 한 트랜잭션.
+    //  - update_dates: 지난 날짜는 그대로여야 하고(다르면 400) 오늘 이후만 반영(replaceParticipantDates "update").
+    //    승인된 참석은 날짜를 빼기만 하면 승인 유지, 추가·시각 변경이면 결재 대기로 되돌림.
+    //  - accept: dates 가 오면 전체 교체("initial"), 안 오면 기존 날짜 유지.
+    const txResult = await prisma.$transaction(async (tx) => {
+      let removedCalendarEventIds: string[] = [];
+      let approvalStatus = nextApprovalStatus;
+      if (action === "update_dates") {
+        const replaced = await replaceParticipantDates(tx, pid, parsedDates ?? [], "update");
+        if (!replaced.ok) return { ok: false as const, error: replaced.error };
+        removedCalendarEventIds = replaced.removedCalendarEventIds;
+        if (participant.approvalStatus === "approved" && !replaced.removeOnly) {
+          approvalStatus = "pending";
         }
+      } else if (parsedDates !== null) {
+        const replaced = await replaceParticipantDates(tx, pid, parsedDates, "initial");
+        if (replaced.ok) removedCalendarEventIds = replaced.removedCalendarEventIds;
       }
+      const revertedToPending =
+        participant.approvalStatus === "approved" && approvalStatus === "pending";
 
       const p = await tx.tripParticipant.update({
         where: { id: pid },
         data: {
           inviteStatus: action === "accept" ? "accepted" : participant.inviteStatus,
-          approvalStatus: nextApprovalStatus,
+          approvalStatus,
           // accept 시점에 계산됐으면 부서 결재선 저장(방법 B)
           ...(acceptApproverIds !== null
             ? {
@@ -272,60 +235,39 @@ export async function PATCH(
               }
             : {}),
           // approved → pending 되돌림 시 승인자 정보도 초기화
-          ...(action === "update_dates" &&
-          participant.approvalStatus === "approved"
+          ...(revertedToPending
             ? { approvedById: null, approvedAt: null, rejectReason: null }
             : {}),
         },
       });
-      return p;
+      return { ok: true as const, updated: p, removedCalendarEventIds };
     });
+    if (!txResult.ok) {
+      return NextResponse.json({ error: txResult.error }, { status: 400 });
+    }
+    const { updated, removedCalendarEventIds } = txResult;
 
-    // ── 트랜잭션 후처리 ──
-    // (1) accept + not_required: 근태 생성 + 이벤트 캘린더 재구성
-    // (2) update_dates(전체): 옛 캘린더 일정 정리 + (확정 유지 시) 근태 재생성 + rebuild
-    //     - approved→pending: 이 참석자는 확정 집합에서 빠짐(rebuild가 자동 제외)
-    //     - not_required 유지: 근태 재생성 후 새 날짜로 rebuild 포함
-    //     - pending 유지(현재 코드상 발생 X, 안전 분기): rebuild만(no-op 가까움)
-    // 외부 호출은 모두 트랜잭션 밖, 실패는 로그.
-    if (action === "accept" && updated.approvalStatus === "not_required") {
+    // ── 트랜잭션 후처리 (외부 호출은 트랜잭션 밖, 실패는 로그) ──
+    // (1) accept + not_required: 근태 동기화 + 이벤트 캘린더 재구성
+    // (2) update_dates: 근태 동기화(확정이면 오늘 이후를 새 날짜에 맞춤, 결재 대기로 돌아갔으면
+    //     오늘 이후 근태만 정리 — 지난 날 근태는 보존) + 캘린더 재구성(지운 행의 일정 포함)
+    if (
+      (action === "accept" && updated.approvalStatus === "not_required") ||
+      action === "update_dates"
+    ) {
       try {
-        await createTripParticipantAttendanceRequests(pid);
+        await syncTripParticipantAttendance(pid);
       } catch (e) {
         console.error(
-          `[trip-participants PATCH] createTripParticipantAttendanceRequests(${pid}) 실패:`,
+          `[trip-participants PATCH ${action}] syncTripParticipantAttendance(${pid}) 실패:`,
           e
         );
       }
       try {
-        // accept 경로의 removedEventIds는 빈 배열 — 기존 동작과 동일.
-        await rebuildTripEventCalendar(participant.tripEvent.id, removedEventIds);
+        await rebuildTripEventCalendar(participant.tripEvent.id, removedCalendarEventIds);
       } catch (e) {
         console.error(
-          `[trip-participants PATCH] rebuildTripEventCalendar(${participant.tripEvent.id}) 실패:`,
-          e
-        );
-      }
-    } else if (action === "update_dates") {
-      // not_required 유지: 새 dates 기준으로 근태 재생성(approved→pending이면 skip).
-      // createTripParticipantAttendanceRequests는 멱등(이미 링크된 그룹 skip)이라
-      // 위에서 cleanup된 직후 호출해도 안전.
-      if (updated.approvalStatus === "not_required") {
-        try {
-          await createTripParticipantAttendanceRequests(pid);
-        } catch (e) {
-          console.error(
-            `[trip-participants PATCH] update_dates createTripParticipantAttendanceRequests(${pid}) 실패:`,
-            e
-          );
-        }
-      }
-      // 트랜잭션 시작 전에 수집한 removedEventIds를 함께 넘겨 고아 일정 제거 + rebuild.
-      try {
-        await rebuildTripEventCalendar(participant.tripEvent.id, removedEventIds);
-      } catch (e) {
-        console.error(
-          `[trip-participants PATCH] update_dates rebuildTripEventCalendar(${participant.tripEvent.id}) 실패:`,
+          `[trip-participants PATCH ${action}] rebuildTripEventCalendar(${participant.tripEvent.id}) 실패:`,
           e
         );
       }
@@ -424,33 +366,50 @@ export async function DELETE(
       );
     }
 
-    // 제거 알림용: 타인(주최자/관리자)이 제거하는 경우에만 대상에게 알림.
-    const removedEmployeeId = participant.employeeId;
-    const removedByOther = removedEmployeeId !== ownId;
-    const removeTripEventId2 = participant.tripEvent.id;
-
-    // 삭제 전에 미래 근태(attendance_request)부터 정리(과거 보존).
-    // 캘린더는 삭제 후 이벤트 단위로 rebuild하면 자동으로 정리·재구성된다.
-    const tripEventId = participant.tripEvent.id;
-
-    // ★ 참석자/dates가 CASCADE로 사라지기 전에 미래 calendar_event_id를 수집해 둔다.
-    // 그러지 않으면 단독 참석자의 캘린더 일정이 고아로 남는다(rebuild는 살아있는
-    // dates의 event_id만 찾음).
-    let removedEventIds: string[] = [];
-    try {
-      removedEventIds = await collectParticipantFutureEventIds(pid);
-    } catch (e) {
-      console.error(
-        `[trip-participants DELETE] collectParticipantFutureEventIds(${pid}) 실패:`,
-        e
+    // 지난 날짜가 근태에 기록된 참석자는 제거 불가 — 지난 근태는 바꾸지 않는다.
+    const today = kstTodayMidnightUtc();
+    const pastRecorded = await prisma.attendanceRequest.findFirst({
+      where: {
+        employeeId: participant.employeeId,
+        externalSource: "trip",
+        externalEventId: { startsWith: `trip-${participant.tripEvent.id}-${pid}-` },
+        status: { in: ["approved", "auto_approved", "auto_delegated"] },
+        startDate: { lt: today },
+      },
+      select: { id: true },
+    });
+    if (pastRecorded) {
+      return NextResponse.json(
+        {
+          error:
+            "이미 지난 출장 날짜가 근태에 기록돼 있어 참석자를 제거할 수 없습니다. 남은 날짜만 빼려면 날짜 변경을 이용하세요.",
+        },
+        { status: 409 }
       );
     }
 
+    // 제거 알림용: 타인(주최자/관리자)이 제거하는 경우에만 대상에게 알림.
+    const removedEmployeeId = participant.employeeId;
+    const removedByOther = removedEmployeeId !== ownId;
+    const tripEventId = participant.tripEvent.id;
+
+    // ★ 참석자/dates 가 CASCADE 로 사라지기 전에 이 참석자의 모든 calendar_event_id 를 모아 둔다
+    // (rebuild 는 남아있는 행의 event_id 만 찾으므로, 넘겨주지 않으면 일정이 고아로 남는다).
+    const removedEventIds = (
+      await prisma.tripParticipantDate.findMany({
+        where: { tripParticipantId: pid, calendarEventId: { not: null } },
+        select: { calendarEventId: true },
+      })
+    )
+      .map((r) => r.calendarEventId)
+      .filter((v): v is string => typeof v === "string" && v.length > 0);
+
+    // 오늘 이후 근태 정리(연결 먼저 끊고 삭제)
     try {
-      await cleanupTripParticipantAttendanceFuture(pid);
+      await syncTripParticipantAttendance(pid, { removing: true });
     } catch (e) {
       console.error(
-        `[trip-participants DELETE] attendance cleanup 실패 (pid=${pid}):`,
+        `[trip-participants DELETE] syncTripParticipantAttendance(${pid}) 실패:`,
         e
       );
     }
@@ -459,7 +418,6 @@ export async function DELETE(
     await prisma.tripParticipant.delete({ where: { id: pid } });
 
     // 이벤트 캘린더 재구성(이 참석자는 이미 제거되어 새 일정에 포함되지 않음)
-    // 미리 수집한 event_id를 함께 넘겨 단독 참석자 일정도 확실히 삭제.
     try {
       await rebuildTripEventCalendar(tripEventId, removedEventIds);
     } catch (e) {
@@ -478,7 +436,7 @@ export async function DELETE(
           title: "출장 참석자에서 제외",
           body: "출장 참석자에서 제외되었습니다.",
           linkPage: "field-trip",
-          linkRefId: removeTripEventId2,
+          linkRefId: tripEventId,
           sourceType: "trip",
         });
       } catch (e) {

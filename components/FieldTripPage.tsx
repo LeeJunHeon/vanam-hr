@@ -1511,10 +1511,11 @@ function TripDetailModal({
           event={detail}
           initialDates={myParticipant.dates}
           requireAtLeastOne
+          lockPastBefore={selfActionMode === "update" ? todayYmd() : undefined}
           warningText={
             selfActionMode === "update" &&
             myParticipant.approvalStatus === "approved"
-              ? "이미 승인된 참석입니다. 날짜를 변경하면 결재가 다시 필요해집니다."
+              ? "이미 승인된 참석입니다. 날짜를 빼기만 하면 승인이 유지되고, 날짜를 추가하거나 시간을 바꾸면 결재가 다시 필요합니다."
               : null
           }
           onClose={() => setSelfActionMode(null)}
@@ -1874,6 +1875,7 @@ export function DatesModal({
   initialDates,
   requireAtLeastOne,
   warningText,
+  lockPastBefore,
   onClose,
   onSubmit,
 }: {
@@ -1883,6 +1885,8 @@ export function DatesModal({
   initialDates: ParticipantDate[];
   requireAtLeastOne: boolean;
   warningText?: string | null;
+  // "날짜·시간 변경"에서만: 이 날짜(YYYY-MM-DD, 오늘) 이전은 선택 해제·새 선택·시각 수정 불가
+  lockPastBefore?: string;
   onClose: () => void;
   onSubmit: (datesPayload: ApiDatePayload[]) => Promise<string | null>;
 }) {
@@ -1923,6 +1927,7 @@ export function DatesModal({
         value={datesPayload}
         onChange={setDatesPayload}
         requireAtLeastOne={requireAtLeastOne}
+        lockPastBefore={lockPastBefore}
       />
       {warningText && (
         <div className="bg-amber-50 text-amber-700 text-xs px-3 py-2 rounded-xl flex items-start gap-2">
@@ -1965,18 +1970,26 @@ function DatesPicker({
   onChange,
   requireAtLeastOne,
   helpText,
+  lockPastBefore,
 }: {
   event: TripEventDetail;
   value: DatePayloadRow[];
   onChange: (v: DatePayloadRow[]) => void;
   requireAtLeastOne: boolean;
   helpText?: string;
+  lockPastBefore?: string;
 }) {
-  // 이벤트 기간 내 모든 YYYY-MM-DD (선택 가능 셀 판정용)
+  // 이벤트 기간 내 모든 YYYY-MM-DD 중 바꿀 수 있는 날짜 (선택 가능 셀 판정용)
+  // lockPastBefore 가 있으면 그 이전(지난 날짜)은 잠금 — 선택 해제·새 선택·시각 수정 불가.
+  const isLocked = (ymd: string) => lockPastBefore !== undefined && ymd < lockPastBefore;
   const inRange = useMemo(() => {
-    const set = new Set(enumerateDates(event.startDate, event.endDate));
+    const set = new Set(
+      enumerateDates(event.startDate, event.endDate).filter(
+        (d) => lockPastBefore === undefined || d >= lockPastBefore
+      )
+    );
     return set;
-  }, [event.startDate, event.endDate]);
+  }, [event.startDate, event.endDate, lockPastBefore]);
 
   // 선택된 항목 맵 + 정렬된 표시용 리스트
   const byDate = useMemo(() => {
@@ -2062,6 +2075,7 @@ function DatesPicker({
   };
 
   const removeOne = (ymd: string) => {
+    if (isLocked(ymd)) return;
     onChange(value.filter((v) => v.attendDate !== ymd));
     setAnchor(null);
     setHoverYmd(null);
@@ -2074,7 +2088,8 @@ function DatesPicker({
   };
 
   const clearAll = () => {
-    onChange([]);
+    // 잠긴 지난 날짜는 남긴다
+    onChange(value.filter((v) => isLocked(v.attendDate)));
     setAnchor(null);
     setHoverYmd(null);
   };
@@ -2105,6 +2120,7 @@ function DatesPicker({
     field: "startTime" | "endTime",
     next: string
   ) => {
+    if (isLocked(ymd)) return;
     onChange(value.map((v) => (v.attendDate === ymd ? { ...v, [field]: next } : v)));
   };
 
@@ -2161,12 +2177,18 @@ function DatesPicker({
           <button
             type="button"
             onClick={clearAll}
-            disabled={value.length === 0}
+            disabled={value.every((v) => isLocked(v.attendDate))}
             className="text-[11px] font-semibold rounded-lg px-2 py-1 text-gray-500 bg-gray-50 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             전체 해제
           </button>
         </div>
+        {lockPastBefore !== undefined && (
+          <div className="mb-2 flex items-center gap-1.5 rounded-lg bg-gray-50 px-2.5 py-1.5 text-[11px] text-gray-600">
+            <AlertCircle size={11} className="shrink-0 text-gray-400" />
+            지난 날짜는 바꿀 수 없어요 (근태 정정 신청 이용)
+          </div>
+        )}
 
         {/* 요일 헤더 */}
         <div className="grid grid-cols-7 gap-1 mb-1">
@@ -2203,7 +2225,10 @@ function DatesPicker({
             const isAnchor = anchor?.ymd === c.ymd;
             const isPreview = previewSet.has(c.ymd) && !isAnchor;
             let cellClass: string;
-            if (!isInRange) {
+            if (!isInRange && isSelected) {
+              // 잠긴 지난 날짜(선택 유지, 변경 불가)
+              cellClass = "bg-blue-200 text-white cursor-not-allowed";
+            } else if (!isInRange) {
               cellClass = "text-gray-300 cursor-not-allowed bg-gray-50/60";
             } else if (isPreview && anchor?.mode === "add") {
               cellClass = `bg-blue-100 border border-blue-300 ${baseColor}`;
@@ -2278,6 +2303,7 @@ function DatesPicker({
                     }
                     placeholder="시작"
                     className="w-[120px]"
+                    disabled={isLocked(row.attendDate)}
                   />
                   <span className="text-xs text-gray-400">~</span>
                   <TimePicker
@@ -2287,12 +2313,14 @@ function DatesPicker({
                     }
                     placeholder="종료"
                     className="w-[120px]"
+                    disabled={isLocked(row.attendDate)}
                   />
                   <button
                     type="button"
                     onClick={() => removeOne(row.attendDate)}
-                    className="p-1 rounded hover:bg-rose-50 text-rose-400"
-                    title="제거"
+                    disabled={isLocked(row.attendDate)}
+                    className="p-1 rounded hover:bg-rose-50 text-rose-400 disabled:opacity-30 disabled:cursor-not-allowed"
+                    title={isLocked(row.attendDate) ? "지난 날짜는 바꿀 수 없어요" : "제거"}
                   >
                     <X size={12} />
                   </button>

@@ -11,7 +11,7 @@ import {
 import { createDelegationHoursLoader } from "@/lib/approval-resolver";
 import { decideAttendanceApproval, type CalendarEdits } from "@/lib/attendance-approval";
 import {
-  createTripParticipantAttendanceRequests,
+  syncTripParticipantAttendance,
   rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
 import { createNotifications } from "@/lib/notify";
@@ -819,16 +819,16 @@ async function handleTripApproval(_request: NextRequest, body: unknown) {
   });
 
   // Phase 7 (이벤트 단위 재구성):
-  //  - 승인된 참석자 각각에 대해 근태(attendance_request) 생성
+  //  - 승인된 참석자 각각에 대해 근태(attendance_request) 동기화(늦은 승인이면 지난 날짜도 채움)
   //  - 이벤트 단위로 캘린더 재구성 한 번
   // 트랜잭션 밖에서 실행 — 외부 호출 시간 동안 DB 락 잡지 않음.
   if (action === "approve" && targetIds.length > 0) {
     for (const pid of targetIds) {
       try {
-        await createTripParticipantAttendanceRequests(pid);
+        await syncTripParticipantAttendance(pid);
       } catch (e) {
         console.error(
-          `[trip-approval] createTripParticipantAttendanceRequests(${pid}) 실패:`,
+          `[trip-approval] syncTripParticipantAttendance(${pid}) 실패:`,
           e
         );
       }

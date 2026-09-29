@@ -10,8 +10,9 @@ import {
 } from "@/lib/trip-helpers";
 import { resolveTripParticipantApprovers } from "@/lib/approval-resolver";
 import {
-  createTripParticipantAttendanceRequests,
+  syncTripParticipantAttendance,
   rebuildTripEventCalendar,
+  replaceParticipantDates,
 } from "@/lib/trip-calendar";
 import { createNotifications } from "@/lib/notify";
 
@@ -180,16 +181,9 @@ export async function POST(request: Request) {
     }
   }
 
-  await prisma.$transaction(async (tx) => {
-    await tx.tripParticipantDate.deleteMany({ where: { tripParticipantId: part.id } });
-    await tx.tripParticipantDate.createMany({
-      data: parsedDates.map((d) => ({
-        tripParticipantId: part.id,
-        attendDate: d.attendDate,
-        startTime: d.startTime,
-        endTime: d.endTime,
-      })),
-    });
+  // 날짜 행 교체(초대 수락 = 전체 교체)는 lib/trip-calendar replaceParticipantDates 공용
+  const removedCalendarEventIds = await prisma.$transaction(async (tx) => {
+    const replaced = await replaceParticipantDates(tx, part.id, parsedDates, "initial");
     await tx.tripParticipant.update({
       where: { id: part.id },
       data: {
@@ -200,17 +194,18 @@ export async function POST(request: Request) {
           : {}),
       },
     });
+    return replaced.ok ? replaced.removedCalendarEventIds : [];
   });
 
   // 후처리: 확정(not_required)→근태+캘린더 / 대기(pending)→결재 알림 (웹 accept 동일)
   if (promotedNotRequired || part.approvalStatus === "not_required") {
     try {
-      await createTripParticipantAttendanceRequests(part.id);
+      await syncTripParticipantAttendance(part.id);
     } catch (e) {
-      console.error(`[respond-trip-invite accept] createTripParticipantAttendanceRequests(${part.id}) 실패:`, e);
+      console.error(`[respond-trip-invite accept] syncTripParticipantAttendance(${part.id}) 실패:`, e);
     }
     try {
-      await rebuildTripEventCalendar(ev.id);
+      await rebuildTripEventCalendar(ev.id, removedCalendarEventIds);
     } catch (e) {
       console.error(`[respond-trip-invite accept] rebuildTripEventCalendar(${ev.id}) 실패:`, e);
     }

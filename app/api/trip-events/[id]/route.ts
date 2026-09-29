@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSession, isAdminSession } from "@/lib/auth-helpers";
 import { prisma } from "@/lib/prisma";
 import {
-  cleanupTripParticipantAttendanceFuture,
+  syncTripParticipantAttendance,
   rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
 
@@ -302,29 +302,29 @@ export async function PATCH(
       return NextResponse.json({ ok: true, alreadyClosed: true });
     }
 
-    // 1) 모든 참석자의 미래 근태(attendance_request) 정리(과거 보존)
+    // 1) status='closed' 먼저 저장 — 이후 참석자들은 확정이 아니게 된다
+    await prisma.tripEvent.update({
+      where: { id: eventId },
+      data: { status: "closed" },
+    });
+
+    // 2) 참석자마다 근태 동기화 → 오늘 이후 근태만 정리, 지난 날 근태는 보존
     const allParticipants = await prisma.tripParticipant.findMany({
       where: { tripEventId: eventId },
       select: { id: true },
     });
     for (const p of allParticipants) {
       try {
-        await cleanupTripParticipantAttendanceFuture(p.id);
+        await syncTripParticipantAttendance(p.id);
       } catch (e) {
         console.error(
-          `[trip-events PATCH] attendance cleanup 실패 (pid=${p.id}):`,
+          `[trip-events PATCH] syncTripParticipantAttendance(${p.id}) 실패:`,
           e
         );
       }
     }
 
-    // 2) status='closed'로 변경 (rebuild가 active 아니면 cleanup-only 모드로 동작)
-    await prisma.tripEvent.update({
-      where: { id: eventId },
-      data: { status: "closed" },
-    });
-
-    // 3) 이벤트 캘린더 재구성 → status가 closed이므로 미래 캘린더 일정 삭제만 수행
+    // 3) 이벤트 캘린더 재구성 → closed 이므로 지난 기록 날짜만 다시 그림
     try {
       await rebuildTripEventCalendar(eventId);
     } catch (e) {

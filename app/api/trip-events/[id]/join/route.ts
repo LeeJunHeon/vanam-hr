@@ -7,7 +7,7 @@ import {
   notifyTripApprovalRequested,
 } from "@/lib/trip-helpers";
 import {
-  createTripParticipantAttendanceRequests,
+  syncTripParticipantAttendance,
   rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
 import { resolveTripParticipantApprovers } from "@/lib/approval-resolver";
@@ -139,13 +139,13 @@ export async function POST(
 
     // self-join은 invite_status='accepted'로 생성된다.
     // approval_status가 'not_required'(=본인이 admin/ceo)이면 결재를 거치지 않으므로
-    // 여기서 근태 생성 + 이벤트 캘린더 재구성. 'pending'(=employee)이면 결재 승인 시 트리거.
+    // 여기서 근태 동기화 + 이벤트 캘린더 재구성. 'pending'(=employee)이면 결재 승인 시 트리거.
     if (created.approvalStatus === "not_required") {
       try {
-        await createTripParticipantAttendanceRequests(created.id);
+        await syncTripParticipantAttendance(created.id);
       } catch (e) {
         console.error(
-          `[trip-events/join] createTripParticipantAttendanceRequests(${created.id}) 실패:`,
+          `[trip-events/join] syncTripParticipantAttendance(${created.id}) 실패:`,
           e
         );
       }
