@@ -770,6 +770,98 @@ class Database:
             row = c.fetchone()
             return row[0] if row else None
 
+    def set_manual_row_category(
+        self, employee_id: int, work_date: date, category_id: int
+    ) -> Optional[int]:
+        """수동 정정으로 잠긴 행의 category_id 만 맞춘다.
+
+        시각·상태·지각/조퇴 플래그·보정 출처·메모는 SET 절에 없어 절대 바뀌지 않는다.
+        이미 같은 값이면 갱신하지 않는다(updated_at 불필요 갱신 방지).
+        변경된 행 id 반환, 가드에 막히면 None.
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                UPDATE hr.attendance_daily
+                SET category_id = %s,
+                    updated_at = NOW()
+                WHERE employee_id = %s AND work_date = %s
+                  AND is_overridden = true
+                  AND coalesce(override_source, '') <> 'calendar'
+                  AND category_id IS DISTINCT FROM %s
+                RETURNING id
+                """,
+                (category_id, employee_id, work_date, category_id),
+            )
+            row = c.fetchone()
+            return row[0] if row else None
+
+    def get_recalc_targets(self, before_date: date, limit: int = 200) -> list[dict]:
+        """needs_recalc=true 이고 work_date < before_date 인 행. 오래된 날짜 순.
+
+        퇴사자(is_active=false)도 포함 — 지난 날 기록은 퇴사와 무관하게 맞아야 한다.
+        반환: [{id, employee_id, work_date, employee_no, name}, ...]
+        """
+        self._ensure_connected()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute(
+                """
+                SELECT d.id, d.employee_id, d.work_date, e.employee_no, e.name
+                FROM hr.attendance_daily d
+                JOIN hr.employees e ON e.id = d.employee_id
+                WHERE d.needs_recalc = true
+                  AND d.work_date < %s
+                ORDER BY d.work_date ASC, d.employee_id ASC
+                LIMIT %s
+                """,
+                (before_date, limit),
+            )
+            return [dict(r) for r in c.fetchall()]
+
+    def finish_recalc(
+        self, employee_id: int, work_date: date, drop_if_empty: bool
+    ) -> str:
+        """재계산 표시 해제. drop_if_empty 이고 행이 표시용 빈 행이면 삭제.
+
+        빈 행 = check_in·check_out·auto_status·category_id 모두 NULL, is_overridden=false,
+        note·status_reason NULL, 미확정, 사유 첨부파일 없음.
+        반환: 'deleted' | 'cleared' | 'none'(행 없음).
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            if drop_if_empty:
+                c.execute(
+                    """
+                    DELETE FROM hr.attendance_daily d
+                    WHERE d.employee_id = %s AND d.work_date = %s
+                      AND d.check_in IS NULL AND d.check_out IS NULL
+                      AND d.auto_status IS NULL AND d.category_id IS NULL
+                      AND d.is_overridden = false
+                      AND d.note IS NULL AND d.status_reason IS NULL
+                      AND d.is_confirmed = false
+                      AND NOT EXISTS (
+                          SELECT 1 FROM hr.attendance_reason_files f
+                          WHERE f.daily_id = d.id
+                      )
+                    RETURNING d.id
+                    """,
+                    (employee_id, work_date),
+                )
+                if c.fetchone() is not None:
+                    return "deleted"
+            c.execute(
+                """
+                UPDATE hr.attendance_daily
+                SET needs_recalc = false
+                WHERE employee_id = %s AND work_date = %s
+                  AND needs_recalc = true
+                RETURNING id
+                """,
+                (employee_id, work_date),
+            )
+            return "cleared" if c.fetchone() is not None else "none"
+
     def get_holiday(self, work_date: date) -> Optional[str]:
         """Phase 6-2L+ B-3: 해당 날짜의 공휴일 이름 조회 (없으면 None).
 

@@ -18,7 +18,12 @@ import {
   MapPin,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
-import { DatesModal, type ApiDatePayload } from "@/components/FieldTripPage";
+import {
+  DatesModal,
+  confirmPastTripDates,
+  todayYmd,
+  type ApiDatePayload,
+} from "@/components/FieldTripPage";
 
 // 일수 포맷: 정수면 그대로, 아니면 소수 1자리 (반차 0.5 단위 대응)
 function fmtDays(n: number): string {
@@ -410,7 +415,13 @@ export default function ApprovalPage() {
       setOpenInviteAccept(item);
       return;
     }
-    if (!confirm(`"${item.eventName}" 출장 초대를 수락하시겠습니까?`)) return;
+    // 지난 날짜가 있으면 근태 기록 안내 문구로, 없으면 기존 문구로 확인.
+    const ymds = item.dates.map((d) => d.attendDate);
+    const today = todayYmd();
+    const ok = ymds.some((d) => d < today)
+      ? confirmPastTripDates(ymds, today)
+      : confirm(`"${item.eventName}" 출장 초대를 수락하시겠습니까?`);
+    if (!ok) return;
     const err = await submitInviteAccept(item.participantId, undefined);
     if (err) alert(err);
   };
@@ -628,6 +639,7 @@ export default function ApprovalPage() {
           }}
           initialDates={[]}
           requireAtLeastOne
+          warnPastDates
           onClose={() => setOpenInviteAccept(null)}
           onSubmit={(dates) =>
             submitInviteAccept(openInviteAccept.participantId, dates)

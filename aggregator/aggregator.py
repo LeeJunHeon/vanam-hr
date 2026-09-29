@@ -16,6 +16,15 @@ is_overridden=true 인 row는 건드리지 않음.
 - 공휴일·시프트 미배정·휴무·휴가/외근 등록자·이미 출근한 직원은 제외.
   (직전 근무일 알림과 달리 '다음 날'이 아닌 '당일' 실시간)
 
+지난 날 재계산 (needs_recalc):
+- 웹이 needs_recalc=true 로 표시한 오늘 이전 날짜를 매 사이클 최대 200건, 오래된 순으로
+  같은 하루 계산(_process_employee_work_date)으로 다시 계산한 뒤 표시를 내린다.
+- 결과가 no_data 이고 표시용 빈 행이면 행을 지운다. 이 경로는 알림을 보내지 않는다.
+
+수동 정정 행의 구분(category) 맞춤:
+- 수동 보호로 upsert 가 막힌 날에 휴가·출장 등(type leave·long_leave·work) 신청이 있으면
+  category_id 만 대표 카테고리로 바꾼다. 시각·상태·보정 출처·메모는 그대로.
+
 출퇴근 정의 (employee 단위 통합 timeline, location 무관):
 - 출근: 그날 첫 'online'의 checked_at
 - 퇴근: 마지막 record가 offline이고 그 후 grace 동안 재연결 없을 때만 확정
@@ -64,6 +73,12 @@ from logger import setup_logger
 
 # 한국 시간대 (UTC+9, DST 없음) — 끊김 알림에서 KST 비교용
 KST = timezone(timedelta(hours=9))
+
+# 사이클당 지난 날 재계산(needs_recalc) 최대 처리 건수
+RECALC_BATCH_LIMIT = 200
+
+# 수동 정정 행에서 구분(category)을 맞출 신청 카테고리 type (근태 정정 'correction' 제외)
+MANUAL_ROW_CATEGORY_TYPES = ("leave", "long_leave", "work")
 
 
 def _floor_minute(dt: Optional[datetime]) -> Optional[datetime]:
@@ -358,6 +373,63 @@ class Aggregator:
                     f"_check_no_show_alert 예외 (emp_id={emp.get('id')}): {e}"
                 )
 
+        # 지난 날 재계산 — 웹이 needs_recalc 로 표시한 오늘 이전 날짜를 같은 하루 계산 함수로 다시 계산.
+        # 정책 값은 이번 사이클 값 그대로, 알림은 보내지 않는다.
+        recalc_count = 0
+        try:
+            recalc_targets = self.db.get_recalc_targets(today, RECALC_BATCH_LIMIT)
+        except Exception as e:
+            self.logger.error(f"get_recalc_targets 예외: {e}")
+            recalc_targets = []
+        recalc_holidays: dict = {}
+        for target in recalc_targets:
+            t_emp_id = target["employee_id"]
+            t_date = target["work_date"]
+            try:
+                if t_date not in recalc_holidays:
+                    recalc_holidays[t_date] = self.db.get_holiday(t_date)
+                result = self._process_employee_work_date(
+                    {
+                        "id": t_emp_id,
+                        "employee_no": target.get("employee_no"),
+                        "name": target.get("name"),
+                    },
+                    t_date,
+                    grace_minutes,
+                    cutoff_hour,
+                    grace_in_minutes,
+                    grace_out_minutes,
+                    now,
+                    cycle_today=today,
+                    holiday_name=recalc_holidays[t_date],
+                    timed_trip_exempt=timed_trip_exempt,
+                    lunch_deduct_enabled=lunch_deduct_enabled,
+                    timed_event_margin_hours=timed_event_margin_hours,
+                    lunch_start_str=lunch_start_str,
+                    lunch_end_str=lunch_end_str,
+                    overnight_extend_enabled=overnight_extend_enabled,
+                    overnight_extend_max_hours=overnight_extend_max_hours,
+                )
+                finished = self.db.finish_recalc(
+                    t_emp_id, t_date, drop_if_empty=(result == "no_data")
+                )
+                recalc_count += 1
+                self.logger.info(
+                    f"  [재계산] 직원 {t_emp_id}({target.get('employee_no')}/{target.get('name')}) "
+                    f"work_date={t_date} — {result}, 표시 {finished}"
+                )
+            except Exception as e:
+                # 무한 재시도 방지: 실패해도 표시는 내린다. 다음 행은 계속.
+                self.logger.error(
+                    f"  [재계산] 직원 {t_emp_id} work_date={t_date} 처리 예외: {e}"
+                )
+                try:
+                    self.db.finish_recalc(t_emp_id, t_date, drop_if_empty=False)
+                except Exception as e2:
+                    self.logger.error(
+                        f"  [재계산] 직원 {t_emp_id} work_date={t_date} 표시 해제 실패: {e2}"
+                    )
+
         # 직전 근무일 비정상 알림 — 직원 루프 밖에서 사이클당 1회 (대상은 DB가 추림)
         try:
             self._check_attendance_alerts(today, now, holiday_name=holiday_cache.get(today))
@@ -390,7 +462,8 @@ class Aggregator:
         total = time.time() - cycle_start
         self.logger.info(
             f"=== 사이클 종료: {total:.3f}s "
-            f"(upsert {upsert_count}, no_data {skip_no_data}, overridden {skip_overridden}) ==="
+            f"(upsert {upsert_count}, no_data {skip_no_data}, overridden {skip_overridden}, "
+            f"recalc {recalc_count}) ==="
         )
 
     def _process_employee_work_date(
@@ -796,6 +869,13 @@ class Aggregator:
                     f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} "
                     f"— is_overridden=true 로 보호됨, 스킵 (backfill={backfilled})"
                 )
+            # 수동 정정 행의 구분 맞춤 — 그날 휴가·출장 등 신청이 있으면 category_id 만 바꾼다.
+            # 시각·상태·플래그·보정 출처·메모는 그대로. 신청이 없으면 기존 구분을 지우지 않는다.
+            if active_requests:
+                self._sync_manual_row_category(
+                    emp_id, emp_no, emp_name, work_date,
+                    category_candidates or active_requests, now,
+                )
             return "backfilled" if backfilled else "overridden"
         else:
             shift_label = (
@@ -952,6 +1032,38 @@ class Aggregator:
                 f"  [부분백필] 직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} "
                 f"— {side} 백필: check_in={final_in}, check_out={final_out}, "
                 f"work_minutes={new_work_minutes}, auto_status={new_auto_status}"
+            )
+            return True
+        return False
+
+    def _sync_manual_row_category(
+        self, emp_id, emp_no, emp_name, work_date, requests, now,
+    ) -> bool:
+        """수동 정정(is_overridden=true, override_source != 'calendar') 행의 category_id 를
+        그날 휴가·출장 등 신청의 대표 카테고리로 맞춘다. 실제로 바꿨으면 True.
+
+        대상 신청은 카테고리 type 이 leave·long_leave·work 인 것만(근태 정정 제외).
+        대표 카테고리는 캘린더 보정과 같은 _pick_category_for_now 로 고른다.
+        """
+        candidates = [
+            r for r in requests
+            if r.get("category_type") in MANUAL_ROW_CATEGORY_TYPES
+        ]
+        if not candidates:
+            return False
+        existing = self.db.get_daily_for_backfill(emp_id, work_date)
+        if (
+            existing is None
+            or not existing["is_overridden"]
+            or existing["override_source"] == "calendar"
+        ):
+            return False
+        category_id = self._pick_category_for_now(candidates, now)
+        new_id = self.db.set_manual_row_category(emp_id, work_date, category_id)
+        if new_id is not None:
+            self.logger.info(
+                f"  [구분맞춤] 직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} "
+                f"— 수동 정정 행 category_id={category_id} (시각·상태 유지)"
             )
             return True
         return False

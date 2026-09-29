@@ -118,9 +118,19 @@ interface EmployeeOption {
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
-function todayYmd(): string {
+export function todayYmd(): string {
   const d = new Date();
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+// 지난 날짜가 포함된 초대 수락·참여 확인. 지난 날짜도 출장으로 근태에 기록되므로
+// 실수 방지용으로 묻는다(서버 판정과 무관한 안내). 지난 날짜가 없으면 true.
+export function confirmPastTripDates(ymds: string[], today: string): boolean {
+  const past = Array.from(new Set(ymds.filter((d) => d < today))).sort();
+  if (past.length === 0) return true;
+  return confirm(
+    `이미 지난 날짜(${past.map((d) => d.slice(5)).join(", ")})가 포함돼 있어요. ` +
+      "수락하면 그 날짜가 출장으로 근태에 기록됩니다. 계속할까요?"
+  );
 }
 function formatDateRange(start: string, end: string): string {
   return start === end ? start : `${start} ~ ${end}`;
@@ -734,6 +744,7 @@ export default function FieldTripPage() {
           event={joinAfterCreate}
           initialDates={[]}
           requireAtLeastOne
+          warnPastDates
           onClose={() => setJoinAfterCreate(null)}
           onSubmit={async (datesPayload) => {
             const res = await fetch(
@@ -1487,6 +1498,7 @@ function TripDetailModal({
           event={detail}
           initialDates={[]}
           requireAtLeastOne
+          warnPastDates
           onClose={() => setJoinOpen(false)}
           onSubmit={async (datesPayload) => {
             const res = await fetch(`/api/trip-events/${eventId}/join`, {
@@ -1512,6 +1524,7 @@ function TripDetailModal({
           initialDates={myParticipant.dates}
           requireAtLeastOne
           lockPastBefore={selfActionMode === "update" ? todayYmd() : undefined}
+          warnPastDates={selfActionMode === "accept"}
           warningText={
             selfActionMode === "update" &&
             myParticipant.approvalStatus === "approved"
@@ -1876,6 +1889,7 @@ export function DatesModal({
   requireAtLeastOne,
   warningText,
   lockPastBefore,
+  warnPastDates,
   onClose,
   onSubmit,
 }: {
@@ -1887,6 +1901,8 @@ export function DatesModal({
   warningText?: string | null;
   // "날짜·시간 변경"에서만: 이 날짜(YYYY-MM-DD, 오늘) 이전은 선택 해제·새 선택·시각 수정 불가
   lockPastBefore?: string;
+  // 초대 수락·참여에서만: 지난 날짜가 있으면 제출 전 확인(취소 시 제출 안 함)
+  warnPastDates?: boolean;
   onClose: () => void;
   onSubmit: (datesPayload: ApiDatePayload[]) => Promise<string | null>;
 }) {
@@ -1905,6 +1921,14 @@ export function DatesModal({
       setErr("참여 날짜를 1개 이상 선택하세요.");
       return;
     }
+    if (
+      warnPastDates &&
+      !confirmPastTripDates(
+        datesPayload.map((d) => d.attendDate),
+        todayYmd()
+      )
+    )
+      return;
     setSubmitting(true);
     setErr(null);
     try {
