@@ -3,17 +3,19 @@ import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth-helpers";
 import { loadWorkDayChecker } from "@/lib/annual-leave";
 import { isLeaveCategoryType, isNonWorkDayLeave } from "@/lib/category-kind";
+import { countPendingInbox } from "@/lib/approval-inbox";
 
 // GET /api/dashboard/stats?period=day|month|year&targetDate=YYYY-MM-DD&targetMonth=YYYY-MM&targetYear=YYYY
 //
 // 기간 내 "문제 근태(결근/지각/조퇴) + 휴가 + 출장 + 외근"을 건수로 집계하고
-// 각 항목의 상세 목록을 함께 반환한다. pendingRequests는 기간 무관 현재 pending 전체.
+// 각 항목의 상세 목록을 함께 반환한다.
+// pendingRequests는 기간 무관. 로그인 사용자의 결재함 '결재 대기' 탭과 같은 범위(lib/approval-inbox).
 export async function GET(request: NextRequest) {
   try {
     const _auth = await requireAdmin();
     if (!_auth.ok) return _auth.response;
-    const viewerIsCeo = _auth.session.user.role === "ceo";
-    const myEmployeeId = _auth.session.user.employeeId as number;
+    const viewerRole = _auth.session.user.role;
+    const myEmployeeId = _auth.session.user.employeeId;
 
     const { searchParams } = new URL(request.url);
     const period = (searchParams.get("period") || "month") as
@@ -67,19 +69,12 @@ export async function GET(request: NextRequest) {
       rangeEnd = new Date(Date.UTC(y + 1, 0, 1));
     }
 
-    const [attendancePending, dailies, pendingTripEvents] = await Promise.all([
-      // 결재 대기 — 결재함과 동일 기준 (CEO는 전사, 그 외는 본인이 결재자/대리결재자인 것만)
-      prisma.attendanceRequest.count({
-        where: viewerIsCeo
-          ? { status: "pending" }
-          : {
-              status: "pending",
-              OR: [
-                { approverIds: { has: myEmployeeId } },
-                { deputyApproverId: myEmployeeId },
-              ],
-            },
-      }),
+    const [pendingInbox, dailies] = await Promise.all([
+      // 결재 대기 — 로그인 사용자의 결재함 "결재 대기" 탭과 같은 범위.
+      // 직원 미매핑이면 결재함 자체가 없으므로 0.
+      Number.isInteger(myEmployeeId)
+        ? countPendingInbox({ approverId: myEmployeeId as number, role: viewerRole })
+        : Promise.resolve({ attendance: 0, trip: 0, invites: 0, total: 0 }),
       // 기간 내 attendance_daily — employee/category include 후 메모리 분류
       prisma.attendanceDaily.findMany({
         where: { workDate: { gte: rangeStart, lt: rangeEnd } },
@@ -97,16 +92,15 @@ export async function GET(request: NextRequest) {
         },
         orderBy: { workDate: "desc" },
       }),
-      // 출장 결재 대기 — approval_status='pending' 참석자가 1명 이상인 active trip_event 단위.
-      // (결재함의 출장 카드 1장 = 이벤트 1건과 일치. 결재자 필터 없이 전사 기준.)
-      prisma.tripParticipant.groupBy({
-        by: ["tripEventId"],
-        where: { approvalStatus: "pending", tripEvent: { status: "active" } },
-      }),
     ]);
 
-    // 결재 대기 = 근태/휴가 신청(pending) + 출장 결재 대기 이벤트 수
-    const pendingRequests = attendancePending + pendingTripEvents.length;
+    // 결재 대기 = 근태·휴가 pending + 출장 결재 이벤트 수 + 내 출장 초대 수
+    const pendingRequests = pendingInbox.total;
+    const pendingBreakdown = {
+      attendance: pendingInbox.attendance,
+      trip: pendingInbox.trip,
+      invites: pendingInbox.invites,
+    };
 
     // 공통 필드 추출 헬퍼
     const base = (d: (typeof dailies)[number]) => ({
@@ -243,6 +237,7 @@ export async function GET(request: NextRequest) {
       },
       asOf: now.toISOString(),
       pendingRequests,
+      pendingBreakdown,
       counts,
       details,
     });

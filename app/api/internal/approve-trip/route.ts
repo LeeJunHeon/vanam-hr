@@ -7,13 +7,14 @@ import {
   rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
 import { createNotifications } from "@/lib/notify";
+import { tripApproverScope } from "@/lib/approval-inbox";
 
 export const dynamic = "force-dynamic";
 
 // POST /api/internal/approve-trip — 챗 출장 참여 결재(승인/반려).
 // 결재자(권한)는 신원(x-acting-user-email→resolveHrIdentity)에서만 → 위조 불가.
 // 웹 handleTripApproval과 동일: approver_ids 권한 / CEO·관리자 폴백 / 승인 시 근태생성+캘린더 / 결과 알림.
-// 웹 approvals 라우트는 수정하지 않음(approve-request와 동일하게 챗에서 재구현).
+// 결재 권한 범위는 lib/approval-inbox 의 tripApproverScope 를 웹과 공용.
 export async function POST(request: Request) {
   const auth = requireHrWriteAuth(request);
   if (!auth.ok) return auth.response;
@@ -26,8 +27,6 @@ export async function POST(request: Request) {
     );
   }
   const approverId = identity.employeeId as number;
-  const isCeo = identity.role === "ceo";
-  const isAdmin = identity.role === "admin";
 
   let body: { trip?: unknown; target?: unknown; action?: unknown; rejectReason?: unknown };
   try {
@@ -77,16 +76,8 @@ export async function POST(request: Request) {
   }
   const eventId = evMatches[0].id;
 
-  // 결재 권한 필터 (웹 handleTripApproval과 동일): CEO=제한없음, 관리자=빈 approver_ids 폴백, 그 외=approver_ids/deputy
-  const approverFilter = isCeo
-    ? {}
-    : {
-        OR: [
-          { approverIds: { has: approverId } },
-          { deputyApproverId: approverId },
-          ...(isAdmin ? [{ approverIds: { isEmpty: true } }] : []),
-        ],
-      };
+  // 결재 권한 필터 (웹 handleTripApproval과 공용): CEO=제한없음, 관리자=빈 approver_ids 폴백, 그 외=approver_ids/deputy
+  const approverFilter = tripApproverScope({ approverId, role: identity.role });
 
   // 내가 결재할 수 있는 이 출장의 pending 참여자(이름 매칭용 employee.name 포함)
   const candidates = await prisma.tripParticipant.findMany({

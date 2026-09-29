@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { Prisma } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getApproverId, requireSession, isAdminSession } from "@/lib/auth-helpers";
+import { getApproverId, requireSession } from "@/lib/auth-helpers";
+import {
+  pendingAttendanceWhere,
+  pendingTripWhere,
+  myTripInviteWhere,
+  tripApproverScope,
+} from "@/lib/approval-inbox";
 import {
   createTripParticipantAttendanceRequests,
   rebuildTripEventCalendar,
@@ -209,17 +216,9 @@ export async function GET(request: NextRequest) {
     }
 
     const viewerIsCeo = session.user.role === "ceo";
-    let where: any = {};
+    let where: Prisma.AttendanceRequestWhereInput = {};
     if (status === "pending") {
-      where = viewerIsCeo
-        ? { status: "pending" }
-        : {
-            status: "pending",
-            OR: [
-              { approverIds: { has: approverId } },
-              { deputyApproverId: approverId },
-            ],
-          };
+      where = pendingAttendanceWhere({ approverId, role: session.user.role });
     } else if (status === "approved") {
       where = { status: "approved", approvedByIds: { has: approverId } };
     } else if (status === "rejected") {
@@ -415,37 +414,19 @@ export async function GET(request: NextRequest) {
     // - all(else): 본인이 처리한 approved/rejected 합쳐서
     // 정렬은 attendance와 함께 requestedAt(ISO) 기준 desc.
     // ────────────────────────────────────────────────────
-    const adminLike = isAdminSession(session);
-    const viewerIsCeoTrip = session.user.role === "ceo";
     type TripItem = ReturnType<typeof buildTripItem>;
     let tripItems: TripItem[] = [];
 
     // 출장 결재 조회 자격:
     //  - 누구나 "본인이 결재자(approver_ids 포함)이거나 대리(deputy)"인 출장은 볼 수 있다.
-    //  - 관리자(adminLike)는 추가로 "approver_ids가 빈 배열인 기존 출장"도 본다(폴백).
+    //  - 관리자(ADMIN)는 추가로 "approver_ids가 빈 배열인 기존 출장"도 본다(폴백).
     //  - CEO는 상시 모든 pending 출장을 본다.
     // approved/rejected/all 이력은 기존처럼 "본인이 처리한 것"만.
     {
-      // pending where: 결재자 필터
-      let participantWhere: any;
+      // pending where: 결재자 필터 (lib/approval-inbox)
+      let participantWhere: Prisma.TripParticipantWhereInput;
       if (status === "pending") {
-        if (viewerIsCeoTrip) {
-          // CEO는 모든 pending
-          participantWhere = { approvalStatus: "pending" };
-        } else {
-          const pendingOr: any[] = [
-            { approverIds: { has: approverId } },
-            { deputyApproverId: approverId },
-          ];
-          // 관리자는 빈 배열(기존 출장)도 폴백으로 본다
-          if (adminLike) {
-            pendingOr.push({ approverIds: { isEmpty: true } });
-          }
-          participantWhere = {
-            approvalStatus: "pending",
-            OR: pendingOr,
-          };
-        }
+        participantWhere = pendingTripWhere({ approverId, role: session.user.role });
       } else if (status === "approved") {
         participantWhere = {
           approvalStatus: "approved",
@@ -526,11 +507,7 @@ export async function GET(request: NextRequest) {
       Number.isInteger(ownEmployeeId) &&
       approverId === ownEmployeeId
         ? await prisma.tripParticipant.findMany({
-            where: {
-              employeeId: ownEmployeeId as number,
-              inviteStatus: "invited",
-              tripEvent: { status: "active" },
-            },
+            where: myTripInviteWhere(ownEmployeeId as number),
             include: {
               tripEvent: {
                 select: {
@@ -863,7 +840,7 @@ export async function PUT(request: NextRequest) {
 // - action='reject'면 rejectReason 필수.
 // - 이미 pending이 아닌 참석자는 건너뜀(부분 처리 가능).
 // - 이번 단계에선 캘린더/근태 반영하지 않음(4단계). approval_status + 승인자 정보까지만.
-async function handleTripApproval(_request: NextRequest, body: any) {
+async function handleTripApproval(_request: NextRequest, body: unknown) {
   const sessionR = await requireSession();
   if (!sessionR.ok) return sessionR.response;
   const { session } = sessionR;
@@ -876,8 +853,6 @@ async function handleTripApproval(_request: NextRequest, body: any) {
       { status: 403 }
     );
   }
-  const viewerIsCeoTrip = session.user.role === "ceo";
-  const viewerIsAdminTrip = isAdminSession(session);
 
   const { tripEventId, action, rejectReason, participantIds } = body as {
     tripEventId?: unknown;
@@ -953,17 +928,13 @@ async function handleTripApproval(_request: NextRequest, body: any) {
   //  - 본인이 approver_ids에 포함 또는 deputy
   //  - approver_ids가 빈 배열(기존 출장)이고 본인이 관리자 → 폴백
   //  - CEO는 모든 pending 처리 가능
-  const approverFilter: any = viewerIsCeoTrip
-    ? {} // CEO는 제한 없음
-    : {
-        OR: [
-          { approverIds: { has: approverEmployeeId as number } },
-          { deputyApproverId: approverEmployeeId as number },
-          ...(viewerIsAdminTrip ? [{ approverIds: { isEmpty: true } }] : []),
-        ],
-      };
+  // (범위 정의는 lib/approval-inbox 의 tripApproverScope)
+  const approverFilter = tripApproverScope({
+    approverId: approverEmployeeId as number,
+    role: session.user.role,
+  });
 
-  const targetWhere: any = {
+  const targetWhere: Prisma.TripParticipantWhereInput = {
     tripEventId: eventIdNum,
     approvalStatus: "pending",
     ...approverFilter,
