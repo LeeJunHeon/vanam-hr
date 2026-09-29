@@ -6,7 +6,6 @@ import {
   notifyTeamOfApprovedRequest,
 } from "@/lib/finalize-approval";
 import { getDelegationHours } from "@/lib/approval-resolver";
-import { isDelegationElapsed } from "@/lib/approval-inbox";
 
 // 근태 결재(승인/반려)의 판정과 저장 — 단일 정의.
 // 웹 결재 PUT(/api/approvals), 챗 결재(/api/internal/approve-request), 위임 자동 마감
@@ -22,6 +21,19 @@ import { isDelegationElapsed } from "@/lib/approval-inbox";
 //               mode all → 결재자 전원이 승인했을 때 최종. 그 전엔 부분 승인(pending 유지).
 //  - 동시 처리 보호: 저장은 "읽은 시점과 상태가 같을 때만"(status pending + approvedByIds 일치).
 //    어긋나면 conflict — 근태·캘린더·알림 없음.
+
+// 대리 위임 시간 경과 판정 — 결재 판정·결재함 카드·위임 자동 마감 공용
+export function isDelegationElapsed(requestedAt: Date, hours: number): boolean {
+  const elapsed = Date.now() - requestedAt.getTime();
+  return elapsed >= hours * 60 * 60 * 1000;
+}
+
+// 대리 결재가 가능해지기까지 남은 시간(시간 단위, 0 이상)
+export function hoursUntilDelegation(requestedAt: Date, hours: number): number {
+  const elapsed = Date.now() - requestedAt.getTime();
+  const total = hours * 60 * 60 * 1000;
+  return Math.max(0, (total - elapsed) / (1000 * 60 * 60));
+}
 
 export type ApprovalRights = {
   isApprover: boolean;

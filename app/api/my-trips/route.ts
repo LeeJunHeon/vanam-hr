@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { tripReportTargetWhere } from "@/lib/trip-helpers";
 import { requireSession } from "@/lib/auth-helpers";
 
 const ALLOWED_PAGE_SIZES = [10, 20, 50];
 
 // GET /api/my-trips — 본인이 다녀온(다녀올) 출장/외근 목록. 출장보고서 작성 대상.
 // 두 소스를 합친다:
-//   (a) 그룹출장 참가 (trip_participants) — 초대 수락 + 결재 완료된 건만
+//   (a) 그룹출장 참가 (trip_participants) — 확정 참석자(수락 + 승인·결재 불필요 + 취소 안 된 출장),
+//       출장이 취소됐어도 보고서가 이미 있으면 포함 (lib/trip-helpers tripReportTargetWhere)
 //   (b) 단건 출장/외근 신청 (attendance_requests) — 승인된 건만
 // 그룹출장이 자동 생성한 attendance_request(external_source='trip')는 (a)와 중복되므로 제외.
 
@@ -56,12 +58,11 @@ export async function GET(request: NextRequest) {
     const pageSize = ALLOWED_PAGE_SIZES.includes(sizeRaw) ? sizeRaw : 20;
 
     const [participants, requests] = await Promise.all([
-      // (a) 그룹출장 — 초대 수락 + 결재 완료(approved 또는 결재불요 not_required)
+      // (a) 그룹출장 — 확정 참석자 + 취소 출장 중 보고서 있는 건 (lib/trip-helpers)
       prisma.tripParticipant.findMany({
         where: {
           employeeId: empId,
-          inviteStatus: "accepted",
-          approvalStatus: { in: ["approved", "not_required"] },
+          ...tripReportTargetWhere(),
         },
         take: 500,
         orderBy: { tripEvent: { endDate: "desc" } },

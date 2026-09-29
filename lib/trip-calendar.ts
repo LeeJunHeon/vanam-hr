@@ -2,7 +2,7 @@
 //
 // 설계(이벤트 단위 재구성):
 //  • 캘린더(Google) — 이벤트 단위 전체 재구성. rebuildTripEventCalendar(eventId).
-//    - 확정 참석자(approved OR not_required+accepted)의 미래 날짜만 대상.
+//    - 확정 참석자(수락 + 승인·결재 불필요, lib/trip-helpers confirmedParticipantWhere)의 미래 날짜만 대상.
 //    - "날짜 → 참석자 집합" 시그니처가 같고 연속이면 1건의 일정으로 묶음.
 //    - 일정 제목 = 이벤트명, location = 이벤트.location, attendees = 참석자 이메일,
 //      description = (사용자 메모) + 시스템 안내문, sendUpdates='none'(메일 미발송).
@@ -16,6 +16,7 @@
 // 외부 호출(syncer)은 트랜잭션 밖. 실패는 로그(전체 흐름 보존).
 
 import { prisma } from "@/lib/prisma";
+import { isConfirmedParticipant, confirmedParticipantWhere } from "@/lib/trip-helpers";
 
 // ── Field Trip 캘린더 / 카테고리 룩업(짧은 캐시) ──
 let _cachedBusinessTripCategoryId: number | null | undefined = undefined;
@@ -238,7 +239,7 @@ function groupConsecutiveForAttendance(
   return groups;
 }
 
-// 확정(approved or not_required+accepted) 참석자에 한해 attendance_request 생성.
+// 확정 참석자(수락 + 승인·결재 불필요, lib/trip-helpers isConfirmedParticipant)에 한해 attendance_request 생성.
 // 멱등(이미 attendance_request_id가 채워진 그룹은 skip).
 // 캘린더와 무관 — external_event_id는 결정적 fallback(`trip-{ev}-{p}-{startYmd}`) 사용.
 export async function createTripParticipantAttendanceRequests(
@@ -263,11 +264,7 @@ export async function createTripParticipantAttendanceRequests(
     },
   });
   if (!participant) return;
-  const okApproved = participant.approvalStatus === "approved";
-  const okNotRequired =
-    participant.approvalStatus === "not_required" &&
-    participant.inviteStatus === "accepted";
-  if (!okApproved && !okNotRequired) return;
+  if (!isConfirmedParticipant(participant)) return;
   if (participant.tripEvent.status !== "active") return;
   if (participant.dates.length === 0) return;
 
@@ -434,7 +431,7 @@ export async function collectParticipantFutureEventIds(
  *  1) 미래(KST 오늘 이상) 날짜에 연결된 기존 calendar_event_id를 모두 삭제(syncer DELETE).
  *     계산 후 trip_participant_dates의 calendar_event_id를 NULL로.
  *  2) event.status가 'active'가 아니면 여기서 종료(취소된 이벤트는 정리만).
- *  3) 확정 참석자(approved | not_required+accepted)의 미래 날짜를 모아
+ *  3) 확정 참석자(수락 + 승인·결재 불필요)의 미래 날짜를 모아
  *     "날짜 → 참석자 집합" 시그니처가 같고 연속이면 1건으로 묶어 캘린더 일정 생성.
  *  4) 새로 생성된 event_id를 그 그룹의 모든 참석자 × 모든 날짜 행에 저장.
  *
@@ -518,18 +515,7 @@ export async function rebuildTripEventCalendar(
 
   // 3) 확정 참석자 + 미래 dates + 직원 이메일 로드
   const participants = await prisma.tripParticipant.findMany({
-    where: {
-      tripEventId,
-      OR: [
-        { approvalStatus: "approved" },
-        {
-          AND: [
-            { approvalStatus: "not_required" },
-            { inviteStatus: "accepted" },
-          ],
-        },
-      ],
-    },
+    where: { tripEventId, ...confirmedParticipantWhere() },
     include: {
       employee: {
         select: { id: true, name: true, email: true },

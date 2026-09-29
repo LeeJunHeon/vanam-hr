@@ -4,13 +4,13 @@ import { prisma } from "@/lib/prisma";
 import {
   parseDatesArray,
   computeApprovalStatus,
+  notifyTripApprovalRequested,
 } from "@/lib/trip-helpers";
 import {
   createTripParticipantAttendanceRequests,
   rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
 import { resolveTripParticipantApprovers } from "@/lib/approval-resolver";
-import { createNotifications } from "@/lib/notify";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: self-join.
 // POST /api/trip-events/[id]/join
@@ -161,25 +161,13 @@ export async function POST(
 
     // 결재가 필요한 self-join(employee)이면, 부서 결재자에게 "새 출장 결재 요청" 알림.
     // resolvedApproverIds는 위에서 계산된 이 참여자의 결재자(부서 결재선 or fallback).
-    if (created.approvalStatus === "pending" && resolvedApproverIds.length > 0) {
-      try {
-        const me = await prisma.employee.findUnique({
-          where: { id: ownId as number },
-          select: { name: true },
-        });
-        const requesterName = me?.name ?? "직원";
-        await createNotifications({
-          employeeIds: resolvedApproverIds,
-          type: "trip_request",
-          title: "새 출장 결재 요청",
-          body: `${requesterName}님의 출장 참여 결재 요청`,
-          linkPage: "approval",
-          linkRefId: eventId,
-          sourceType: "trip",
-        });
-      } catch (e) {
-        console.error("[notify] 출장 결재 요청 알림 생성 실패(self-join):", e);
-      }
+    if (created.approvalStatus === "pending") {
+      await notifyTripApprovalRequested({
+        approverIds: resolvedApproverIds,
+        requesterEmployeeId: ownId as number,
+        tripEventId: eventId,
+        logLabel: "self-join",
+      });
     }
 
     return NextResponse.json(

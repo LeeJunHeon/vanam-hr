@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { tripReportTargetWhere } from "@/lib/trip-helpers";
 import { requireSession, isAdminSession } from "@/lib/auth-helpers";
 
 // GET /api/trip-reports/overview — 전 직원 출장/외근 + 보고서 작성 현황 (관리자 열람 전용).
@@ -62,12 +63,11 @@ export async function GET(request: NextRequest) {
     const pageSize = ALLOWED_PAGE_SIZES.includes(sizeRaw) ? sizeRaw : 20;
 
     const [participants, requests] = await Promise.all([
-      // (a) 그룹출장 — my-trips와 동일 조건 (초대 수락 + 결재 완료)
+      // (a) 그룹출장 — my-trips와 동일 조건 (lib/trip-helpers tripReportTargetWhere)
       prisma.tripParticipant.findMany({
         where: {
           ...(employeeId != null ? { employeeId } : {}),
-          inviteStatus: "accepted",
-          approvalStatus: { in: ["approved", "not_required"] },
+          ...tripReportTargetWhere(),
         },
         take: 500,
         orderBy: { tripEvent: { endDate: "desc" } },

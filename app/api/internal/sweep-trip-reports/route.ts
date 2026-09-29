@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { createNotifications } from "@/lib/notify";
+import { confirmedParticipantWhere } from "@/lib/trip-helpers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -105,9 +106,10 @@ export async function POST(request: Request) {
     const [participants, requests] = await Promise.all([
       prisma.tripParticipant.findMany({
         where: {
-          inviteStatus: "accepted",
-          approvalStatus: { in: ["approved", "not_required"] },
+          // 확정 참석자(lib/trip-helpers) — tripEvent 조건은 active + 종료일 범위를 합쳐서 둔다
+          ...confirmedParticipantWhere(),
           tripEvent: {
+            status: "active",
             endDate: { lt: todayDate, gte: requiredFromDate },
           },
           OR: notSubmitted,

@@ -1,6 +1,10 @@
 import type { Prisma } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
-import { evaluateApprovalRights } from "@/lib/attendance-approval";
+import {
+  evaluateApprovalRights,
+  isDelegationElapsed,
+  hoursUntilDelegation,
+} from "@/lib/attendance-approval";
 
 // 결재함 "결재 대기" 범위의 단일 정의.
 // 결재함 목록(GET /api/approvals), 출장 결재 권한(PUT /api/approvals kind=trip,
@@ -91,18 +95,6 @@ export async function countPendingInbox(v: InboxViewer): Promise<{
 }
 
 // ── 근태 결재 카드 상태 ─────────────────────────────────────
-
-// 대리 위임 시간 경과 판정
-export function isDelegationElapsed(requestedAt: Date, hours: number): boolean {
-  const elapsed = Date.now() - requestedAt.getTime();
-  return elapsed >= hours * 60 * 60 * 1000;
-}
-
-export function hoursUntilDelegation(requestedAt: Date, hours: number): number {
-  const elapsed = Date.now() - requestedAt.getTime();
-  const total = hours * 60 * 60 * 1000;
-  return Math.max(0, (total - elapsed) / (1000 * 60 * 60));
-}
 
 export type AttendanceApprovalView = {
   canApprove: boolean;

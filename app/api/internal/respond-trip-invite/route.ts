@@ -2,7 +2,12 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireHrWriteAuth } from "@/lib/internal-write-auth";
 import { resolveHrIdentity } from "@/lib/internal-identity";
-import { parseDatesArray } from "@/lib/trip-helpers";
+import {
+  parseDatesArray,
+  checkInviteResponse,
+  notifyTripApprovalRequested,
+  type ParsedDate,
+} from "@/lib/trip-helpers";
 import { resolveTripParticipantApprovers } from "@/lib/approval-resolver";
 import {
   createTripParticipantAttendanceRequests,
@@ -16,7 +21,8 @@ export const dynamic = "force-dynamic";
 // 본인(x-acting-user-email→resolveHrIdentity)의 초대 건만 → 위조 불가.
 // 거부: inviteStatus="declined" + 주최자 알림 (웹 decline 동일).
 // 수락: 참석 날짜 + 결재선 계산 + (확정 시)근태/캘린더 / (대기 시)결재 알림 (웹 trip-participants accept 동일).
-//       참석 날짜 미지정 시 출장 전체 기간. 시간 미지정 = 종일.
+//       참석 날짜 미지정 시 초대 때 정해둔 날짜(없으면 출장 전체 기간). 시간 미지정 = 종일.
+// 응답 가능 상태(수락: 초대됨·거절 / 거절: 초대됨)는 웹과 같은 checkInviteResponse.
 export async function POST(request: Request) {
   const auth = requireHrWriteAuth(request);
   if (!auth.ok) return auth.response;
@@ -59,6 +65,11 @@ export async function POST(request: Request) {
       inviteStatus: true,
       approvalStatus: true,
       approverIds: true,
+      // 챗 수락 시 날짜 미지정이면 초대 때 정해둔 날짜를 쓴다
+      dates: {
+        orderBy: [{ attendDate: "asc" }],
+        select: { attendDate: true, startTime: true, endTime: true },
+      },
       tripEvent: {
         select: { id: true, name: true, startDate: true, endDate: true, createdById: true },
       },
@@ -85,6 +96,12 @@ export async function POST(request: Request) {
   }
   const part = matches[0];
   const ev = part.tripEvent;
+
+  // 초대 응답 가능 상태 검사 (웹과 같은 lib/trip-helpers checkInviteResponse)
+  const denied = checkInviteResponse(part.inviteStatus, action);
+  if (denied) {
+    return NextResponse.json({ error: denied }, { status: 400 });
+  }
 
   // ───── 거부 ───── (웹 decline 동일)
   if (action === "decline") {
@@ -113,26 +130,37 @@ export async function POST(request: Request) {
   }
 
   // ───── 수락 ───── (웹 trip-participants accept 동일)
-  // 참석 날짜: 지정(콤마구분 YYYY-MM-DD) 없으면 출장 전체 기간
-  let rawDates: { attendDate: string }[];
-  if (attendDatesText) {
-    rawDates = attendDatesText.split(",").map((s) => s.trim()).filter(Boolean).map((d) => ({ attendDate: d }));
+  // 참석 날짜: 지정(콤마구분 YYYY-MM-DD)하면 그 날짜(종일).
+  // 미지정이면 초대 때 정해둔 날짜(시간 포함)를 그대로 쓰고, 그것도 없으면 출장 전체 기간.
+  let parsedDates: ParsedDate[];
+  const savedDates = attendDatesText ? [] : part.dates;
+  if (savedDates.length > 0) {
+    parsedDates = savedDates.map((d) => ({
+      attendDate: d.attendDate,
+      startTime: d.startTime,
+      endTime: d.endTime,
+    }));
   } else {
-    rawDates = [];
-    const start = new Date(ev.startDate);
-    const end = new Date(ev.endDate);
-    for (let t = start.getTime(); t <= end.getTime(); t += 86400000) {
-      rawDates.push({ attendDate: new Date(t).toISOString().split("T")[0] });
+    let rawDates: { attendDate: string }[];
+    if (attendDatesText) {
+      rawDates = attendDatesText.split(",").map((s) => s.trim()).filter(Boolean).map((d) => ({ attendDate: d }));
+    } else {
+      rawDates = [];
+      const start = new Date(ev.startDate);
+      const end = new Date(ev.endDate);
+      for (let t = start.getTime(); t <= end.getTime(); t += 86400000) {
+        rawDates.push({ attendDate: new Date(t).toISOString().split("T")[0] });
+      }
     }
+    if (rawDates.length === 0) {
+      return NextResponse.json({ error: "참석 날짜를 1개 이상 지정하거나 비워서 전체 기간으로 하세요." }, { status: 400 });
+    }
+    const parsed = parseDatesArray(rawDates, ev.startDate, ev.endDate);
+    if (!parsed.ok) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
+    parsedDates = parsed.dates;
   }
-  if (rawDates.length === 0) {
-    return NextResponse.json({ error: "참석 날짜를 1개 이상 지정하거나 비워서 전체 기간으로 하세요." }, { status: 400 });
-  }
-  const parsed = parseDatesArray(rawDates, ev.startDate, ev.endDate);
-  if (!parsed.ok) {
-    return NextResponse.json({ error: parsed.error }, { status: 400 });
-  }
-  const parsedDates = parsed.dates;
 
   // 결재선 계산: pending이고 approverIds 비어있으면 부서 결재선(웹 accept 방법 B)
   let acceptApproverIds: number[] | null = null;
@@ -186,21 +214,13 @@ export async function POST(request: Request) {
     } catch (e) {
       console.error(`[respond-trip-invite accept] rebuildTripEventCalendar(${ev.id}) 실패:`, e);
     }
-  } else if (acceptApproverIds !== null && acceptApproverIds.length > 0) {
-    try {
-      const me = await prisma.employee.findUnique({ where: { id: myId }, select: { name: true } });
-      await createNotifications({
-        employeeIds: acceptApproverIds,
-        type: "trip_request",
-        title: "새 출장 결재 요청",
-        body: `${me?.name ?? "직원"}님의 출장 참여 결재 요청`,
-        linkPage: "approval",
-        linkRefId: ev.id,
-        sourceType: "trip",
-      });
-    } catch (e) {
-      console.error("[notify] 출장 결재 요청 알림 생성 실패(accept):", e);
-    }
+  } else if (acceptApproverIds !== null) {
+    await notifyTripApprovalRequested({
+      approverIds: acceptApproverIds,
+      requesterEmployeeId: myId,
+      tripEventId: ev.id,
+      logLabel: "accept",
+    });
   }
 
   return NextResponse.json({ ok: true, tripEventId: ev.id, inviteStatus: "accepted" }, { status: 200 });

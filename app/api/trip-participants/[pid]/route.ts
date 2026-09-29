@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession, isAdminSession } from "@/lib/auth-helpers";
 import { prisma } from "@/lib/prisma";
-import { parseDatesArray } from "@/lib/trip-helpers";
+import {
+  parseDatesArray,
+  checkInviteResponse,
+  notifyTripApprovalRequested,
+} from "@/lib/trip-helpers";
 import {
   cleanupTripParticipantAttendanceFuture,
   collectParticipantFutureEventIds,
@@ -87,6 +91,15 @@ export async function PATCH(
         { error: "action은 accept/decline/update_dates 중 하나여야 합니다." },
         { status: 400 }
       );
+    }
+
+    // 초대 응답 가능 상태 검사 (웹·챗 공용 lib/trip-helpers checkInviteResponse)
+    //  - 수락: 초대됨·거절 상태에서만 / 거절: 초대됨 상태에서만. update_dates 는 대상 아님.
+    if (action === "accept" || action === "decline") {
+      const denied = checkInviteResponse(participant.inviteStatus, action);
+      if (denied) {
+        return NextResponse.json({ error: denied }, { status: 400 });
+      }
     }
 
     // ── decline: 날짜 손대지 않고 상태만 변경 ─────────────
@@ -323,27 +336,27 @@ export async function PATCH(
     if (
       action === "accept" &&
       updated.approvalStatus === "pending" &&
-      acceptApproverIds !== null &&
-      acceptApproverIds.length > 0
+      acceptApproverIds !== null
     ) {
-      try {
-        const me = await prisma.employee.findUnique({
-          where: { id: participant.employeeId },
-          select: { name: true },
-        });
-        const requesterName = me?.name ?? "직원";
-        await createNotifications({
-          employeeIds: acceptApproverIds,
-          type: "trip_request",
-          title: "새 출장 결재 요청",
-          body: `${requesterName}님의 출장 참여 결재 요청`,
-          linkPage: "approval",
-          linkRefId: participant.tripEvent.id,
-          sourceType: "trip",
-        });
-      } catch (e) {
-        console.error("[notify] 출장 결재 요청 알림 생성 실패(accept):", e);
-      }
+      await notifyTripApprovalRequested({
+        approverIds: acceptApproverIds,
+        requesterEmployeeId: participant.employeeId,
+        tripEventId: participant.tripEvent.id,
+        logLabel: "accept",
+      });
+    }
+    // update_dates 로 승인 → 결재 대기로 되돌아갔으면, 저장된 결재자에게 다시 결재 요청 알림.
+    if (
+      action === "update_dates" &&
+      participant.approvalStatus === "approved" &&
+      updated.approvalStatus === "pending"
+    ) {
+      await notifyTripApprovalRequested({
+        approverIds: updated.approverIds ?? [],
+        requesterEmployeeId: participant.employeeId,
+        tripEventId: participant.tripEvent.id,
+        logLabel: "update_dates",
+      });
     }
 
     return NextResponse.json({
@@ -395,6 +408,19 @@ export async function DELETE(
       return NextResponse.json(
         { error: "참석자를 제거할 권한이 없습니다." },
         { status: 403 }
+      );
+    }
+
+    // 출장보고서(작성 중 포함)가 있는 참석자는 제거 불가 — 삭제되면 보고서·경비가 함께 사라진다.
+    // 아무것도 지우지 않고(캘린더·근태 정리 포함) 바로 돌려준다.
+    const report = await prisma.tripReport.findUnique({
+      where: { tripParticipantId: pid },
+      select: { id: true },
+    });
+    if (report) {
+      return NextResponse.json(
+        { error: "출장보고서가 있어 참석자를 제거할 수 없습니다." },
+        { status: 409 }
       );
     }
 

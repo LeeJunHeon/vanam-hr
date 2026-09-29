@@ -1,3 +1,7 @@
+import type { Prisma } from "@/app/generated/prisma/client";
+import { prisma } from "@/lib/prisma";
+import { createNotifications } from "@/lib/notify";
+
 // 그룹 출장(Field Trip) API 공용 헬퍼.
 // Phase 7 2단계 — 참석자 관리 라우트들이 공유.
 
@@ -100,4 +104,88 @@ export function computeApprovalStatus(
 ): "not_required" | "pending" {
   if (requesterRole === "admin" || requesterRole === "ceo") return "not_required";
   return "pending";
+}
+
+// ── 확정 참석자 — 단일 정의 ─────────────────────────────────
+// 확정 = 초대 수락(accepted) + 결재 완료(approved 또는 결재 불필요 not_required) + 취소 안 된(active) 출장.
+// 수락하지 않은 채 승인된 참여는 확정이 아니다.
+// 근태 생성·캘린더 재구성·보고서 미제출 알림·내 출장/보고서 현황이 모두 이 정의를 쓴다.
+const CONFIRMED_APPROVAL_STATUSES = ["approved", "not_required"];
+
+export function isConfirmedParticipant(p: {
+  inviteStatus: string;
+  approvalStatus: string;
+}): boolean {
+  return (
+    p.inviteStatus === "accepted" &&
+    CONFIRMED_APPROVAL_STATUSES.includes(p.approvalStatus)
+  );
+}
+
+export function confirmedParticipantWhere(): Prisma.TripParticipantWhereInput {
+  return {
+    inviteStatus: "accepted",
+    approvalStatus: { in: CONFIRMED_APPROVAL_STATUSES },
+    tripEvent: { status: "active" },
+  };
+}
+
+// 출장보고서 대상(내 출장·보고서 현황): 확정 참석자이거나,
+// 출장이 취소됐어도 보고서가 이미 있는 참여(작성 기록 보존).
+export function tripReportTargetWhere(): Prisma.TripParticipantWhereInput {
+  return {
+    inviteStatus: "accepted",
+    approvalStatus: { in: CONFIRMED_APPROVAL_STATUSES },
+    OR: [{ tripEvent: { status: "active" } }, { report: { isNot: null } }],
+  };
+}
+
+// ── 초대 응답 가능 상태 — 웹(trip-participants PATCH)·챗(respond-trip-invite) 공용 ──
+// 수락: 초대됨·거절 상태에서만. 거절: 초대됨 상태에서만. 허용이면 null, 아니면 안내 문구.
+export function checkInviteResponse(
+  inviteStatus: string,
+  action: "accept" | "decline"
+): string | null {
+  if (action === "accept") {
+    if (inviteStatus === "invited" || inviteStatus === "declined") return null;
+    if (inviteStatus === "accepted") {
+      return "이미 수락한 출장입니다. 날짜를 바꾸려면 출장 관리의 날짜 변경을, 빠지려면 참석자 제거를 이용하세요.";
+    }
+    return "수락할 수 없는 초대 상태입니다.";
+  }
+  if (inviteStatus === "invited") return null;
+  if (inviteStatus === "declined") return "이미 거절한 출장입니다.";
+  if (inviteStatus === "accepted") {
+    return "이미 수락한 출장은 거절할 수 없습니다. 참석을 취소하려면 출장 관리에서 참석자 제거를 이용하세요.";
+  }
+  return "거절할 수 없는 초대 상태입니다.";
+}
+
+// ── "새 출장 결재 요청" 알림 — 참여(self-join)·초대 수락(웹·챗)·날짜 변경 재결재 공용 ──
+// 결재자가 없으면 보내지 않는다. 실패는 로그만(본 처리에 영향 없음).
+export async function notifyTripApprovalRequested(args: {
+  approverIds: number[];
+  requesterEmployeeId: number;
+  tripEventId: number;
+  logLabel: string;
+}): Promise<void> {
+  if (args.approverIds.length === 0) return;
+  try {
+    const me = await prisma.employee.findUnique({
+      where: { id: args.requesterEmployeeId },
+      select: { name: true },
+    });
+    const requesterName = me?.name ?? "직원";
+    await createNotifications({
+      employeeIds: args.approverIds,
+      type: "trip_request",
+      title: "새 출장 결재 요청",
+      body: `${requesterName}님의 출장 참여 결재 요청`,
+      linkPage: "approval",
+      linkRefId: args.tripEventId,
+      sourceType: "trip",
+    });
+  } catch (e) {
+    console.error(`[notify] 출장 결재 요청 알림 생성 실패(${args.logLabel}):`, e);
+  }
 }

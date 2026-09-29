@@ -44,25 +44,18 @@ export async function getDelegationHours(
   return line?.autoDelegateHours ?? 24;
 }
 
-// 목록 조회용: 한 요청 안에서 (부서, 결재 항목) 조합마다 한 번만 getDelegationHours 를 조회한다.
+// 목록 조회용: getDelegationHours 결과를 한 요청 안에서 (부서, 항목) 키로 캐시하는 래퍼.
 export function createDelegationHoursLoader(db: Db) {
   const cache = new Map<string, Promise<number>>();
-  return async (args: {
+  return (args: {
     departmentId: number | null;
     categoryId: number;
     categoryCode: string | null | undefined;
   }): Promise<number> => {
-    if (args.departmentId === null) return 24;
-    const approvalCategoryId = await getApprovalCategoryId({
-      id: args.categoryId,
-      code: args.categoryCode,
-    });
-    const key = `${args.departmentId}:${approvalCategoryId}`;
+    const key = `${args.departmentId}:${args.categoryId}`;
     let hit = cache.get(key);
     if (!hit) {
-      hit = findApprovalLine(db, args.departmentId, approvalCategoryId).then(
-        (line) => line?.autoDelegateHours ?? 24
-      );
+      hit = getDelegationHours(db, args);
       cache.set(key, hit);
     }
     return hit;

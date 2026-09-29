@@ -1,7 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { createDelegationHoursLoader } from "@/lib/approval-resolver";
-import { isDelegationElapsed } from "@/lib/approval-inbox";
-import { finalizeApprovedAttendanceRequest } from "@/lib/attendance-approval";
+import {
+  isDelegationElapsed,
+  finalizeApprovedAttendanceRequest,
+} from "@/lib/attendance-approval";
 
 // 대리 위임 자동 마감 스윕 공용 함수.
 // 대리결재자가 이미 승인했는데 위임 창(autoDelegateHours, 기본 24h) 경과 시점에
