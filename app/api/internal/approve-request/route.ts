@@ -8,14 +8,9 @@ import {
   notifyTeamOfApprovedRequest,
 } from "@/lib/finalize-approval";
 import { createNotifications } from "@/lib/notify";
+import { pendingAttendanceWhere, isDelegationElapsed } from "@/lib/approval-inbox";
 
 export const dynamic = "force-dynamic";
-
-// 대리 위임 시간 경과 판정 (웹 approvals 라우트와 동일)
-function isDelegationElapsed(requestedAt: Date, hours: number): boolean {
-  const elapsed = Date.now() - requestedAt.getTime();
-  return elapsed >= hours * 60 * 60 * 1000;
-}
 
 type ProcessResult =
   | { ok: true; id: number; status: string; finalized: boolean }
@@ -152,7 +147,7 @@ async function processOne(
 
 // POST /api/internal/approve-request — 챗 근태 결재(승인/반려).
 // 결재자(권한)는 신원(x-acting-user-email→resolveHrIdentity)에서만. body로 위조 불가.
-// target: 신청자 이름(영문) 또는 "전체". 내 결재 대기 큐(approverIds has me OR deputy=me) 안에서만 처리.
+// target: 신청자 이름(영문) 또는 "전체". 웹 결재함 "결재 대기"와 같은 범위(대표는 전사 대기 건) 안에서만 처리.
 export async function POST(request: Request) {
   const auth = requireHrWriteAuth(request);
   if (!auth.ok) return auth.response;
@@ -194,12 +189,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "반려는 '전체'로 할 수 없습니다. 특정 신청자를 지정해 주세요." }, { status: 400 });
   }
 
-  // 내 결재 대기 큐 (my-approvals와 동일 범위)
+  // 내 결재 대기 큐 — 웹 결재함·my-approvals와 같은 범위(lib/approval-inbox)
   const queue = await prisma.attendanceRequest.findMany({
-    where: {
-      status: "pending",
-      OR: [{ approverIds: { has: approverId } }, { deputyApproverId: approverId }],
-    },
+    where: pendingAttendanceWhere({ approverId, role }),
     orderBy: [{ requestedAt: "desc" }],
     include: {
       employee: { select: { name: true } },

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/app/generated/prisma/client";
+import { getBusinessTripCategoryId } from "@/lib/trip-calendar";
 
 // 직원의 부서 결재선을 계산한다.
 // - 부서에 approval_line이 있으면 그 approverIds/approvalMode/deputyApproverId.
@@ -66,5 +67,32 @@ export async function resolveApprovers(
     deputyApproverId:
       deputyApproverId === excludeEmployeeId ? null : deputyApproverId,
     excludedSelf,
+  };
+}
+
+// 출장 참여자의 결재선 — 참여 확정 시점(self-join / 웹 초대 수락 / 챗 초대 수락) 공용.
+// 참여자 부서의 '출장 및 외근'(BUSINESS_TRIP) 항목 라인 → 없으면 부서 기본 라인 → fallback.
+// 참여자 본인은 결재선에서 제외. 결과가 0명이면 notRequired(결재 불성립 → not_required 로 승격).
+export async function resolveTripParticipantApprovers(employeeId: number): Promise<{
+  approverIds: number[];
+  approvalMode: "all" | "any";
+  deputyApproverId: number | null;
+  notRequired: boolean;
+}> {
+  const emp = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: { departmentId: true },
+  });
+  const resolved = await resolveApprovers(
+    prisma,
+    emp?.departmentId ?? null,
+    await getBusinessTripCategoryId(),
+    employeeId
+  );
+  return {
+    approverIds: resolved.approverIds,
+    approvalMode: resolved.approvalMode,
+    deputyApproverId: resolved.deputyApproverId,
+    notRequired: resolved.approverIds.length === 0,
   };
 }

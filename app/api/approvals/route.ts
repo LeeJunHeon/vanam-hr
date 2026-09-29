@@ -6,7 +6,10 @@ import {
   pendingAttendanceWhere,
   pendingTripWhere,
   myTripInviteWhere,
-  tripApproverScope,
+  describeAttendanceApproval,
+  isDelegationElapsed,
+  delegateHoursOf,
+  DELEGATE_HOURS_DEPARTMENT_SELECT,
 } from "@/lib/approval-inbox";
 import {
   createTripParticipantAttendanceRequests,
@@ -149,18 +152,6 @@ function buildTripItem(
   };
 }
 
-// 자동 위임 시간 계산
-function isDelegationElapsed(requestedAt: Date, hours: number): boolean {
-  const elapsed = Date.now() - requestedAt.getTime();
-  return elapsed >= hours * 60 * 60 * 1000;
-}
-
-function hoursUntilDelegation(requestedAt: Date, hours: number): number {
-  const elapsed = Date.now() - requestedAt.getTime();
-  const total = hours * 60 * 60 * 1000;
-  return Math.max(0, (total - elapsed) / (1000 * 60 * 60));
-}
-
 // GET /api/approvals?approverId=N&status=pending|approved|rejected|all
 // 비관리자: 본인 결재함만 (approverId 무시 또는 본인과 다르면 403)
 // 관리자: 다른 결재자도 조회 가능.
@@ -215,7 +206,6 @@ export async function GET(request: NextRequest) {
       approverId = ownEmployeeId as number;
     }
 
-    const viewerIsCeo = session.user.role === "ceo";
     let where: Prisma.AttendanceRequestWhereInput = {};
     if (status === "pending") {
       where = pendingAttendanceWhere({ approverId, role: session.user.role });
@@ -253,10 +243,7 @@ export async function GET(request: NextRequest) {
               select: {
                 id: true,
                 name: true,
-                approvalLines: {
-                  where: { categoryId: null },
-                  select: { autoDelegateHours: true },
-                },
+                ...DELEGATE_HOURS_DEPARTMENT_SELECT,
               },
             },
           },
@@ -297,34 +284,24 @@ export async function GET(request: NextRequest) {
     // 기존 attendance 항목 — Phase 7 3단계: kind:'attendance' 필드만 추가.
     // 그 외 모든 필드/형식 변경 금지.
     const attendanceItems = requests.map((r) => {
-      const isPrimary = r.primaryApproverId === approverId;
-      const isDeputy = r.deputyApproverId === approverId;
-      const autoDelegateHours =
-        r.employee.department?.approvalLines?.[0]?.autoDelegateHours ?? 24;
-      const delegated = isDelegationElapsed(r.requestedAt, autoDelegateHours);
-      const hoursLeft = hoursUntilDelegation(r.requestedAt, autoDelegateHours);
-
-      let myRole: "primary" | "deputy" | null = null;
-      if (isPrimary) myRole = "primary";
-      else if (isDeputy) myRole = "deputy";
-
-      // 4·5-2b: 다중 결재자 — approver_ids 포함 & 미승인 & pending 이면 결재 가능
-      const isApprover =
-        Array.isArray(r.approverIds) && r.approverIds.includes(approverId);
-      const iApproved =
-        Array.isArray(r.approvedByIds) && r.approvedByIds.includes(approverId);
-      let canApprove =
-        r.status === "pending" &&
-        !iApproved &&
-        (isApprover || viewerIsCeo || (isDeputy && delegated));
-
-      // Phase 6-2J: 본인 신청은 일반 직원만 차단 (ADMIN/CEO는 본인 결재 허용)
-      if (r.employeeId === approverId) {
-        const viewerRole = session.user.role;
-        if (viewerRole !== "admin" && viewerRole !== "ceo") {
-          canApprove = false;
-        }
-      }
+      const autoDelegateHours = delegateHoursOf(r.employee.department);
+      // 권한·대리 위임·대기자 표시는 lib/approval-inbox 의 describeAttendanceApproval 한 곳에서.
+      const {
+        canApprove,
+        iApproved,
+        myRole,
+        delegated,
+        hoursLeft,
+        waitingOn,
+        statusText,
+      } = describeAttendanceApproval({
+        request: r,
+        approverId,
+        viewerRole: session.user.role,
+        viewerEmployeeId: ownEmployeeId,
+        autoDelegateHours,
+        nameMap: approverNameMap,
+      });
 
       return {
         kind: "attendance" as const,
@@ -370,6 +347,9 @@ export async function GET(request: NextRequest) {
         approvedCount: (r.approvedByIds ?? []).length,
         totalApprovers: (r.approverIds ?? []).length,
         iApproved,
+        // 누가 결재 대기 중인지 (결재 대기 탭 한 줄 표시)
+        waitingOn,
+        statusText,
         approvers: (r.approverIds ?? []).map((aid) => ({
           id: aid,
           name: approverNameMap.get(aid) ?? null,
@@ -928,16 +908,14 @@ async function handleTripApproval(_request: NextRequest, body: unknown) {
   //  - 본인이 approver_ids에 포함 또는 deputy
   //  - approver_ids가 빈 배열(기존 출장)이고 본인이 관리자 → 폴백
   //  - CEO는 모든 pending 처리 가능
-  // (범위 정의는 lib/approval-inbox 의 tripApproverScope)
-  const approverFilter = tripApproverScope({
-    approverId: approverEmployeeId as number,
-    role: session.user.role,
-  });
-
+  //  - 초대를 수락한 참여자만 (수락 전·거절 제외)
+  // (범위 정의는 lib/approval-inbox 의 pendingTripWhere)
   const targetWhere: Prisma.TripParticipantWhereInput = {
+    ...pendingTripWhere({
+      approverId: approverEmployeeId as number,
+      role: session.user.role,
+    }),
     tripEventId: eventIdNum,
-    approvalStatus: "pending",
-    ...approverFilter,
   };
   if (participantIdFilter) {
     targetWhere.id = { in: participantIdFilter };

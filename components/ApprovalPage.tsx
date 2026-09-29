@@ -69,6 +69,9 @@ interface ApprovalItem {
   approvedCount: number;
   totalApprovers: number;
   iApproved: boolean;
+  // 누가 결재 대기 중인지 (서버 describeAttendanceApproval)
+  waitingOn: { id: number; name: string | null }[];
+  statusText: string | null;
   approvers: { id: number; name: string | null; approved: boolean }[];
   // Phase 6-2E 캘린더 등록 정보
   calendarSourceId: number | null;
@@ -1005,22 +1008,14 @@ function ApprovalCard({
               </span>
             ))}
           </div>
-          {/* 대리 결재자 위임 안내 */}
-          {!isHistory && isPending && item.myRole === "deputy" && (
-            <div className="mt-1.5">
-              {item.delegated ? (
-                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
-                  <CheckCircle size={11} className="-translate-y-px" />
-                  메인 무응답 → 결재 가능
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
-                  <Clock size={11} className="-translate-y-px" />
-                  메인 응답 대기 ({(item.hoursLeft ?? 0).toFixed(1)}시간 남음)
-                </span>
-              )}
-            </div>
-          )}
+        </div>
+      )}
+
+      {/* 결재 대기 상태 한 줄 — 누가 결재 대기 중인지 (대리·대표 결재 가능 여부 포함) */}
+      {!isHistory && isPending && item.statusText && (
+        <div className="mb-2 flex items-center gap-1 text-[11px] font-semibold text-gray-600">
+          <Clock size={11} className="shrink-0 -translate-y-px text-gray-400" />
+          <span>{item.statusText}</span>
         </div>
       )}
 

@@ -8,9 +8,8 @@ import {
 import {
   createTripParticipantAttendanceRequests,
   rebuildTripEventCalendar,
-  getBusinessTripCategoryId,
 } from "@/lib/trip-calendar";
-import { resolveApprovers } from "@/lib/approval-resolver";
+import { resolveTripParticipantApprovers } from "@/lib/approval-resolver";
 import { createNotifications } from "@/lib/notify";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: self-join.
@@ -104,23 +103,13 @@ export async function POST(
     let resolvedApprovalMode: "all" | "any" = "all";
     let resolvedDeputyId: number | null = null;
     if (approvalStatus === "pending") {
-      const me = await prisma.employee.findUnique({
-        where: { id: ownId as number },
-        select: { departmentId: true },
-      });
-      // 신청자 본인은 자기 출장 참여를 결재할 수 없다 → 결재선에서 제외.
-      const resolved = await resolveApprovers(
-        prisma,
-        me?.departmentId ?? null,
-        await getBusinessTripCategoryId(),
-        ownId as number
-      );
+      // 결재선 계산은 lib/approval-resolver 의 resolveTripParticipantApprovers 공용.
+      // 결재자가 없으면(본인 제외 후 0명) not_required 로 승격 — 빈 배열 pending 은 유령 결재가 된다.
+      const resolved = await resolveTripParticipantApprovers(ownId as number);
       resolvedApproverIds = resolved.approverIds;
       resolvedApprovalMode = resolved.approvalMode;
       resolvedDeputyId = resolved.deputyApproverId;
-      // 본인 제외 후 결재자가 없으면 결재 자체가 성립하지 않는다.
-      // 빈 approverIds로 pending을 남기면 관리자 결재함에 유령으로 뜨므로 not_required로 승격.
-      if (resolvedApproverIds.length === 0) {
+      if (resolved.notRequired) {
         approvalStatus = "not_required";
       }
     }

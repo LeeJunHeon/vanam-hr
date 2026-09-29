@@ -738,7 +738,9 @@ function AdminDashboard({
                 ? stats?.pendingRequests ?? 0
                 : stats?.counts?.[card.key] ?? 0;
             const value = String(raw);
-            const displayTitle = `${periodLabel} ${card.title}`;
+            // 결재 대기는 기간과 무관한 현재 건수 → 기간 라벨 없이 표시
+            const displayTitle =
+              card.key === "pendingRequests" ? card.title : `${periodLabel} ${card.title}`;
             const handleClick = () => {
               if (card.kind === "navigate" && card.page) {
                 onNavigate(card.page);

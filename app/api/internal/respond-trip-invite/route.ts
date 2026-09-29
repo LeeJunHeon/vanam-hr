@@ -3,11 +3,10 @@ import { prisma } from "@/lib/prisma";
 import { requireHrWriteAuth } from "@/lib/internal-write-auth";
 import { resolveHrIdentity } from "@/lib/internal-identity";
 import { parseDatesArray } from "@/lib/trip-helpers";
-import { resolveApprovers } from "@/lib/approval-resolver";
+import { resolveTripParticipantApprovers } from "@/lib/approval-resolver";
 import {
   createTripParticipantAttendanceRequests,
   rebuildTripEventCalendar,
-  getBusinessTripCategoryId,
 } from "@/lib/trip-calendar";
 import { createNotifications } from "@/lib/notify";
 
@@ -142,19 +141,13 @@ export async function POST(request: Request) {
   // 본인 제외로 결재자가 0명이 되어 not_required로 승격됐는지 (후처리 분기용).
   let promotedNotRequired = false;
   if (part.approvalStatus === "pending" && (!Array.isArray(part.approverIds) || part.approverIds.length === 0)) {
-    // 신청자 본인은 자기 출장 참여를 결재할 수 없다 → 결재선에서 제외.
-    const resolved = await resolveApprovers(
-      prisma,
-      identity.departmentId,
-      await getBusinessTripCategoryId(),
-      part.employeeId
-    );
+    // 결재선 계산은 lib/approval-resolver 의 resolveTripParticipantApprovers 공용.
+    // 결재자가 없으면(본인 제외 후 0명) not_required 로 승격 — 빈 배열 pending 은 유령 결재가 된다.
+    const resolved = await resolveTripParticipantApprovers(part.employeeId);
     acceptApproverIds = resolved.approverIds;
     acceptApprovalMode = resolved.approvalMode;
     acceptDeputyId = resolved.deputyApproverId;
-    // 본인 제외 후 결재자가 없으면 결재 불가 → not_required로 승격.
-    // (빈 approverIds로 pending을 남기면 관리자 결재함에 유령으로 뜬다.)
-    if (acceptApproverIds.length === 0) {
+    if (resolved.notRequired) {
       promotedNotRequired = true;
     }
   }
