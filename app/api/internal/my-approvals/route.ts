@@ -8,9 +8,8 @@ import {
   myTripInviteWhere,
   countPendingInbox,
   describeAttendanceApproval,
-  delegateHoursOf,
-  DELEGATE_HOURS_DEPARTMENT_SELECT,
 } from "@/lib/approval-inbox";
+import { createDelegationHoursLoader } from "@/lib/approval-resolver";
 
 export const dynamic = "force-dynamic";
 
@@ -40,10 +39,11 @@ export async function GET(request: NextRequest) {
         employee: {
           select: {
             name: true,
-            department: { select: { name: true, ...DELEGATE_HOURS_DEPARTMENT_SELECT } },
+            departmentId: true,
+            department: { select: { name: true } },
           },
         },
-        category: { select: { name: true } },
+        category: { select: { name: true, code: true } },
       },
     }),
     prisma.tripParticipant.findMany({
@@ -78,6 +78,18 @@ export async function GET(request: NextRequest) {
     for (const e of emps) nameMap.set(e.id, e.name);
   }
 
+  // 대리 위임 시간 — 웹 결재함과 같은 출처(신청이 탄 결재선), 조합마다 한 번만 조회
+  const loadDelegationHours = createDelegationHoursLoader(prisma);
+  const delegationHoursList = await Promise.all(
+    rows.map((r) =>
+      loadDelegationHours({
+        departmentId: r.employee?.departmentId ?? null,
+        categoryId: r.categoryId,
+        categoryCode: r.category?.code,
+      })
+    )
+  );
+
   // 출장 참여 결재 — 출장(이벤트)별로 묶음 (웹 결재함 출장 카드 1장 = 이벤트 1건)
   const byEvent = new Map<number, typeof tripParts>();
   for (const p of tripParts) {
@@ -88,13 +100,13 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     mapped: true,
-    approvals: rows.map((r) => {
+    approvals: rows.map((r, idx) => {
       const { canApprove, statusText } = describeAttendanceApproval({
         request: r,
         approverId,
         viewerRole: identity.role,
         viewerEmployeeId: approverId,
-        autoDelegateHours: delegateHoursOf(r.employee?.department),
+        autoDelegateHours: delegationHoursList[idx],
         nameMap,
       });
       return {

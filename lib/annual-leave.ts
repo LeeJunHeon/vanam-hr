@@ -295,6 +295,32 @@ export async function getRemainingDays(
   };
 }
 
+// 연차 차감 신청 1건의 영향: 본인 근무일 × 차감계수 = 차감량, 신청 시작 연도 기준 잔여.
+// 신청 초과 검사(create-attendance-request)·미리보기(annual-leave/preview)·결재함 표시가 공용.
+// deductPerDay <= 0(차감 없는 항목)이면 근무일을 세지 않고 workDays·amount = 0.
+export async function computeLeaveImpact(
+  employeeId: number,
+  startDate: Date,
+  endDate: Date,
+  deductPerDay: number
+): Promise<{
+  workDays: number;
+  amount: number;
+  granted: number;
+  remaining: number;
+  remainingAfter: number;
+}> {
+  let workDays = 0;
+  if (deductPerDay > 0) {
+    const ymd = (d: Date) => d.toISOString().split("T")[0];
+    const isWorkDay = await loadWorkDayChecker([employeeId], ymd(startDate), ymd(endDate));
+    workDays = countWorkDays(isWorkDay, employeeId, startDate, endDate);
+  }
+  const amount = workDays * deductPerDay;
+  const { granted, remaining } = await getRemainingDays(employeeId, startDate.getUTCFullYear());
+  return { workDays, amount, granted, remaining, remainingAfter: remaining - amount };
+}
+
 export async function getPolicy(): Promise<AnnualLeavePolicyValues> {
   const p = await prisma.annualLeavePolicy.findFirst();
   if (!p) {

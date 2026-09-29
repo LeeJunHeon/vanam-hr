@@ -331,8 +331,8 @@ export default function ApprovalPage() {
       // Phase 6-2E: 결재자가 카드 내에서 수정한 캘린더 정보 같이 전송
       // (없으면 undefined → API에서 미변경, 기존 값 그대로 유지)
       const edited = editedCalendar[item.id];
+      // 결재자는 서버가 로그인 세션으로 정한다 (approverId 보내지 않음)
       const payload: Record<string, unknown> = {
-        approverId: currentId,
         action: "approve",
       };
       if (edited) {
@@ -453,7 +453,6 @@ export default function ApprovalPage() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          approverId: currentId,
           action: "reject",
           rejectReason: rejectModal.reason.trim(),
         }),
@@ -760,8 +759,8 @@ function ApprovalCard({
         )}
       </div>
 
-      {/* 연차 차감 정보 (차감 대상 신청만) */}
-      {item.leaveRequestAmount != null && (
+      {/* 연차 차감 정보 (차감 대상 신청만) — 결재 대기: 잔여·차감·신청 후 잔여 */}
+      {isPending && item.leaveRequestAmount != null && (
         <div className={`px-3 py-1.5 rounded-lg text-xs mb-2 ${
           (item.leaveRemainingAfter ?? 0) < 0
             ? "bg-rose-50 border border-rose-200 text-rose-700"
@@ -771,6 +770,12 @@ function ApprovalCard({
           <b>{fmtDays(item.leaveRequestAmount)}일</b> 차감 → 신청 후{" "}
           <b>{fmtDays(item.leaveRemainingAfter ?? 0)}일</b>
           {(item.leaveRemainingAfter ?? 0) < 0 && <span className="ml-1 font-medium">⚠ 초과</span>}
+        </div>
+      )}
+      {/* 승인된 건: 차감량만 (반려·취소 건은 표시 없음) */}
+      {item.status === "approved" && item.leaveRequestAmount != null && (
+        <div className="px-3 py-1.5 rounded-lg text-xs mb-2 bg-gray-50 border border-gray-100 text-gray-600">
+          연차 <b>{fmtDays(item.leaveRequestAmount)}일</b> 차감됨
         </div>
       )}
 

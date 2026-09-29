@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
-import { getRemainingDays, loadWorkDayChecker, countWorkDays } from "@/lib/annual-leave";
+import { computeLeaveImpact } from "@/lib/annual-leave";
 
 export const dynamic = "force-dynamic";
 
@@ -34,8 +34,9 @@ export async function GET(request: NextRequest) {
   const category = await prisma.attendanceCategory.findUnique({ where: { id: categoryId } });
   const deductPerDay = category?.annualLeaveDeduct ? Number(category.annualLeaveDeduct) : 0;
 
-  const startYear = startD.getUTCFullYear();
-  const { granted, remaining } = await getRemainingDays(employeeId as number, startYear);
+  // 차감량·잔여 계산은 lib/annual-leave 의 computeLeaveImpact 공용
+  const impact = await computeLeaveImpact(employeeId as number, startD, endD, deductPerDay);
+  const { granted, remaining } = impact;
 
   // 차감 없는 항목(병가/외근/재택 등)은 미리보기 대상 아님
   if (deductPerDay <= 0) {
@@ -45,14 +46,9 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  const ymd = (d: Date) => d.toISOString().split("T")[0];
-  const isWorkDay = await loadWorkDayChecker([employeeId as number], ymd(startD), ymd(endD));
   // 필드명은 프론트 호환을 위해 businessDays 유지 (의미: 본인 시프트상 근무일)
-  const businessDays = countWorkDays(isWorkDay, employeeId as number, startD, endD);
-  const requestAmount = businessDays * deductPerDay;
-
   return NextResponse.json({
-    mapped: true, deductPerDay, businessDays, requestAmount,
-    granted, remaining, remainingAfter: remaining - requestAmount,
+    mapped: true, deductPerDay, businessDays: impact.workDays, requestAmount: impact.amount,
+    granted, remaining, remainingAfter: impact.remainingAfter,
   });
 }

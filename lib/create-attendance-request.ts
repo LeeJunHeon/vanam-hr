@@ -5,9 +5,8 @@ import {
   loadShiftAndGrace,
   shiftEndBoundary,
 } from "@/lib/attendance-correction";
-import { getRemainingDays, loadWorkDayChecker, countWorkDays } from "@/lib/annual-leave";
-import { resolveApprovers } from "@/lib/approval-resolver";
-import { getBusinessTripCategoryId } from "@/lib/trip-calendar";
+import { computeLeaveImpact } from "@/lib/annual-leave";
+import { resolveApprovers, getApprovalCategoryId } from "@/lib/approval-resolver";
 import { createCalendarEvent } from "@/lib/calendar-event";
 import { notifyTeamOfApprovedRequest } from "@/lib/team-schedule-notify";
 
@@ -91,14 +90,12 @@ export async function createAttendanceRequest(
     ? Number(category.annualLeaveDeduct)
     : 0;
   if (deductPerDay > 0) {
-    // 신청 일수 (startDate~endDate 근무일: 주말·공휴일 제외)
-    const isWorkDay = await loadWorkDayChecker([employeeIdNum], ymdFromDate(startD), ymdFromDate(endD));
-    const requestAmount = countWorkDays(isWorkDay, employeeIdNum, startD, endD) * deductPerDay;
-    // 신청 시작 연도 기준 잔여 (역년)
-    const reqYear = startD.getUTCFullYear();
-    const { granted, remaining } = await getRemainingDays(
+    // 신청량(본인 근무일 × 차감계수)과 신청 시작 연도 기준 잔여 — lib/annual-leave 공용 계산
+    const { amount: requestAmount, granted, remaining } = await computeLeaveImpact(
       employeeIdNum,
-      reqYear
+      startD,
+      endD,
+      deductPerDay
     );
     // 부여가 0인데 차감 신청이면(정책 미설정 등) 막지 않고 통과시킬지 결정:
     // 여기서는 granted=0이면 "부여 정보 없음"으로 보고 통과(차단 안 함).
@@ -247,10 +244,10 @@ export async function createAttendanceRequest(
   //  → EMPLOYEE 전부, 그리고 "외근이 아닌 ADMIN"이 여기에 해당.
   if (!isCeoRequester && !adminAutoApprove) {
     // 외근/출장은 '출장 및 외근'(BUSINESS_TRIP) 결재선을 공유 → 외근이면 출장 categoryId로 정규화
-    let approvalCategoryId: number | null = categoryIdNum;
-    if (category.code === "EXTERNAL_WORK") {
-      approvalCategoryId = await getBusinessTripCategoryId();
-    }
+    const approvalCategoryId = await getApprovalCategoryId({
+      id: categoryIdNum,
+      code: category.code,
+    });
     // 결재선 결정을 resolveApprovers로 통일: (부서+카테고리) 항목별 라인 → 부서 기본 → fallback
     // 신청자 본인은 결재자가 될 수 없다 → resolveApprovers가 결과에서 제외해준다.
     const resolved = await resolveApprovers(

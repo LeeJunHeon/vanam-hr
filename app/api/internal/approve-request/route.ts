@@ -2,148 +2,21 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireHrWriteAuth } from "@/lib/internal-write-auth";
 import { resolveHrIdentity } from "@/lib/internal-identity";
-import {
-  applyApprovedRequestToDaily,
-  syncApprovedRequestToCalendar,
-  notifyTeamOfApprovedRequest,
-} from "@/lib/finalize-approval";
-import { createNotifications } from "@/lib/notify";
-import { pendingAttendanceWhere, isDelegationElapsed } from "@/lib/approval-inbox";
+import { pendingAttendanceWhere } from "@/lib/approval-inbox";
+import { decideAttendanceApproval, type DecideFailureCode } from "@/lib/attendance-approval";
 
 export const dynamic = "force-dynamic";
 
-type ProcessResult =
-  | { ok: true; id: number; status: string; finalized: boolean }
-  | { ok: false; id: number; reason: string };
-
-// 근태 신청 1건 결재. 웹 PUT(kind=attendance) finalize 규칙과 동일.
-// attendance_daily 반영 + 캘린더 등록 모두 lib/finalize-approval 공용 함수로 처리 (웹과 동일).
-async function processOne(
-  t: {
-    id: number; employeeId: number; categoryId: number;
-    startDate: Date; endDate: Date;
-    correctedCheckIn: Date | null; correctedCheckOut: Date | null;
-    status: string; approverIds: number[]; approvalMode: string; approvedByIds: number[];
-    deputyApproverId: number | null; requestedAt: Date; autoDelegateHours: number;
-  },
-  approverId: number,
-  role: "ceo" | "admin" | "employee",
-  action: "approve" | "reject",
-  rejectReason: string | null
-): Promise<ProcessResult> {
-  if (t.status !== "pending") return { ok: false, id: t.id, reason: "이미 처리된 건" };
-
-  const isCeo = role === "ceo";
-  const delegated = isDelegationElapsed(t.requestedAt, t.autoDelegateHours);
-  const isApproverIn = t.approverIds.includes(approverId);
-  const isDeputy = t.deputyApproverId === approverId && delegated;
-  if (!isApproverIn && !isDeputy && !isCeo) {
-    return { ok: false, id: t.id, reason: "결재 권한 없음(대리 위임 시간 미경과 등)" };
-  }
-  // 본인 신청은 일반 직원만 차단 (ADMIN/CEO는 본인 결재 허용)
-  if (t.employeeId === approverId && role !== "admin" && role !== "ceo") {
-    return { ok: false, id: t.id, reason: "본인 신청은 결재 불가" };
-  }
-
-  const category = await prisma.attendanceCategory.findUnique({ where: { id: t.categoryId } });
-  if (!category) return { ok: false, id: t.id, reason: "카테고리 없음" };
-
-  const now = new Date();
-
-  if (action === "approve") {
-    if ((t.approvedByIds ?? []).includes(approverId)) {
-      return { ok: false, id: t.id, reason: "이미 승인함" };
-    }
-    const newApprovedBy = [...(t.approvedByIds ?? []), approverId];
-    const decisive = isCeo || isDeputy;
-    const fullyApproved = decisive
-      ? true
-      : t.approvalMode === "any"
-      ? true
-      : t.approverIds.every((id) => newApprovedBy.includes(id));
-
-    // 부분 승인 — pending 유지, 근태 미반영
-    if (!fullyApproved) {
-      await prisma.attendanceRequest.update({
-        where: { id: t.id },
-        data: { approvedByIds: newApprovedBy },
-      });
-      return { ok: true, id: t.id, status: "pending", finalized: false };
-    }
-
-    // 최종 승인 → finalize (status + attendance_daily)
-    await prisma.$transaction(async (tx) => {
-      await tx.attendanceRequest.update({
-        where: { id: t.id },
-        data: {
-          status: "approved",
-          approvedById: approverId,
-          approvedAt: now,
-          rejectReason: null,
-          approvedByIds: newApprovedBy,
-        },
-      });
-
-      await applyApprovedRequestToDaily(tx, {
-        id: t.id,
-        employeeId: t.employeeId,
-        categoryId: t.categoryId,
-        startDate: t.startDate,
-        endDate: t.endDate,
-        correctedCheckIn: t.correctedCheckIn,
-        correctedCheckOut: t.correctedCheckOut,
-        category: { type: category.type, name: category.name },
-      });
-    });
-
-    // 캘린더 등록 (트랜잭션 밖). approvals 경로와 동일 — 여기 빠져 있어서
-    // 내부 API 승인 건이 캘린더에 반영되지 않던 버그 수정(2026-09).
-    await syncApprovedRequestToCalendar(t.id, "internal-approve");
-    await notifyTeamOfApprovedRequest(t.id, "internal-approve");
-
-    if (t.employeeId !== approverId) {
-      try {
-        await createNotifications({
-          employeeIds: [t.employeeId],
-          type: "approval_result",
-          title: "결재 승인",
-          body: `${category.name} 신청이 승인되었습니다.`,
-          linkPage: "request",
-          linkRefId: t.id,
-          sourceType: "attendance_request",
-        });
-      } catch (e) { console.error("[notify] 결재 결과 알림 실패:", e); }
-    }
-    return { ok: true, id: t.id, status: "approved", finalized: true };
-  }
-
-  // reject (즉시 finalize, 근태 미반영)
-  await prisma.attendanceRequest.update({
-    where: { id: t.id },
-    data: {
-      status: "rejected",
-      approvedById: approverId,
-      approvedAt: now,
-      rejectReason: rejectReason?.trim() || null,
-    },
-  });
-  if (t.employeeId !== approverId) {
-    try {
-      let body = `${category.name} 신청이 반려되었습니다.`;
-      if (rejectReason?.trim()) body += ` (사유: ${rejectReason.trim()})`;
-      await createNotifications({
-        employeeIds: [t.employeeId],
-        type: "approval_result",
-        title: "결재 반려",
-        body,
-        linkPage: "request",
-        linkRefId: t.id,
-        sourceType: "attendance_request",
-      });
-    } catch (e) { console.error("[notify] 결재 결과 알림 실패:", e); }
-  }
-  return { ok: true, id: t.id, status: "rejected", finalized: true };
-}
+// 챗 결과 reason 문구 (결과 코드 → 기존 챗 문구)
+const CHAT_REASON: Record<DecideFailureCode, string> = {
+  not_found: "이미 처리된 건",
+  not_pending: "이미 처리된 건",
+  no_permission: "결재 권한 없음(대리 위임 시간 미경과 등)",
+  self_request: "본인 신청은 결재 불가",
+  already_approved: "이미 승인함",
+  category_missing: "카테고리 없음",
+  conflict: "다른 결재가 먼저 처리됨",
+};
 
 // POST /api/internal/approve-request — 챗 근태 결재(승인/반려).
 // 결재자(권한)는 신원(x-acting-user-email→resolveHrIdentity)에서만. body로 위조 불가.
@@ -215,24 +88,19 @@ export async function POST(request: Request) {
 
   const results: Array<Record<string, unknown>> = [];
   for (const r of candidates) {
-    const emp = await prisma.employee.findUnique({
-      where: { id: r.employeeId },
-      select: { department: { select: { approvalLines: { where: { categoryId: null }, select: { autoDelegateHours: true } } } } },
+    // 판정·저장·최종 확정·결과 알림은 웹 결재와 같은 lib/attendance-approval
+    const res = await decideAttendanceApproval({
+      requestId: r.id,
+      approverId,
+      role,
+      action,
+      rejectReason,
+      source: "internal-approve",
     });
-    const autoDelegateHours = emp?.department?.approvalLines?.[0]?.autoDelegateHours ?? 24;
-
-    const res = await processOne(
-      {
-        id: r.id, employeeId: r.employeeId, categoryId: r.categoryId,
-        startDate: r.startDate, endDate: r.endDate,
-        correctedCheckIn: r.correctedCheckIn, correctedCheckOut: r.correctedCheckOut,
-        status: r.status, approverIds: r.approverIds, approvalMode: r.approvalMode,
-        approvedByIds: r.approvedByIds, deputyApproverId: r.deputyApproverId,
-        requestedAt: r.requestedAt, autoDelegateHours,
-      },
-      approverId, role, action, rejectReason
-    );
-    results.push({ requester: r.employee?.name ?? null, category: r.category?.name ?? null, ...res });
+    const out = res.ok
+      ? { ok: true, id: r.id, status: res.status, finalized: res.kind === "final" }
+      : { ok: false, id: r.id, reason: CHAT_REASON[res.code] };
+    results.push({ requester: r.employee?.name ?? null, category: r.category?.name ?? null, ...out });
   }
 
   const processed = results.filter((x) => x.ok === true).length;

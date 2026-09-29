@@ -1,28 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { Prisma } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getApproverId, requireSession } from "@/lib/auth-helpers";
+import { requireSession } from "@/lib/auth-helpers";
 import {
   pendingAttendanceWhere,
   pendingTripWhere,
   myTripInviteWhere,
   describeAttendanceApproval,
-  isDelegationElapsed,
-  delegateHoursOf,
-  DELEGATE_HOURS_DEPARTMENT_SELECT,
 } from "@/lib/approval-inbox";
+import { createDelegationHoursLoader } from "@/lib/approval-resolver";
+import { decideAttendanceApproval, type CalendarEdits } from "@/lib/attendance-approval";
 import {
   createTripParticipantAttendanceRequests,
   rebuildTripEventCalendar,
 } from "@/lib/trip-calendar";
 import { createNotifications } from "@/lib/notify";
 import { sweepEligibleDelegations } from "@/lib/sweep-delegations";
-import { getRemainingDays, loadWorkDayChecker, countWorkDays } from "@/lib/annual-leave";
-import {
-  applyApprovedRequestToDaily,
-  syncApprovedRequestToCalendar,
-  notifyTeamOfApprovedRequest,
-} from "@/lib/finalize-approval";
+import { computeLeaveImpact } from "@/lib/annual-leave";
 
 // 결재함 조회 시 위임 자동 마감을 throttle로 트리거(B). 모듈 레벨 상태.
 const DELEGATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 결재함 조회 트리거 throttle
@@ -243,7 +237,6 @@ export async function GET(request: NextRequest) {
               select: {
                 id: true,
                 name: true,
-                ...DELEGATE_HOURS_DEPARTMENT_SELECT,
               },
             },
           },
@@ -281,10 +274,22 @@ export async function GET(request: NextRequest) {
       for (const e of emps) approverNameMap.set(e.id, e.name);
     }
 
+    // 대리 위임 시간 — 신청이 탄 결재선 기준. (부서, 결재 항목) 조합마다 한 번만 조회.
+    const loadDelegationHours = createDelegationHoursLoader(prisma);
+    const delegationHoursList = await Promise.all(
+      requests.map((r) =>
+        loadDelegationHours({
+          departmentId: r.employee.departmentId,
+          categoryId: r.categoryId,
+          categoryCode: r.category.code,
+        })
+      )
+    );
+
     // 기존 attendance 항목 — Phase 7 3단계: kind:'attendance' 필드만 추가.
     // 그 외 모든 필드/형식 변경 금지.
-    const attendanceItems = requests.map((r) => {
-      const autoDelegateHours = delegateHoursOf(r.employee.department);
+    const attendanceItems = requests.map((r, idx) => {
+      const autoDelegateHours = delegationHoursList[idx];
       // 권한·대리 위임·대기자 표시는 lib/approval-inbox 의 describeAttendanceApproval 한 곳에서.
       const {
         canApprove,
@@ -370,19 +375,24 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    // 연차 차감 신청만 잔여/차감량 계산 (미리보기·초과차단과 동일 로직 재사용)
+    // 연차 차감 신청만 차감량 계산 (미리보기·초과차단과 같은 computeLeaveImpact)
+    // - pending: 잔여·이번 차감·신청 후 잔여 모두 (결재 판단용)
+    // - approved: 차감량만 ("N일 차감됨"). 지금 잔여는 이미 차감이 반영돼 있어 신청 후 잔여 계산이 틀어지므로 null.
+    // - rejected/cancelled: 연차 필드 모두 null
     for (const it of attendanceItems) {
-      if (it.leaveDeductPerDay > 0) {
-        const startD = new Date(it.startDate + "T00:00:00.000Z");
-        const endD = new Date(it.endDate + "T00:00:00.000Z");
-        const startYear = startD.getUTCFullYear();
-        const { granted, remaining } = await getRemainingDays(it.employeeId, startYear);
-        const isWorkDay = await loadWorkDayChecker([it.employeeId], it.startDate, it.endDate);
-        const amount = countWorkDays(isWorkDay, it.employeeId, startD, endD) * it.leaveDeductPerDay;
-        it.leaveGranted = granted;
-        it.leaveRemaining = remaining;
-        it.leaveRequestAmount = amount;
-        it.leaveRemainingAfter = remaining - amount;
+      if (it.leaveDeductPerDay <= 0) continue;
+      if (it.status !== "pending" && it.status !== "approved") continue;
+      const impact = await computeLeaveImpact(
+        it.employeeId,
+        new Date(it.startDate + "T00:00:00.000Z"),
+        new Date(it.endDate + "T00:00:00.000Z"),
+        it.leaveDeductPerDay
+      );
+      it.leaveRequestAmount = impact.amount;
+      if (it.status === "pending") {
+        it.leaveGranted = impact.granted;
+        it.leaveRemaining = impact.remaining;
+        it.leaveRemainingAfter = impact.remainingAfter;
       }
     }
 
@@ -569,7 +579,6 @@ export async function PUT(request: NextRequest) {
     const idNum = Number(id);
 
     const {
-      approverId: bodyApproverId,
       action,
       rejectReason,
       // Phase 6-2E 결재자가 수정 가능한 캘린더 필드
@@ -597,214 +606,80 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const r = await getApproverId(request, bodyApproverId);
-    if (!r.ok) return r.response;
-    const approverIdNum = r.approverId;
-
-    const target = await prisma.attendanceRequest.findUnique({
-      where: { id: idNum },
-      include: {
-        employee: {
-          select: {
-            departmentId: true,
-            department: {
-              select: {
-                approvalLines: { where: { categoryId: null }, select: { autoDelegateHours: true } },
-              },
-            },
-          },
+    // 결재자는 항상 로그인한 본인 (body/query 의 approverId 는 무시)
+    const sessionR = await requireSession();
+    if (!sessionR.ok) return sessionR.response;
+    const { session } = sessionR;
+    const approverIdNum = session.user.employeeId;
+    if (!Number.isInteger(approverIdNum)) {
+      return NextResponse.json(
+        {
+          error:
+            "본인 직원 정보가 매핑되어 있지 않습니다. 관리자에게 직원 등록을 요청하세요.",
         },
-      },
-    });
-    if (!target) {
-      return NextResponse.json(
-        { error: "요청을 찾을 수 없습니다." },
-        { status: 404 }
-      );
-    }
-
-    if (target.status !== "pending") {
-      return NextResponse.json(
-        { error: "결재 대기 상태가 아닙니다." },
-        { status: 409 }
-      );
-    }
-
-    const viewerRole = r.session.user.role;
-    const isCeoApprover = viewerRole === "ceo";
-
-    // 대리 위임 경과 판정 (autoDelegateHours = 신청자 부서 결재선 기준, 기본 24)
-    const autoDelegateHours =
-      target.employee?.department?.approvalLines?.[0]?.autoDelegateHours ?? 24;
-    const delegationElapsed = isDelegationElapsed(
-      target.requestedAt,
-      autoDelegateHours
-    );
-    const isApproverIn =
-      Array.isArray(target.approverIds) &&
-      target.approverIds.includes(approverIdNum);
-    const isDeputyApprover =
-      target.deputyApproverId === approverIdNum && delegationElapsed;
-
-    // 권한: 정규 결재자 / 대리(위임 경과) / CEO(상시) 중 하나여야 함
-    if (!isApproverIn && !isDeputyApprover && !isCeoApprover) {
-      return NextResponse.json(
-        { error: "이 요청의 결재자로 지정되어 있지 않습니다." },
         { status: 403 }
       );
     }
 
-    // 본인 신청은 일반 직원만 차단 (ADMIN/CEO는 본인 결재 허용)
-    if (
-      target.employeeId === approverIdNum &&
-      viewerRole !== "admin" &&
-      viewerRole !== "ceo"
-    ) {
+    // Phase 6-2E: 결재자가 수정한 캘린더 정보 (undefined는 유지). 최종 저장(승인·반려)에만 반영.
+    const calendarEdits: CalendarEdits = {};
+    if (calendarSourceId !== undefined) {
+      calendarEdits.calendarSourceId =
+        calendarSourceId === null || calendarSourceId === ""
+          ? null
+          : Number(calendarSourceId);
+    }
+    if (calendarEventTitle !== undefined) {
+      calendarEdits.calendarEventTitle = calendarEventTitle?.trim() || null;
+    }
+    if (calendarEventDescription !== undefined) {
+      calendarEdits.calendarEventDescription =
+        calendarEventDescription?.trim() || null;
+    }
+
+    // 판정·저장·최종 확정·결과 알림은 lib/attendance-approval 공용
+    const result = await decideAttendanceApproval({
+      requestId: idNum,
+      approverId: approverIdNum as number,
+      role: session.user.role,
+      action,
+      rejectReason: action === "reject" ? rejectReason : null,
+      calendarEdits,
+      source: "approval",
+    });
+
+    if (!result.ok) {
+      const httpStatus: Record<typeof result.code, number> = {
+        not_found: 404,
+        not_pending: 409,
+        no_permission: 403,
+        self_request: 403,
+        already_approved: 409,
+        category_missing: 500,
+        conflict: 409,
+      };
       return NextResponse.json(
-        { error: "본인의 신청은 결재할 수 없습니다." },
-        { status: 403 }
+        { error: result.message },
+        { status: httpStatus[result.code] }
       );
     }
 
-    let newApprovedBy: number[] = target.approvedByIds ?? [];
-
-    if (action === "approve") {
-      if ((target.approvedByIds ?? []).includes(approverIdNum)) {
-        return NextResponse.json(
-          { error: "이미 승인하셨습니다." },
-          { status: 409 }
-        );
-      }
-      newApprovedBy = [...(target.approvedByIds ?? []), approverIdNum];
-
-      // CEO 또는 대리(위임 경과) = 즉시 최종 확정. 정규 결재자 = 모드별 판정.
-      const decisive = isCeoApprover || isDeputyApprover;
-      const fullyApproved = decisive
-        ? true
-        : target.approvalMode === "any"
-        ? true
-        : target.approverIds.every((id) => newApprovedBy.includes(id));
-
-      // 부분 승인(아직 전원 아님) → 승인자만 누적, pending 유지. 근태·캘린더 미반영.
-      if (!fullyApproved) {
-        const partial = await prisma.attendanceRequest.update({
-          where: { id: idNum },
-          data: { approvedByIds: newApprovedBy },
-        });
-        return NextResponse.json({
-          id: partial.id,
-          status: partial.status,
-          approvedCount: newApprovedBy.length,
-          totalApprovers: (target.approverIds ?? []).length,
-          finalized: false,
-        });
-      }
-      // 최종 승인 → 아래 finalize 진행 (newApprovedBy 반영)
-    }
-    // 여기 도달 = 반려 OR 최종 승인 → 아래 기존 finalize 로직 그대로 진행.
-
-    const newStatus = action === "approve" ? "approved" : "rejected";
-    const now = new Date();
-
-    // 카테고리 정보 다시 조회 (type 필요)
-    const category = await prisma.attendanceCategory.findUnique({
-      where: { id: target.categoryId },
-    });
-    if (!category) {
-      return NextResponse.json(
-        { error: "카테고리 정보를 찾을 수 없습니다." },
-        { status: 500 }
-      );
-    }
-
-    const result = await prisma.$transaction(async (tx) => {
-      // 1) attendance_request 상태 업데이트
-      //    Phase 6-2E: 결재자가 캘린더 정보 수정한 경우 함께 반영 (undefined는 유지)
-      const calendarUpdateFields: Record<string, unknown> = {};
-      if (calendarSourceId !== undefined) {
-        calendarUpdateFields.calendarSourceId =
-          calendarSourceId === null || calendarSourceId === ""
-            ? null
-            : Number(calendarSourceId);
-      }
-      if (calendarEventTitle !== undefined) {
-        calendarUpdateFields.calendarEventTitle =
-          calendarEventTitle?.trim() || null;
-      }
-      if (calendarEventDescription !== undefined) {
-        calendarUpdateFields.calendarEventDescription =
-          calendarEventDescription?.trim() || null;
-      }
-
-      const updated = await tx.attendanceRequest.update({
-        where: { id: idNum },
-        data: {
-          status: newStatus,
-          approvedById: approverIdNum,
-          approvedAt: now,
-          rejectReason: action === "reject" ? rejectReason.trim() : null,
-          ...(action === "approve" ? { approvedByIds: newApprovedBy } : {}),
-          ...calendarUpdateFields,
-        },
+    // 부분 승인(아직 전원 아님) → pending 유지
+    if (result.kind === "partial") {
+      return NextResponse.json({
+        id: result.id,
+        status: result.status,
+        approvedCount: result.approvedCount,
+        totalApprovers: result.totalApprovers,
+        finalized: false,
       });
-
-      // 반려는 attendance_daily 안 건드림
-      if (action !== "approve") {
-        return { updated, applied: 0 };
-      }
-
-      const applied = await applyApprovedRequestToDaily(tx, {
-        id: updated.id,
-        employeeId: target.employeeId,
-        categoryId: target.categoryId,
-        startDate: target.startDate,
-        endDate: target.endDate,
-        correctedCheckIn: target.correctedCheckIn,
-        correctedCheckOut: target.correctedCheckOut,
-        category: { type: category.type, name: category.name },
-      });
-
-      return { updated, applied };
-    });
-
-    // Phase 6-2E: 승인 시 + 캘린더 정보 있으면 → Google Calendar 등록
-    // (transaction 밖에서 실행 — 외부 API 호출은 트랜잭션 안에 두지 않음)
-    let calendarEventId: string | null = null;
-    if (action === "approve") {
-      calendarEventId = await syncApprovedRequestToCalendar(idNum, "approval");
-      await notifyTeamOfApprovedRequest(idNum, "approval");
-    }
-
-    // ── 결재 결과 알림 (신청자에게) ──────────────────────────
-    // - 여기 도달 = 최종 승인 또는 반려 (부분 승인은 위에서 이미 return됨)
-    // - 본인이 본인 신청을 처리한 경우(ADMIN/CEO 자기결재)는 알림 불필요 → 스킵
-    if (target.employeeId !== approverIdNum) {
-      try {
-        const catName = category?.name ?? "근태";
-        const resultLabel = newStatus === "approved" ? "승인" : "반려";
-        let resultBody = `${catName} 신청이 ${resultLabel}되었습니다.`;
-        if (newStatus === "rejected" && typeof rejectReason === "string" && rejectReason.trim()) {
-          resultBody += ` (사유: ${rejectReason.trim()})`;
-        }
-        await createNotifications({
-          employeeIds: [target.employeeId],
-          type: "approval_result",
-          title: `결재 ${resultLabel}`,
-          body: resultBody,
-          linkPage: "request",
-          linkRefId: idNum,
-          sourceType: "attendance_request",
-        });
-      } catch (e) {
-        console.error("[notify] 결재 결과 알림 생성 실패:", e);
-      }
     }
 
     return NextResponse.json({
-      id: result.updated.id,
-      status: result.updated.status,
-      appliedDays: result.applied,
-      calendarEventId,
+      id: result.id,
+      status: result.status,
+      appliedDays: result.appliedDays,
+      calendarEventId: result.calendarEventId,
     });
   } catch (error) {
     console.error("PUT /api/approvals error:", error);
