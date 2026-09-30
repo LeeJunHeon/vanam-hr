@@ -141,6 +141,8 @@ export async function GET(request: NextRequest) {
         originalCheckIn: true,
         originalCheckOut: true,
         autoStatus: true,
+        isLate: true,
+        isEarlyLeave: true,
         categoryId: true,
         isOverridden: true,
         workMinutes: true,
@@ -223,6 +225,9 @@ export async function GET(request: NextRequest) {
           ? d.originalCheckOut.toISOString()
           : null,
         autoStatus: d.autoStatus,
+        // 칸 집계를 평가 키로 (지각·조퇴 둘 다면 둘 다) — lib/attendanceLabels evalKeys
+        isLate: d.isLate,
+        isEarlyLeave: d.isEarlyLeave,
         categoryId: d.categoryId,
         categoryCode: d.category?.code ?? null,
         categoryName: d.category?.name ?? null,

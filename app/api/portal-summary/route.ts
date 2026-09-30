@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
-import { progressLabel, type ProgressStatus } from "@/lib/attendanceLabels";
+import { progressLabel } from "@/lib/attendanceLabels";
 import { loadWorkDayChecker } from "@/lib/annual-leave";
-import { isNonWorkDayLeave } from "@/lib/category-kind";
+import { computeProgressStatus } from "@/lib/realtime-presence";
+import { summarizeDays } from "@/lib/attendance-summary";
+import { loadTodayWorkDate } from "@/lib/kst-date";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +26,9 @@ function emptyResponse() {
 //    (category_* 상태는 카테고리 존재 시에만 세팅되어 실제로는 도달 불가능한 분기.)
 
 // GET /api/portal-summary — 포털 근태 카드용. 본인 오늘 진행상태(realtime과 동일) + 이번주 집계.
+// - 오늘 = 근무일(work_date_cutoff_hour 기준). presence_raw 귀속도 cutoff 기준 — 실시간 현황과 같다.
+// - 진행 상태 = lib/realtime-presence computeProgressStatus (실시간 현황 카드와 같은 함수).
+// - 이번 주 집계 = lib/attendance-summary summarizeDays (응답 필드 normal·late·earlyLeave·absent 유지).
 export async function GET() {
   try {
     const r = await requireSession();
@@ -38,13 +43,12 @@ export async function GET() {
     });
     const graceMinutes =
       policy && /^\d+$/.test(policy.value) ? parseInt(policy.value, 10) : 60;
+    const { date: todayWorkDate, ymd: todayYmd, cutoffHour } = await loadTodayWorkDate(prisma);
 
-    // ── 본인 오늘(KST) 최신 presence_raw + attendance_daily + 활성 요청 1건 ──
-    // realtime 라우트의 latestRows 쿼리를 본인 1명 기준으로 복제.
+    // ── 본인 오늘(근무일) 최신 presence_raw + attendance_daily + 대표 신청 1건 ──
     type DetailRow = {
       latest_status: string | null;
       latest_checked_at: Date | null;
-      today_check_in: Date | null;
       today_check_out: Date | null;
       today_category_id: number | null;
       today_category_code: string | null;
@@ -56,19 +60,22 @@ export async function GET() {
 
     const detailRows = await prisma.$queryRaw<DetailRow[]>`
       WITH today_kst AS (
-        SELECT (NOW() AT TIME ZONE 'Asia/Seoul')::date AS d
+        SELECT ${todayYmd}::date AS d
       ),
       latest_raw AS (
         SELECT status AS latest_status, checked_at AS latest_checked_at
         FROM hr.presence_raw
         WHERE employee_id = ${empId}
-          AND (checked_at AT TIME ZONE 'Asia/Seoul')::date = (SELECT d FROM today_kst)
+          AND CASE
+            WHEN EXTRACT(HOUR FROM (checked_at AT TIME ZONE 'Asia/Seoul')) < ${cutoffHour}
+            THEN ((checked_at AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '1 day')::date
+            ELSE (checked_at AT TIME ZONE 'Asia/Seoul')::date
+          END = (SELECT d FROM today_kst)
         ORDER BY checked_at DESC
         LIMIT 1
       ),
       today_daily AS (
         SELECT
-          ad.check_in,
           ad.check_out,
           ad.category_id,
           ad.is_overridden,
@@ -81,36 +88,34 @@ export async function GET() {
         LIMIT 1
       ),
       today_request AS (
-        SELECT corrected_check_in, corrected_check_out
-        FROM hr.attendance_requests
-        WHERE employee_id = ${empId}
-          AND status IN ('approved', 'auto_approved', 'auto_delegated')
-          AND start_date <= (SELECT d FROM today_kst)
-          AND end_date >= (SELECT d FROM today_kst)
+        -- 진행 상태 판정용 대표 신청 (realtime 과 같은 순서). 근태 정정은 일정이 아니므로 뺀다.
+        SELECT rq.corrected_check_in, rq.corrected_check_out
+        FROM hr.attendance_requests rq
+        JOIN hr.attendance_categories rc ON rc.id = rq.category_id
+        WHERE rq.employee_id = ${empId}
+          AND rq.status IN ('approved', 'auto_approved', 'auto_delegated')
+          AND rq.start_date <= (SELECT d FROM today_kst)
+          AND rq.end_date >= (SELECT d FROM today_kst)
+          AND rc.type <> 'correction'
         ORDER BY
-          -- 1순위: 지금 진행 중인 시간형 일정 (현재 시각 포함)
           (
-            corrected_check_in IS NOT NULL
-            AND corrected_check_out IS NOT NULL
-            AND corrected_check_in <= NOW()
-            AND corrected_check_out > NOW()
+            rq.corrected_check_in IS NOT NULL
+            AND rq.corrected_check_out IS NOT NULL
+            AND rq.corrected_check_in <= NOW()
+            AND rq.corrected_check_out > NOW()
           ) DESC,
-          -- 2순위: 이미 시작된(과거) 시간형 일정 — 늦게 끝난 것 우선
           (
-            corrected_check_in IS NOT NULL
-            AND corrected_check_in <= NOW()
+            rq.corrected_check_in IS NOT NULL
+            AND rq.corrected_check_in <= NOW()
           ) DESC,
-          -- 3순위: 종일 일정 (시간형이 진행/과거에 없을 때만)
-          (corrected_check_in IS NULL OR corrected_check_out IS NULL) DESC,
-          -- 4순위: 미래 시작 시간형은 가장 뒤로
-          corrected_check_out DESC NULLS LAST,
-          requested_at DESC
+          (rq.corrected_check_in IS NULL OR rq.corrected_check_out IS NULL) DESC,
+          rq.corrected_check_out DESC NULLS LAST,
+          rq.requested_at DESC
         LIMIT 1
       )
       SELECT
         l.latest_status,
         l.latest_checked_at,
-        d.check_in AS today_check_in,
         d.check_out AS today_check_out,
         d.category_id AS today_category_id,
         d.category_code AS today_category_code,
@@ -124,127 +129,62 @@ export async function GET() {
       LEFT JOIN today_request r ON true
     `;
 
-    const row: DetailRow = detailRows[0] ?? {
-      latest_status: null,
-      latest_checked_at: null,
-      today_check_in: null,
-      today_check_out: null,
-      today_category_id: null,
-      today_category_code: null,
-      today_category_name: null,
-      today_is_overridden: null,
-      today_corrected_in: null,
-      today_corrected_out: null,
-    };
-
-    // ── realtimeStatus 산출 (realtime과 동일) ──
-    const now = Date.now();
-    const graceMs = graceMinutes * 60 * 1000;
-
-    let realtimeStatus: "working" | "disconnected" = "disconnected";
-    if (row.latest_status === "online") {
-      realtimeStatus = "working";
-    } else if (row.latest_status === "offline" && row.latest_checked_at) {
-      const elapsed = now - row.latest_checked_at.getTime();
-      if (elapsed < graceMs) realtimeStatus = "working";
-    }
-
-    // ── progressStatus 산출 (realtime과 동일 분기) ──
-    let progressStatus: ProgressStatus | null = null;
-
-    if (row.today_is_overridden && row.today_category_id !== null) {
-      const calIn = row.today_corrected_in;
-      const calOut = row.today_corrected_out;
-      const isTimedCalendar = !!(calIn && calOut);
-      if (isTimedCalendar) {
-        const calInMs = calIn!.getTime();
-        const calOutMs = calOut!.getTime();
-        if (now < calInMs) {
-          // 일정 시작 전 — 캘린더 분기 skip, 아래 WiFi 로직으로 흐른다.
-          progressStatus = null;
-        } else if (now < calOutMs) {
-          progressStatus = "category_working";
-        } else {
-          // 종료 후
-          if (realtimeStatus === "working") {
-            progressStatus = "working";
-          } else if (
-            row.today_check_out &&
-            row.today_check_out.getTime() > calOutMs
-          ) {
-            progressStatus = "completed";
-          } else {
-            progressStatus = "category_completed";
-          }
-        }
-      } else {
-        // 종일 일정 — check_out 유무로 working/completed
-        progressStatus = row.today_check_out
-          ? "category_completed"
-          : "category_working";
-      }
-    }
-
-    if (progressStatus === null) {
-      if (row.latest_status === null) {
-        progressStatus = "absent_today";
-      } else if (row.latest_status === "online") {
-        progressStatus = "working";
-      } else if (row.latest_status === "offline" && row.latest_checked_at) {
-        const elapsed = now - row.latest_checked_at.getTime();
-        progressStatus = elapsed < graceMs ? "away" : "completed";
-      } else {
-        // offline인데 checked_at이 없는 비정상 케이스 → 미출근 취급
-        progressStatus = "absent_today";
-      }
-    }
+    const row = detailRows[0];
+    const progressStatus = computeProgressStatus({
+      latestStatus: row?.latest_status ?? null,
+      latestCheckedAt: row?.latest_checked_at ?? null,
+      todayCheckOut: row?.today_check_out ?? null,
+      todayIsOverridden: row?.today_is_overridden ?? false,
+      todayCategoryId: row?.today_category_id ?? null,
+      todayCorrectedIn: row?.today_corrected_in ?? null,
+      todayCorrectedOut: row?.today_corrected_out ?? null,
+      graceMs: graceMinutes * 60 * 1000,
+      now: Date.now(),
+    });
 
     const statusLabel = progressLabel(
       progressStatus,
-      row.today_category_name,
-      row.today_category_code
+      row?.today_category_name ?? null,
+      row?.today_category_code ?? null
     );
 
-    // ── 이번주(월~일, KST) attendance_daily 집계 ──
-    // 휴무일의 휴가 줄(캘린더 표시용)은 세지 않는다 (lib/category-kind isNonWorkDayLeave).
-    const weekRows = await prisma.$queryRaw<
-      {
-        work_date: Date;
-        auto_status: string | null;
-        category_type: string | null;
-        monday: Date;
-        sunday: Date;
-      }[]
-    >`
-      WITH bounds AS (
-        SELECT
-          (date_trunc('week', (NOW() AT TIME ZONE 'Asia/Seoul')))::date AS monday,
-          (date_trunc('week', (NOW() AT TIME ZONE 'Asia/Seoul')) + interval '6 days')::date AS sunday
-      )
-      SELECT ad.work_date, ad.auto_status, ac.type AS category_type, b.monday, b.sunday
-      FROM hr.attendance_daily ad
-      CROSS JOIN bounds b
-      LEFT JOIN hr.attendance_categories ac ON ac.id = ad.category_id
-      WHERE ad.employee_id = ${empId}
-        AND ad.work_date >= b.monday
-        AND ad.work_date <= b.sunday
-    `;
+    // ── 이번주(오늘 근무일이 속한 월~일) attendance_daily 집계 ──
+    const monday = new Date(todayWorkDate);
+    monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+    const sunday = new Date(monday);
+    sunday.setUTCDate(sunday.getUTCDate() + 6);
+    const weekDailies = await prisma.attendanceDaily.findMany({
+      where: { employeeId: empId, workDate: { gte: monday, lte: sunday } },
+      select: {
+        workDate: true,
+        checkIn: true,
+        checkOut: true,
+        autoStatus: true,
+        isLate: true,
+        isEarlyLeave: true,
+        category: { select: { type: true } },
+      },
+    });
 
     const week = { normal: 0, late: 0, earlyLeave: 0, absent: 0 };
-    if (weekRows.length > 0) {
+    if (weekDailies.length > 0) {
       const ymd = (d: Date) => d.toISOString().split("T")[0];
-      const isWorkDay = await loadWorkDayChecker(
-        [empId],
-        ymd(weekRows[0].monday),
-        ymd(weekRows[0].sunday)
+      const isWorkDay = await loadWorkDayChecker([empId], ymd(monday), ymd(sunday));
+      const s = summarizeDays(
+        weekDailies.map((w) => ({
+          checkIn: w.checkIn,
+          checkOut: w.checkOut,
+          autoStatus: w.autoStatus,
+          isLate: w.isLate,
+          isEarlyLeave: w.isEarlyLeave,
+          categoryType: w.category?.type ?? null,
+          isWorkDay: isWorkDay(empId, w.workDate),
+        }))
       );
-      for (const w of weekRows) {
-        if (isNonWorkDayLeave(w.category_type, isWorkDay(empId, w.work_date))) continue;
-        if (w.auto_status === "normal") week.normal += 1;
-        else if (w.auto_status === "late") week.late += 1;
-        else if (w.auto_status === "early_leave") week.earlyLeave += 1;
-        else if (w.auto_status === "absent") week.absent += 1;
-      }
+      week.normal = s.normal;
+      week.late = s.late;
+      week.earlyLeave = s.earlyLeave;
+      week.absent = s.absent;
     }
 
     return NextResponse.json(

@@ -15,6 +15,7 @@ import {
   Calendar,
 } from "lucide-react";
 import EmployeeAttendanceDetailModal from "@/components/EmployeeAttendanceDetailModal";
+import { todayBucket, rowEvalKeys } from "@/lib/attendance-summary";
 import AttendanceCalendarView from "@/components/AttendanceCalendarView";
 import {
   formatTime,
@@ -95,6 +96,7 @@ interface RealtimeRow {
   todayCategoryCode: string | null;
   todayCategoryName: string | null;
   todayCategoryColor: string | null;
+  todayCategoryType?: string | null;
   todayIsOverridden: boolean;
   todayReason: string | null;
   todayCorrectedIn: string | null;
@@ -393,73 +395,59 @@ export default function AttendanceOverviewPage() {
     };
   }, [fetchRealtime]);
 
-  // 섹션 1 요약 카운트 (progressStatus + autoStatus 기준)
+  // 섹션 1 요약 카운트 — 한 사람은 카드 하나(lib/attendance-summary todayBucket).
+  // 퇴근 완료 아래 줄(정상·지각·조퇴)은 퇴근 완료인 사람 중 평가 키로 센다(지각·조퇴 둘 다면 둘 다 +1).
+  // 이상 = 지각 또는 조퇴가 있는 사람 수(둘 다여도 1명, 진행 상태와 무관).
   const counts = useMemo(() => {
     const rows = realtimeData?.rows ?? [];
-    // 외근 및 출장 카테고리 코드 (휴가/기타와 구분) — 기존 isVacationCategory와 동일한 상수 비교 방식
-    const isTrip = (code: string | null | undefined) =>
-      code === "EXTERNAL_WORK" || code === "BUSINESS_TRIP";
-    return {
-      working: rows.filter((r) => r.progressStatus === "working").length,
-      away: rows.filter((r) => r.progressStatus === "away").length,
-      completed: rows.filter((r) => r.progressStatus === "completed").length,
-      absentToday: rows.filter((r) => r.progressStatus === "absent_today")
-        .length,
-      normal: rows.filter((r) => r.todayAutoStatus === "normal").length,
-      late: rows.filter((r) => r.todayAutoStatus === "late").length,
-      earlyLeave: rows.filter((r) => r.todayAutoStatus === "early_leave")
-        .length,
-      categoryWorking: rows.filter(
-        (r) => r.progressStatus === "category_working"
-      ).length,
-      categoryCompleted: rows.filter(
-        (r) => r.progressStatus === "category_completed"
-      ).length,
-      categoryCount: rows.filter(
-        (r) =>
-          r.progressStatus === "category_working" ||
-          r.progressStatus === "category_completed"
-      ).length,
-      // 외근 및 출장 (EXTERNAL_WORK / BUSINESS_TRIP)
-      tripWorking: rows.filter(
-        (r) =>
-          r.progressStatus === "category_working" && isTrip(r.todayCategoryCode)
-      ).length,
-      tripCompleted: rows.filter(
-        (r) =>
-          r.progressStatus === "category_completed" &&
-          isTrip(r.todayCategoryCode)
-      ).length,
-      tripCount: rows.filter(
-        (r) =>
-          (r.progressStatus === "category_working" ||
-            r.progressStatus === "category_completed") &&
-          isTrip(r.todayCategoryCode)
-      ).length,
-      // 휴가 및 기타 (외근/출장이 아닌 모든 category)
-      leaveEtcWorking: rows.filter(
-        (r) =>
-          r.progressStatus === "category_working" &&
-          !isTrip(r.todayCategoryCode)
-      ).length,
-      leaveEtcCompleted: rows.filter(
-        (r) =>
-          r.progressStatus === "category_completed" &&
-          !isTrip(r.todayCategoryCode)
-      ).length,
-      leaveEtcCount: rows.filter(
-        (r) =>
-          (r.progressStatus === "category_working" ||
-            r.progressStatus === "category_completed") &&
-          !isTrip(r.todayCategoryCode)
-      ).length,
+    const c = {
+      working: 0, away: 0, completed: 0, absentToday: 0,
+      normal: 0, late: 0, earlyLeave: 0,
+      tripWorking: 0, tripCompleted: 0, tripCount: 0,
+      leaveEtcWorking: 0, leaveEtcCompleted: 0, leaveEtcCount: 0,
+      abnormal: 0, abnormalLate: 0, abnormalEarly: 0,
     };
+    for (const r of rows) {
+      const bucket = todayBucket(r.progressStatus, r.todayCategoryType);
+      const keys = rowEvalKeys({
+        checkIn: r.todayCheckIn,
+        checkOut: r.todayCheckOut,
+        autoStatus: r.todayAutoStatus,
+        isLate: r.todayIsLate,
+        isEarlyLeave: r.todayIsEarlyLeave,
+      });
+      if (bucket === "working") {
+        if (r.progressStatus === "away") c.away += 1;
+        else c.working += 1;
+      } else if (bucket === "completed") {
+        c.completed += 1;
+        if (keys.includes("normal")) c.normal += 1;
+        if (keys.includes("late")) c.late += 1;
+        if (keys.includes("early_leave")) c.earlyLeave += 1;
+      } else if (bucket === "work") {
+        c.tripCount += 1;
+        if (r.progressStatus === "category_working") c.tripWorking += 1;
+        else c.tripCompleted += 1;
+      } else if (bucket === "leave_etc") {
+        c.leaveEtcCount += 1;
+        if (r.progressStatus === "category_working") c.leaveEtcWorking += 1;
+        else c.leaveEtcCompleted += 1;
+      } else {
+        c.absentToday += 1;
+      }
+      const isLate = keys.includes("late");
+      const isEarly = keys.includes("early_leave");
+      if (isLate || isEarly) c.abnormal += 1;
+      if (isLate) c.abnormalLate += 1;
+      if (isEarly) c.abnormalEarly += 1;
+    }
+    return c;
   }, [realtimeData]);
 
   const workingTotal = counts.working + counts.away;
-  const abnormalTotal = counts.late + counts.earlyLeave;
-  // 퇴근 완료 = 오늘 근태가 확정된 사람 전부(정상/지각/조퇴). 외근으로 마무리된 사람 포함.
-  const completedTotal = counts.normal + counts.late + counts.earlyLeave;
+  const abnormalTotal = counts.abnormal;
+  // 퇴근 완료 = 진행 상태가 퇴근 완료인 사람 (한 사람은 카드 하나)
+  const completedTotal = counts.completed;
 
   const realtimeRows = realtimeData?.rows ?? [];
 
@@ -537,12 +525,12 @@ export default function AttendanceOverviewPage() {
           </p>
         </div>
 
-        {/* 외근 및 출장 (EXTERNAL_WORK / BUSINESS_TRIP) */}
+        {/* 출장·외근·재택 (category type work) */}
         <div className="bg-purple-50 rounded-2xl border border-purple-100 p-4 sm:p-5">
           <div className="flex items-center gap-2 mb-2">
             <Briefcase size={16} className="text-purple-600" />
             <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide">
-              외근 및 출장
+              출장·외근·재택
             </p>
           </div>
           <p className="text-2xl sm:text-3xl font-bold text-purple-700 font-mono">
@@ -554,7 +542,7 @@ export default function AttendanceOverviewPage() {
           </p>
         </div>
 
-        {/* 휴가 및 기타 (외근/출장이 아닌 모든 category) */}
+        {/* 휴가 및 기타 (type work 가 아닌 모든 category) */}
         <div className="bg-rose-50 rounded-2xl border border-rose-100 p-4 sm:p-5">
           <div className="flex items-center gap-2 mb-2">
             <Calendar size={16} className="text-rose-600" />
@@ -599,7 +587,7 @@ export default function AttendanceOverviewPage() {
             <span className="text-base font-medium text-amber-600">명</span>
           </p>
           <p className="text-xs text-amber-600/80 mt-1">
-            지각 {counts.late} · 조퇴 {counts.earlyLeave}
+            지각 {counts.abnormalLate} · 조퇴 {counts.abnormalEarly}
           </p>
         </div>
       </div>

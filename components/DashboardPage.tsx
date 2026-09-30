@@ -168,7 +168,7 @@ const ADMIN_CARDS: AdminCard[] = [
   { key: "late", title: "지각", iconKey: "clock", color: "amber", kind: "detail", detailKey: "late" },
   { key: "earlyLeave", title: "조퇴", iconKey: "logOut", color: "orange", kind: "detail", detailKey: "earlyLeave" },
   { key: "leave", title: "휴가", iconKey: "calendar", color: "violet", kind: "detail", detailKey: "leave" },
-  { key: "tripExternal", title: "출장 및 외근", iconKey: "globe", color: "teal", kind: "detail", detailKey: "tripExternal" },
+  { key: "tripExternal", title: "출장·외근·재택", iconKey: "globe", color: "teal", kind: "detail", detailKey: "tripExternal" },
 ];
 
 const MY_CARDS: CardConfig[] = [
@@ -189,11 +189,11 @@ const MY_CARDS: CardConfig[] = [
     iconKey: "calendar",
     color: "rose",
     titleByPeriod: {
-      day: "오늘 휴가",
-      month: "이번달 휴가",
-      year: "올해 휴가",
+      day: "오늘 연차 사용",
+      month: "이번달 연차 사용",
+      year: "올해 연차 사용",
     },
-    description: "본인 사용 (일)",
+    description: "연차 차감 (일)",
     format: (v) => v.toFixed(1),
     page: "my-attendance",
   },
@@ -202,11 +202,12 @@ const MY_CARDS: CardConfig[] = [
     iconKey: "fileText",
     color: "amber",
     titleByPeriod: {
-      day: "오늘 신청 대기",
-      month: "이번달 신청 대기",
-      year: "올해 신청 대기",
+      // 기간과 무관한 지금 결재 대기 건수 → 기간 없이 표시
+      day: "신청 대기",
+      month: "신청 대기",
+      year: "신청 대기",
     },
-    description: "본인 신청 중",
+    description: "결재 대기 중",
     page: "request",
   },
   {
@@ -218,7 +219,7 @@ const MY_CARDS: CardConfig[] = [
       month: "이번달 신청 완료",
       year: "올해 신청 완료",
     },
-    description: "본인 승인 완료",
+    description: "자동승인 포함",
     page: "request",
   },
 ];

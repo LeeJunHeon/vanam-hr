@@ -9,8 +9,10 @@ import {
   UserCheck,
   AlertCircle,
   Clock,
+  LogOut,
   type LucideIcon,
 } from "lucide-react";
+import { summarizeDays } from "@/lib/attendance-summary";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 import AttendanceCalendarView from "@/components/AttendanceCalendarView";
 import MyShiftModal from "@/components/MyShiftModal";
@@ -23,6 +25,11 @@ interface AttendanceDaily {
   checkIn: string | null;
   checkOut: string | null;
   autoStatus: string | null;
+  // 요약용 (/api/attendance-daily)
+  isLate?: boolean | null;
+  isEarlyLeave?: boolean | null;
+  categoryType?: string | null;
+  isWorkDay?: boolean;
 }
 
 interface StatusLookup {
@@ -115,20 +122,9 @@ export default function MyAttendancePage() {
     return lookup?.color ?? null;
   };
 
-  // 통계 요약
-  const summary = useMemo(() => {
-    let attended = 0;
-    let normal = 0;
-    let late = 0;
-    let absent = 0;
-    dailies.forEach((d) => {
-      if (d.checkIn) attended++;
-      if (d.autoStatus === "normal") normal++;
-      else if (d.autoStatus === "late") late++;
-      else if (d.autoStatus === "absent") absent++;
-    });
-    return { attended, normal, late, absent };
-  }, [dailies]);
+  // 통계 요약 — 공통 기준(lib/attendance-summary summarizeDays): 평가 키로 세고(지각·조퇴 둘 다면 둘 다),
+  // 휴무일 휴가 줄은 출근일 외 칸에서 뺀다.
+  const summary = useMemo(() => summarizeDays(dailies), [dailies]);
 
   // 월 네비 — ym 문자열 직접 갱신
   const prevMonth = () => setYm((cur) => shiftYm(cur, -1));
@@ -205,8 +201,8 @@ export default function MyAttendancePage() {
         </div>
       ) : (
         <>
-          {/* 통계 요약 카드 4개 */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+          {/* 통계 요약 카드 5개 (출근일·정상·지각·조퇴·결근) */}
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
             <SummaryCard
               icon={UserCheck}
               label="출근일"
@@ -229,6 +225,14 @@ export default function MyAttendancePage() {
               color={getStatusColor("late") ?? "text-amber-600"}
               bg="bg-amber-50"
               dynamicColor={getStatusColor("late")}
+            />
+            <SummaryCard
+              icon={LogOut}
+              label="조퇴"
+              value={summary.earlyLeave}
+              color={getStatusColor("early_leave") ?? "text-orange-600"}
+              bg="bg-orange-50"
+              dynamicColor={getStatusColor("early_leave")}
             />
             <SummaryCard
               icon={AlertCircle}

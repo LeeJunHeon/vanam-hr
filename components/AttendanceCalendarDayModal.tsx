@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
+import { lateEarlyReasonLabel } from "@/lib/attendance-summary";
 import {
   correctedRangeLabel,
   timedRangeLabel,
@@ -335,9 +336,7 @@ export default function AttendanceCalendarDayModal({
   useEffect(() => {
     const targets = rows
       .filter(
-        (r) =>
-          r.workDate === date &&
-          (r.autoStatus === "late" || r.autoStatus === "early_leave")
+        (r) => r.workDate === date && lateEarlyReasonLabel(r) !== null
       )
       .map((r) => r.dailyId);
     if (targets.length === 0) return;
@@ -452,15 +451,14 @@ export default function AttendanceCalendarDayModal({
 
   // 지각/조퇴 사유 영역 렌더 (데스크탑/모바일 공용) — row 기반
   const renderReason = (row: AttendanceRow | undefined, empId: number) => {
-    const isLateOrEarly =
-      row?.autoStatus === "late" || row?.autoStatus === "early_leave";
-    if (!isLateOrEarly || row == null) return null;
+    // 사유 대상·라벨은 평가 키 기준 ("지각 사유" / "조퇴 사유" / "지각·조퇴 사유")
+    const label = row ? lateEarlyReasonLabel(row) : null;
+    if (!label || row == null) return null;
     const canEdit = editableEmployeeId != null && empId === editableEmployeeId;
     const currentReason =
       row.dailyId in localReasons
         ? localReasons[row.dailyId] ?? ""
         : row.statusReason ?? "";
-    const label = row.autoStatus === "late" ? "지각" : "조퇴";
     const files = reasonFiles[row.dailyId] ?? [];
 
     if (canEdit) {

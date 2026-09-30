@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession, isAdminSession } from "@/lib/auth-helpers";
-import { getPolicy, computeGrantedDays, computeSystemUsedDays } from "@/lib/annual-leave";
+import {
+  getPolicy,
+  computeGrantedDays,
+  computeSystemUsedDays,
+  computePendingLeaveDays,
+} from "@/lib/annual-leave";
 
 export async function GET(request: NextRequest) {
   const sessionR = await requireSession();
@@ -36,6 +41,8 @@ export async function GET(request: NextRequest) {
     const initialUsedDays = grant ? Number(grant.initialUsedDays) : 0;
     const systemUsedDays = await computeSystemUsedDays(e.id, year);
     const remainingDays = grantedDays - initialUsedDays - systemUsedDays;
+    // 결재 대기(그 연도 안 날짜만) — 신청 가능 = 잔여 − 결재 대기 (신청 검사와 같은 기준)
+    const pendingDays = await computePendingLeaveDays(e.id, year);
     result.push({
       employeeId: e.id,
       name: e.name,
@@ -48,6 +55,8 @@ export async function GET(request: NextRequest) {
       initialUsedDays,
       systemUsedDays,
       remainingDays,
+      pendingDays,
+      availableDays: remainingDays - pendingDays,
       hasGrantRow: !!grant,
     });
   }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { lateEarlyReasonLabel } from "@/lib/attendance-summary";
 import { requireSession } from "@/lib/auth-helpers";
 
 export async function PUT(
@@ -22,7 +23,10 @@ export async function PUT(
   // 대상 행 조회
   const daily = await prisma.attendanceDaily.findUnique({
     where: { id },
-    select: { id: true, employeeId: true, autoStatus: true },
+    select: {
+      id: true, employeeId: true, autoStatus: true,
+      isLate: true, isEarlyLeave: true, checkIn: true, checkOut: true,
+    },
   });
   if (!daily) {
     return NextResponse.json({ error: "근태 기록을 찾을 수 없습니다." }, { status: 404 });
@@ -34,8 +38,8 @@ export async function PUT(
     return NextResponse.json({ error: "본인 근태에만 사유를 작성할 수 있습니다." }, { status: 403 });
   }
 
-  // 지각/조퇴만 사유 입력 허용
-  if (daily.autoStatus !== "late" && daily.autoStatus !== "early_leave") {
+  // 지각/조퇴만 사유 입력 허용 — 평가 키 기준(lib/attendance-summary, 일별 모달과 같게)
+  if (!lateEarlyReasonLabel(daily)) {
     return NextResponse.json({ error: "지각/조퇴 기록에만 사유를 작성할 수 있습니다." }, { status: 400 });
   }
 

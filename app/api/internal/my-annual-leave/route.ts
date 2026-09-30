@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
   const year = Number(new URL(request.url).searchParams.get("year")) || new Date().getFullYear();
 
   if (!Number.isInteger(identity.employeeId)) {
-    return NextResponse.json({ mapped: false, email: auth.actingEmail, year, granted: 0, used: 0, remaining: 0, pending: 0 });
+    return NextResponse.json({ mapped: false, email: auth.actingEmail, year, granted: 0, used: 0, remaining: 0, pending: 0, available: 0 });
   }
 
   const { granted, initialUsed, systemUsed, remaining } = await getRemainingDays(
@@ -32,5 +32,7 @@ export async function GET(request: NextRequest) {
     used: initialUsed + systemUsed,
     remaining,
     pending,
+    // 신청 가능 = 잔여 − 결재 대기 (신청 검사와 같은 기준)
+    available: remaining - pending,
   });
 }

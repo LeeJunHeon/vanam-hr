@@ -1,16 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
-import { computeLeaveDaysInPeriod } from "@/lib/annual-leave";
+import { computeMyStats } from "@/lib/my-stats";
 
 // GET /api/dashboard/my-stats?period=day|month|year&targetDate=...&targetMonth=...&targetYear=...
 //
 // 본인 대시보드용 통계 (period 적용)
 // 카드 4종 (모두 동적):
 //   1) myAttended : 기간 내 본인 출근일 수
-//   2) myLeaveDays : 기간 내 본인 휴가 사용일
-//   3) myPendingRequests : 기간 내 본인이 신청한 것 중 pending
-//   4) myCompletedRequests : 기간 내 본인이 신청한 것 중 approved
+//   2) myLeaveDays : 기간 내 본인 연차 차감 일수
+//   3) myPendingRequests : 기간과 무관하게 지금 결재 대기인 본인 신청
+//   4) myCompletedRequests : 기간 내 본인이 낸 신청 중 승인(자동승인 포함, 캘린더·출장 자동 기록 제외)
 export async function GET(request: NextRequest) {
   const r = await requireSession();
   if (!r.ok) return r.response;
@@ -77,35 +76,12 @@ export async function GET(request: NextRequest) {
       rangeEnd = new Date(Date.UTC(y + 1, 0, 1));
     }
 
-    const [
-      myAttended,
-      myLeaveDays,
-      myPendingRequests,
-      myCompletedRequests,
-    ] = await Promise.all([
-      prisma.attendanceDaily.count({
-        where: {
-          employeeId: employeeId as number,
-          workDate: { gte: rangeStart, lt: rangeEnd },
-          checkIn: { not: null },
-        },
-      }),
-      computeLeaveDaysInPeriod(employeeId as number, rangeStart, rangeEnd),
-      prisma.attendanceRequest.count({
-        where: {
-          employeeId: employeeId as number,
-          status: "pending",
-          requestedAt: { gte: rangeStart, lt: rangeEnd },
-        },
-      }),
-      prisma.attendanceRequest.count({
-        where: {
-          employeeId: employeeId as number,
-          status: "approved",
-          requestedAt: { gte: rangeStart, lt: rangeEnd },
-        },
-      }),
-    ]);
+    // 계산은 lib/my-stats (챗 internal/my-stats 와 같은 함수)
+    const stats = await computeMyStats(employeeId as number, rangeStart, rangeEnd);
+    const myAttended = stats.attended;
+    const myLeaveDays = stats.leaveDays;
+    const myPendingRequests = stats.pending;
+    const myCompletedRequests = stats.completed;
 
     return NextResponse.json({
       employeeId,

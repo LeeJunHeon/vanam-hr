@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getTargetEmployeeId } from "@/lib/auth-helpers";
+import { loadWorkDayChecker } from "@/lib/annual-leave";
 
 // GET /api/attendance-daily?employeeId=N&from=YYYY-MM-DD&to=YYYY-MM-DD
 // 비관리자: employeeId는 본인만 (쿼리 무시 또는 본인과 다르면 403)
@@ -33,10 +34,21 @@ export async function GET(request: NextRequest) {
       orderBy: [{ workDate: "asc" }],
       include: {
         category: {
-          select: { id: true, code: true, name: true, displayColor: true },
+          select: { id: true, code: true, name: true, displayColor: true, type: true },
         },
       },
     });
+
+    // 요약 숫자에서 휴무일 휴가 줄을 가려내는 근무일 판정 (lib/attendance-summary summarizeDays)
+    const ymd = (d: Date) => d.toISOString().split("T")[0];
+    const isWorkDay =
+      dailies.length > 0
+        ? await loadWorkDayChecker(
+            [employeeId],
+            ymd(dailies[0].workDate),
+            ymd(dailies[dailies.length - 1].workDate)
+          )
+        : () => true;
 
     return NextResponse.json(
       dailies.map((d) => ({
@@ -53,6 +65,11 @@ export async function GET(request: NextRequest) {
         workMinutes: d.workMinutes,
         note: d.note,
         isConfirmed: d.isConfirmed,
+        // 요약용 (기존 필드는 그대로 — RequestPage 정정 폼 등 다른 소비처 영향 없음)
+        isLate: d.isLate,
+        isEarlyLeave: d.isEarlyLeave,
+        categoryType: d.category?.type ?? null,
+        isWorkDay: isWorkDay(employeeId, d.workDate),
       }))
     );
   } catch (error) {

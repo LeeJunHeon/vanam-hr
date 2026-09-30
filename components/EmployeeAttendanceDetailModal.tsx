@@ -30,7 +30,7 @@ import {
   progressLabel,
 } from "@/lib/attendanceLabels";
 import type { RealtimeStatus, ProgressStatus } from "@/lib/realtime-presence";
-import { isNonWorkDayLeave } from "@/lib/category-kind";
+import { summarizeDays } from "@/lib/attendance-summary";
 import ExcelButton from "@/components/ExcelButton";
 import AttendanceExportModal from "@/components/AttendanceExportModal";
 
@@ -344,23 +344,11 @@ export default function EmployeeAttendanceDetailModal({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose, exportOpen]);
 
-  // 통계 (autoStatus + 카테고리 보정 기준 집계)
+  // 통계 — 공통 기준(lib/attendance-summary summarizeDays). 평가 키로 세고(지각·조퇴 둘 다면 둘 다),
+  // 휴무일 휴가 줄은 출근일 외 칸에서 뺀다. 외근/휴가 = 휴가 type + 근무 type 인 날.
   const stats = useMemo(() => {
-    return rows.reduce(
-      (acc, r) => {
-        // 출근 기록은 실제로 나온 것이므로 항상 센다.
-        if (r.checkIn) acc.attended += 1;
-        // 휴무일의 휴가 줄(캘린더 표시용)은 정상·외근/휴가 요약에서 뺀다. 필드가 없으면 기존처럼 센다.
-        if (isNonWorkDayLeave(r.categoryType ?? null, r.isWorkDay ?? true)) return acc;
-        if (r.autoStatus === "normal") acc.normal += 1;
-        else if (r.autoStatus === "late") acc.late += 1;
-        else if (r.autoStatus === "absent") acc.absent += 1;
-        // Phase 6-2B: 캘린더 보정 카운트
-        if (r.isOverridden && r.categoryId) acc.category += 1;
-        return acc;
-      },
-      { attended: 0, normal: 0, late: 0, absent: 0, category: 0 }
-    );
+    const s = summarizeDays(rows);
+    return { ...s, category: s.leave + s.work };
   }, [rows]);
 
   // 최신 날짜가 위로
@@ -420,8 +408,8 @@ export default function EmployeeAttendanceDetailModal({
             </div>
           ) : (
             <>
-              {/* 통계 카드 5개 (Phase 6-2B: 외근/휴가 신규) */}
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 sm:gap-3">
+              {/* 통계 카드 6개 (출근일수·정상·지각·조퇴·결근·외근/휴가) */}
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 sm:gap-3">
                 <div className="bg-gray-50 rounded-xl p-3">
                   <p className="text-xs font-semibold text-gray-500">출근일수</p>
                   <p className="mt-1 text-xl font-bold text-gray-900 font-mono">
@@ -444,6 +432,15 @@ export default function EmployeeAttendanceDetailModal({
                   </div>
                   <p className="mt-1 text-xl font-bold text-amber-700 font-mono">
                     {stats.late}
+                  </p>
+                </div>
+                <div className="bg-orange-50 rounded-xl p-3">
+                  <div className="flex items-center gap-1">
+                    <AlertCircle size={13} className="text-orange-600" />
+                    <p className="text-xs font-semibold text-orange-700">조퇴</p>
+                  </div>
+                  <p className="mt-1 text-xl font-bold text-orange-700 font-mono">
+                    {stats.earlyLeave}
                   </p>
                 </div>
                 <div className="bg-rose-50 rounded-xl p-3">

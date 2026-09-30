@@ -16,6 +16,8 @@ interface GrantRow {
   initialUsedDays: number;
   systemUsedDays: number;
   remainingDays: number;
+  pendingDays?: number;
+  availableDays?: number;
   hasGrantRow: boolean;
 }
 
@@ -253,6 +255,13 @@ export default function AnnualLeavePage() {
                         r.remainingDays < 0 ? "text-rose-600" : "text-emerald-700"
                       }
                     />
+                    {/* 결재 대기가 있으면 RequestPage 연차 카드와 같은 문구 */}
+                    {!!r.pendingDays && r.pendingDays > 0 && (
+                      <span className="text-[11px] text-amber-600 whitespace-nowrap">
+                        결재 대기 {fmtNum(r.pendingDays)}일 · 신청 가능{" "}
+                        {fmtNum(r.availableDays ?? r.remainingDays - r.pendingDays)}일
+                      </span>
+                    )}
                   </div>
                 </button>
 

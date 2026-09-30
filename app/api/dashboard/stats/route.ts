@@ -2,12 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth-helpers";
 import { loadWorkDayChecker } from "@/lib/annual-leave";
-import { isLeaveCategoryType, isNonWorkDayLeave } from "@/lib/category-kind";
+import {
+  isLeaveCategoryType,
+  isNonWorkDayLeave,
+  isWorkCategoryType,
+} from "@/lib/category-kind";
+import { rowEvalKeys } from "@/lib/attendance-summary";
 import { countPendingInbox } from "@/lib/approval-inbox";
 
 // GET /api/dashboard/stats?period=day|month|year&targetDate=YYYY-MM-DD&targetMonth=YYYY-MM&targetYear=YYYY
 //
-// 기간 내 "문제 근태(결근/지각/조퇴) + 휴가 + 출장 + 외근"을 건수로 집계하고
+// 기간 내 "문제 근태(결근/지각/조퇴) + 휴가 + 출장·외근·재택"을 건수로 집계하고
 // 각 항목의 상세 목록을 함께 반환한다.
 // pendingRequests는 기간 무관. 로그인 사용자의 결재함 '결재 대기' 탭과 같은 범위(lib/approval-inbox).
 export async function GET(request: NextRequest) {
@@ -111,13 +116,14 @@ export async function GET(request: NextRequest) {
     });
     const iso = (v: Date | null) => (v ? v.toISOString() : null);
 
-    // 출장/외근 시간대(corrected_check_in/out) 조회 — attendance_requests에서.
-    // details의 출장/외근 행에 "09:00~12:00" 시간을 표시하기 위함.
-    // 대상: 이번 기간 dailies 중 BUSINESS_TRIP/EXTERNAL_WORK인 (employeeId, workDate).
-    const tripDailies = dailies.filter(
-      (d) => d.category?.code === "BUSINESS_TRIP" || d.category?.code === "EXTERNAL_WORK"
-    );
-    const correctedTimeMap = new Map<string, { in: string | null; out: string | null }>();
+    // 출장·외근·재택 시간대(corrected_check_in/out) 조회 — attendance_requests에서.
+    // details의 근무 type 행에 "09:00~12:00" 시간을 표시하기 위함.
+    // 대표 시각은 lib/attendance-rows 와 같은 규칙: 시간형이 종일보다 우선, 시간형끼리는 시작이 늦은 것.
+    const tripDailies = dailies.filter((d) => isWorkCategoryType(d.category?.type));
+    const correctedTimeMap = new Map<
+      string,
+      { in: string | null; out: string | null; timed: boolean; startMs: number }
+    >();
     if (tripDailies.length > 0) {
       const empIds = Array.from(new Set(tripDailies.map((d) => d.employeeId)));
       const reqs = await prisma.attendanceRequest.findMany({
@@ -126,7 +132,7 @@ export async function GET(request: NextRequest) {
           status: { in: ["approved", "auto_approved", "auto_delegated"] },
           startDate: { lte: rangeEnd },
           endDate: { gte: rangeStart },
-          category: { code: { in: ["BUSINESS_TRIP", "EXTERNAL_WORK"] } },
+          category: { type: "work" },
         },
         select: {
           employeeId: true,
@@ -135,18 +141,30 @@ export async function GET(request: NextRequest) {
           correctedCheckIn: true,
           correctedCheckOut: true,
         },
+        orderBy: { requestedAt: "asc" },
       });
       // 각 일자별로 펼쳐 맵에 저장 (key = employeeId_YYYY-MM-DD)
       for (const req of reqs) {
+        const timed = !!(req.correctedCheckIn && req.correctedCheckOut);
+        const startMs = req.correctedCheckIn
+          ? req.correctedCheckIn.getTime()
+          : Number.POSITIVE_INFINITY;
         const cur = new Date(req.startDate);
         const end = new Date(req.endDate);
         while (cur <= end) {
           const ymd = cur.toISOString().split("T")[0];
           const key = `${req.employeeId}_${ymd}`;
-          if (!correctedTimeMap.has(key)) {
+          const prev = correctedTimeMap.get(key);
+          const take =
+            !prev ||
+            (timed && !prev.timed) ||
+            (timed && prev.timed && startMs > prev.startMs);
+          if (take) {
             correctedTimeMap.set(key, {
               in: req.correctedCheckIn ? req.correctedCheckIn.toISOString() : null,
               out: req.correctedCheckOut ? req.correctedCheckOut.toISOString() : null,
+              timed,
+              startMs,
             });
           }
           cur.setUTCDate(cur.getUTCDate() + 1);
@@ -187,13 +205,11 @@ export async function GET(request: NextRequest) {
     );
 
     for (const d of dailies) {
-      const code = d.category?.code ?? null;
       const categoryName = d.category?.name ?? null;
       const isLeave = isLeaveCategoryType(d.category?.type);
 
-      // 휴가/출장/외근 (category 기준) — 이 행들은 auto_status가 normal이라
-      // 결근/지각/조퇴 분류와 공존하지 않음
-      if (code === "BUSINESS_TRIP" || code === "EXTERNAL_WORK") {
+      // 휴가 / 출장·외근·재택 (category type 기준)
+      if (isWorkCategoryType(d.category?.type)) {
         const t = correctedTimeMap.get(`${d.employeeId}_${d.workDate.toISOString().split("T")[0]}`);
         details.tripExternal.push({
           ...base(d), categoryName, reason: null,
@@ -203,21 +219,16 @@ export async function GET(request: NextRequest) {
         details.leave.push({ ...base(d), categoryName });
       }
 
-      // 문제 근태 (auto_status 기준)
-      switch (d.autoStatus) {
-        case "absent":
-          details.absent.push(base(d));
-          break;
-        case "late":
-          details.late.push({ ...base(d), checkIn: iso(d.checkIn) });
-          break;
-        case "early_leave":
-          details.earlyLeave.push({
-            ...base(d),
-            checkIn: iso(d.checkIn),
-            checkOut: iso(d.checkOut),
-          });
-          break;
+      // 문제 근태 — 평가 키 기준(lib/attendance-summary). 지각·조퇴 둘 다면 두 목록 모두에 넣는다.
+      const keys = rowEvalKeys(d);
+      if (keys.includes("absent")) details.absent.push(base(d));
+      if (keys.includes("late")) details.late.push({ ...base(d), checkIn: iso(d.checkIn) });
+      if (keys.includes("early_leave")) {
+        details.earlyLeave.push({
+          ...base(d),
+          checkIn: iso(d.checkIn),
+          checkOut: iso(d.checkOut),
+        });
       }
     }
 

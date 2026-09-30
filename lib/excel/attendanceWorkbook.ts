@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import type { AttendanceRow } from "@/lib/attendance-rows";
-import { AUTO_STATUS_META } from "@/lib/attendanceLabels";
+import { evalKeys, evalKeysLabel } from "@/lib/attendanceLabels";
 import { settledProgressLabel } from "@/lib/attendanceProgress";
 
 // 근태 전용 워크북 (서버 전용, prisma import 금지 — 순수 함수).
@@ -77,22 +77,20 @@ function sanitizeSheetName(name: string, used: Set<string>): string {
   return candidate;
 }
 
-// 평가 셀 판정 (§4-C 규칙 순서대로).
+// 평가 셀 판정 (§4-C 규칙 순서대로). 평가 라벨은 화면과 같은 evalKeysLabel(evalKeys(...))
+// — 지각·조퇴 둘 다면 "지각·조퇴".
 function evalCell(row: AttendanceRow, todayYmd: string): string {
-  // 1) 캘린더 보정(카테고리) 우선
+  const keys = evalKeys(row.autoStatus, row.isLate, row.isEarlyLeave, !!row.checkOut);
+  // 1) 캘린더 보정(카테고리) 우선 — 지각·조퇴·결근이면 같은 라벨을 괄호로
   if (row.isOverridden && row.categoryName) {
-    const auto = row.autoStatus;
-    if (auto === "late" || auto === "early_leave" || auto === "absent") {
-      return `${row.categoryName} (${AUTO_STATUS_META[auto].label})`;
-    }
-    return row.categoryName;
+    const bad = keys.filter((k) => k !== "normal");
+    return bad.length > 0 ? `${row.categoryName} (${evalKeysLabel(bad)})` : row.categoryName;
   }
-  // 2) autoStatus 4종 — 평가 축.
+  // 2) 평가 축.
   //    출근O·퇴근X 면 진행 축(근무중/미퇴근)을 함께 표기한다.
   //    화면 모달의 StatusBadge와 동일 규칙 ("지각 · 미퇴근").
-  if (row.autoStatus && row.autoStatus in AUTO_STATUS_META) {
-    const evalText =
-      AUTO_STATUS_META[row.autoStatus as keyof typeof AUTO_STATUS_META].label;
+  if (keys.length > 0) {
+    const evalText = evalKeysLabel(keys);
     if (row.checkIn && !row.checkOut) {
       const prog = settledProgressLabel({
         hasCheckIn: true,
@@ -103,9 +101,7 @@ function evalCell(row: AttendanceRow, todayYmd: string): string {
     }
     return evalText;
   }
-  // 3) autoStatus 도입 전 옛 데이터 보호
-  if (row.checkIn && row.checkOut) return "정상";
-  // 4) 진행 라벨
+  // 3) 진행 라벨 (평가 보류 — 근무중·미퇴근 등)
   return settledProgressLabel({
     hasCheckIn: !!row.checkIn,
     hasCheckOut: !!row.checkOut,

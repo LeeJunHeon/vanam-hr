@@ -4,8 +4,9 @@
 // 차감값 0.00 인 재택근무(work)를 휴가로 세던 문제(2026-09)가 둘을 섞어서 생겼다.
 // 이 파일은 클라이언트에서도 쓰이므로 서버 전용 모듈을 import 하지 않는다.
 
+// 휴가 = leave·long_leave (aggregator·결재 반영의 휴가·외근 type 목록과 같게)
 export function isLeaveCategoryType(type: string | null | undefined): boolean {
-  return type === "leave";
+  return type === "leave" || type === "long_leave";
 }
 
 export function isWorkCategoryType(type: string | null | undefined): boolean {

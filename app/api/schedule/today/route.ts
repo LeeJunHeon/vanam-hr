@@ -46,6 +46,8 @@ export async function GET() {
         status: { in: ["approved", "auto_approved", "auto_delegated"] },
         startDate: { lte: today },
         endDate: { gte: today },
+        // 근태 정정은 일정이 아니다 (aggregator 와 같게)
+        category: { type: { not: "correction" } },
       },
       select: {
         id: true,

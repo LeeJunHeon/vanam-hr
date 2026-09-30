@@ -16,7 +16,7 @@ import MonthPicker from "@/components/MonthPicker";
 import ExcelButton from "@/components/ExcelButton";
 import AttendanceExportModal from "@/components/AttendanceExportModal";
 import type { AttendanceRow } from "@/lib/attendance-rows";
-import { EVAL_STATUS, PROGRESS_WORKING } from "@/lib/attendanceLabels";
+import { EVAL_STATUS, PROGRESS_WORKING, evalKeys } from "@/lib/attendanceLabels";
 
 // 카테고리 → 기호/색상/라벨
 const CATEGORY_ICONS: Record<
@@ -182,9 +182,15 @@ export default function AttendanceCalendarView({
       const m = map.get(ymd) ?? {};
 
       // 카테고리가 위에서 카운트 안 됐고 출퇴근 상태가 있으면 카운트
+      // 평가 키 기준(lib/attendanceLabels evalKeys) — 지각·조퇴 둘 다면 둘 다 +1.
+      // 평가 보류(근무중 등)는 기존처럼 auto_status 로 표시한다.
       if (!d.categoryCode && d.autoStatus) {
-        const key = `status_${d.autoStatus}`;
-        m[key] = (m[key] ?? 0) + 1;
+        const keys = evalKeys(d.autoStatus, d.isLate, d.isEarlyLeave, !!d.checkOut);
+        const statusKeys = keys.length > 0 ? keys : [d.autoStatus];
+        for (const k of statusKeys) {
+          const key = `status_${k}`;
+          m[key] = (m[key] ?? 0) + 1;
+        }
       }
 
       // 정정 마킹 (originalCheckIn/Out 중 하나라도 있으면)

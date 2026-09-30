@@ -28,6 +28,16 @@ export async function GET(request: NextRequest) {
     take: 30,
     include: { category: { select: { name: true } } },
   });
+  // 상태 라벨 — 웹 RequestPage 와 같은 code_lookups(request_status). 캘린더에서 빠진 취소는 따로 표시.
+  const lookups = await prisma.codeLookup.findMany({
+    where: { category: "request_status" },
+    select: { code: true, label: true },
+  });
+  const labelOf = new Map(lookups.map((l) => [l.code, l.label]));
+  const statusLabel = (status: string, cancelSource: string | null) =>
+    status === "cancelled" && cancelSource === "calendar_sync"
+      ? "취소됨 (캘린더에서 빠짐)"
+      : labelOf.get(status) ?? status;
   return NextResponse.json({
     mapped: true,
     requests: rows.map((r) => ({
@@ -35,6 +45,7 @@ export async function GET(request: NextRequest) {
       startDate: r.startDate.toISOString().split("T")[0],
       endDate: r.endDate.toISOString().split("T")[0],
       status: r.status,
+      statusLabel: statusLabel(r.status, r.cancelSource),
       reason: r.reason,
     })),
   });

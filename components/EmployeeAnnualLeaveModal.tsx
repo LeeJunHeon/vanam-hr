@@ -12,6 +12,8 @@ interface GrantInfo {
   initialUsedDays: number;
   systemUsedDays: number;
   remainingDays: number;
+  pendingDays?: number;
+  availableDays?: number;
   hasGrantRow: boolean;
 }
 
@@ -158,6 +160,13 @@ export default function EmployeeAnnualLeaveModal({
                 <div className="text-lg font-bold text-emerald-700">{info.remainingDays.toFixed(1)}</div>
               </div>
             </div>
+            {/* 결재 대기가 있으면 RequestPage 연차 카드와 같은 문구 */}
+            {!!info.pendingDays && info.pendingDays > 0 && (
+              <p className="text-[11px] text-amber-600 text-right -mt-1">
+                결재 대기 {info.pendingDays.toFixed(1)}일 · 신청 가능{" "}
+                {(info.availableDays ?? info.remainingDays - info.pendingDays).toFixed(1)}일
+              </p>
+            )}
 
             {/* 사용 내역 분해 */}
             <div className="text-xs text-gray-500 bg-gray-50 rounded-xl px-3 py-2 space-y-1">

@@ -171,7 +171,7 @@ export async function assembleAttendanceRows(params: {
             correctedCheckIn: true,
             correctedCheckOut: true,
             requestedAt: true,
-            category: { select: { code: true, name: true } },
+            category: { select: { code: true, name: true, type: true } },
           },
           orderBy: { requestedAt: "asc" },
         })
@@ -188,8 +188,13 @@ export async function assembleAttendanceRows(params: {
     string,
     { in: string | null; out: string | null }
   >();
-  // 대표 선택용: 키별로 현재 채택된 요청의 "우선순위 점수"와 시작시각 보관
-  const pickMeta = new Map<string, { timed: boolean; startMs: number }>();
+  // 대표 선택용: 키별로 현재 채택된 요청의 "우선순위 점수"와 시작시각 보관.
+  // 근태 정정은 일정이 아니다(aggregator 와 같게) — 휴가·근무를 먼저 고르고, 그날 휴가·근무가
+  // 없을 때만 정정을 대표로 고른다(정정만 있는 날의 "근태정정: HH:MM-HH:MM"·사유 표시 유지).
+  const pickMeta = new Map<
+    string,
+    { correction: boolean; timed: boolean; startMs: number }
+  >();
   const reqCategoryMap = new Map<
     string,
     { code: string | null; name: string | null }
@@ -201,6 +206,7 @@ export async function assembleAttendanceRows(params: {
   >();
 
   for (const req of requests) {
+    const isCorrection = req.category?.type === "correction";
     const isTimed = !!(req.correctedCheckIn && req.correctedCheckOut);
     const startMs = req.correctedCheckIn
       ? req.correctedCheckIn.getTime()
@@ -215,8 +221,8 @@ export async function assembleAttendanceRows(params: {
       )}-${String(d.getDate()).padStart(2, "0")}`;
       const key = `${req.employeeId}_${ymd}`;
 
-      // 시간형은 대표 선택과 별개로 전부 모은다.
-      if (isTimed) {
+      // 시간형은 대표 선택과 별개로 전부 모은다 (정정은 일정이 아니므로 빼고).
+      if (isTimed && !isCorrection) {
         const list = timedAgg.get(key);
         const entry = {
           in: req.correctedCheckIn!.toISOString(),
@@ -228,10 +234,13 @@ export async function assembleAttendanceRows(params: {
       }
 
       const prev = pickMeta.get(key);
-      // 채택 규칙: 시간형이 종일보다 우선, 시간형끼리는 시작 늦은 것 우선.
+      // 채택 규칙: 휴가·근무가 정정보다 우선. 같은 부류 안에서는 시간형이 종일보다 우선,
+      // 시간형끼리는 시작 늦은 것 우선.
       let take = false;
       if (!prev) {
         take = true;
+      } else if (prev.correction !== isCorrection) {
+        take = prev.correction; // 정정 → 휴가·근무로 교체, 반대는 안 함
       } else if (isTimed && !prev.timed) {
         take = true; // 종일 → 시간형으로 교체
       } else if (isTimed && prev.timed && startMs > prev.startMs) {
@@ -239,7 +248,7 @@ export async function assembleAttendanceRows(params: {
       }
 
       if (take) {
-        pickMeta.set(key, { timed: isTimed, startMs });
+        pickMeta.set(key, { correction: isCorrection, timed: isTimed, startMs });
         reasonMap.set(key, req.reason ?? "");
         correctedMap.set(key, {
           in: req.correctedCheckIn
@@ -364,6 +373,8 @@ export async function assembleAttendanceRows(params: {
       wifiCheckOut: null,
       ...(() => {
         const rt = ymd === todayYmdCutoff ? realtimeMap.get(a.employeeId) : undefined;
+        // 진행 상태 입력에는 정정을 넣지 않는다 (대표가 정정이면 일정 없음으로 본다)
+        const sched = pickMeta.get(reasonKey)?.correction ? undefined : correctedMap.get(reasonKey);
         if (!rt) {
           return {
             realtimeStatus: null,
@@ -383,12 +394,8 @@ export async function assembleAttendanceRows(params: {
             todayCheckOut: a.checkOut,
             todayIsOverridden: a.isOverridden,
             todayCategoryId: a.categoryId ?? null,
-            todayCorrectedIn: correctedMap.get(reasonKey)?.in
-              ? new Date(correctedMap.get(reasonKey)!.in!)
-              : null,
-            todayCorrectedOut: correctedMap.get(reasonKey)?.out
-              ? new Date(correctedMap.get(reasonKey)!.out!)
-              : null,
+            todayCorrectedIn: sched?.in ? new Date(sched.in) : null,
+            todayCorrectedOut: sched?.out ? new Date(sched.out) : null,
             graceMs: realtimeGraceMs,
             now: realtimeNowMs,
           }),

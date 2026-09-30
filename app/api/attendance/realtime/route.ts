@@ -34,6 +34,7 @@ import {
 //     todayCategoryCode: string | null,
 //     todayCategoryName: string | null,
 //     todayCategoryColor: string | null,
+//     todayCategoryType: string | null,    // leave / long_leave / work — 현황 카드 나누기용
 //     todayIsOverridden: boolean,
 //     todayReason: string | null,
 //     progressStatus: 'working' | 'away' | 'completed' | 'absent_today'
@@ -137,6 +138,7 @@ export async function GET(request: NextRequest) {
       today_category_code: string | null;
       today_category_name: string | null;
       today_category_color: string | null;
+      today_category_type: string | null;
       today_is_overridden: boolean | null;
       today_reason: string | null;
       // 외근/출장 등 시간대 일정의 시작/종료 시각 — 시간대 기반 진행상태 판정용
@@ -188,25 +190,29 @@ export async function GET(request: NextRequest) {
           ad.is_overridden,
           ac.code AS category_code,
           ac.name AS category_name,
-          ac.display_color AS category_color
+          ac.display_color AS category_color,
+          ac.type AS category_type
         FROM hr.attendance_daily ad
         LEFT JOIN hr.attendance_categories ac ON ac.id = ad.category_id
         WHERE ad.employee_id = ANY(${employeeIds}::int[])
           AND ad.work_date = (SELECT d FROM today_kst)
       ),
       today_request AS (
-        SELECT DISTINCT ON (employee_id)
-          employee_id,
-          reason,
-          corrected_check_in,
-          corrected_check_out
-        FROM hr.attendance_requests
-        WHERE employee_id = ANY(${employeeIds}::int[])
-          AND status IN ('approved', 'auto_approved', 'auto_delegated')
-          AND start_date <= (SELECT d FROM today_kst)
-          AND end_date >= (SELECT d FROM today_kst)
+        -- 진행 상태 판정용 대표 신청. 근태 정정은 일정이 아니므로 뺀다(aggregator 와 같게).
+        SELECT DISTINCT ON (rq.employee_id)
+          rq.employee_id,
+          rq.reason,
+          rq.corrected_check_in,
+          rq.corrected_check_out
+        FROM hr.attendance_requests rq
+        JOIN hr.attendance_categories rc ON rc.id = rq.category_id
+        WHERE rq.employee_id = ANY(${employeeIds}::int[])
+          AND rq.status IN ('approved', 'auto_approved', 'auto_delegated')
+          AND rq.start_date <= (SELECT d FROM today_kst)
+          AND rq.end_date >= (SELECT d FROM today_kst)
+          AND rc.type <> 'correction'
         ORDER BY
-          employee_id,
+          rq.employee_id,
           -- 1순위: 지금 진행 중인 시간형 일정 (현재 시각 포함)
           (
             corrected_check_in IS NOT NULL
@@ -223,7 +229,7 @@ export async function GET(request: NextRequest) {
           (corrected_check_in IS NULL OR corrected_check_out IS NULL) DESC,
           -- 4순위: 미래 시작 시간형은 가장 뒤로
           corrected_check_out DESC NULLS LAST,
-          requested_at DESC
+          rq.requested_at DESC
       )
       SELECT
         e.id AS employee_id,
@@ -240,6 +246,7 @@ export async function GET(request: NextRequest) {
         d.category_code AS today_category_code,
         d.category_name AS today_category_name,
         d.category_color AS today_category_color,
+        d.category_type AS today_category_type,
         d.is_overridden AS today_is_overridden,
         r.reason AS today_reason,
         r.corrected_check_in AS today_corrected_in,
@@ -309,6 +316,7 @@ export async function GET(request: NextRequest) {
         todayCategoryCode: r.today_category_code ?? null,
         todayCategoryName: r.today_category_name ?? null,
         todayCategoryColor: r.today_category_color ?? null,
+        todayCategoryType: r.today_category_type ?? null,
         todayIsOverridden: r.today_is_overridden ?? false,
         todayReason: r.today_reason ?? null,
         todayCorrectedIn: r.today_corrected_in
