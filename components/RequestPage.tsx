@@ -106,6 +106,34 @@ function fmtDays(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(1);
 }
 
+// 연차 미리보기의 연도별 계산 (서버 checkLeaveRequest 결과 그대로)
+interface LeaveYearPreview {
+  year: number;
+  amount: number;
+  granted: number;
+  pending: number;
+  remaining: number;
+  available: number;
+  availableAfter: number;
+}
+
+// 결재 안내 (서버 route-preview = 실제 신청의 decideApprovalRoute 결과)
+// error 가 있으면 결재자 없음 등으로 신청 불가 — 나머지 필드는 없다.
+interface RoutePreview {
+  error?: string;
+  autoApprove?: boolean;
+  autoReason?: "ceo" | "admin_external" | "no_approval_needed" | "self_approval" | null;
+  approvers?: { id: number; name: string | null }[];
+  approvalMode?: "all" | "any";
+}
+
+const AUTO_REASON_LABEL: Record<string, string> = {
+  ceo: "대표",
+  admin_external: "관리자 외근",
+  no_approval_needed: "결재 불필요 항목",
+  self_approval: "결재선에 본인만 있음",
+};
+
 const EMPTY_FORM = {
   categoryId: "" as "" | string,
   startDate: todayYmd(),
@@ -141,7 +169,7 @@ function categoryAllowsTimeInput(code: string | undefined | null): boolean {
 }
 
 export default function RequestPage() {
-  const { currentId, current, me, loading: empLoading } = useCurrentEmployee();
+  const { currentId, current, loading: empLoading } = useCurrentEmployee();
 
   const [requests, setRequests] = useState<AttendanceRequest[]>([]);
   const [loading, setLoading] = useState(false);
@@ -149,13 +177,22 @@ export default function RequestPage() {
 
   // 본인 연차 현황 (전체/사용/잔여)
   const [leaveInfo, setLeaveInfo] = useState<{
-    granted: number; used: number; remaining: number; mapped: boolean;
+    granted: number; used: number; remaining: number; pending?: number; mapped: boolean;
   } | null>(null);
 
   // 신청 폼 연차 차감 미리보기 (선택 항목·기간 기준, 서버 재계산)
   const [preview, setPreview] = useState<{
     deductPerDay: number; businessDays: number; requestAmount: number;
     granted: number; remaining: number; remainingAfter: number;
+    years?: LeaveYearPreview[];
+    message?: string | null;
+  } | null>(null);
+
+  // 결재 안내 — 서버(decideApprovalRoute) 판정 그대로 (화면이 따로 추측하지 않는다)
+  // key(항목·직원)가 지금 폼과 다르면 보여주지 않는다 — 이전 항목의 판정이 남지 않게.
+  const [routePreviewState, setRoutePreviewState] = useState<{
+    key: string;
+    data: RoutePreview | null;
   } | null>(null);
 
   useEffect(() => {
@@ -183,16 +220,6 @@ export default function RequestPage() {
   // 카테고리가 이전에 자동채움된 값과 다를 때만 캘린더/제목/설명/반차시간 기본값 제안.
   // 사용자가 캘린더를 직접 바꾸거나 시간을 직접 수정한 후에는 자동값으로 되돌아가지 않음.
   const lastAutoFilledCategoryRef = useRef<string | null>(null);
-
-  // Phase 6-2F: 본인 부서 + 결재선 존재 여부 (신청 가능 여부 결정)
-  // - 부서 없음: me.departmentId === null → 즉시 차단
-  // - 결재선 체크: /api/approval-lines는 admin만 호출 가능. 일반 직원은 낙관적 통과
-  //   (API POST가 카테고리별로 추가 검증함)
-  const [approvalLineStatus, setApprovalLineStatus] = useState<{
-    hasDepartment: boolean;
-    hasApprovalLine: boolean;
-    loading: boolean;
-  }>({ hasDepartment: true, hasApprovalLine: true, loading: true });
 
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<AttendanceRequest | null>(null);
@@ -264,89 +291,6 @@ export default function RequestPage() {
       }
     })();
   }, []);
-
-  // Phase 6-2F: 부서 + 결재선 존재 여부 체크
-  // ADMIN/CEO는 백엔드에서 자동승인되므로 부서/결재선 없이도 신청 허용.
-  useEffect(() => {
-    if (!me) return;
-
-    // ADMIN/CEO는 결재 불필요(자동승인) → 항상 통과
-    if (me.isAdmin || me.isCeo) {
-      setApprovalLineStatus({
-        hasDepartment: true,
-        hasApprovalLine: true,
-        loading: false,
-      });
-      return;
-    }
-
-    const departmentId = me.departmentId;
-    if (!departmentId) {
-      // 일반 직원 + 부서 없음 → 부서는 없지만, fallback 결재자가 있으면 신청 가능.
-      // /api/policy/fallback-approver로 fallback 존재 여부 확인.
-      // (주의: 이 엔드포인트는 admin 전용이라 일반 직원은 403 → 보수적으로 차단됨)
-      fetch("/api/policy/fallback-approver")
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data) => {
-          // 응답 형태: { employeeId, employeeNo, name, isActive }
-          // employeeId가 있으면 fallback 결재자 존재로 간주
-          const hasFallback = !!(data && data.employeeId);
-          setApprovalLineStatus({
-            hasDepartment: hasFallback,   // fallback 있으면 통과시키기 위해 true로 둠
-            hasApprovalLine: hasFallback,
-            loading: false,
-          });
-        })
-        .catch(() => {
-          // 조회 실패 시 기존처럼 차단(안전)
-          setApprovalLineStatus({
-            hasDepartment: false,
-            hasApprovalLine: false,
-            loading: false,
-          });
-        });
-      return;
-    }
-
-    // 결재선 체크 — admin만 호출 가능. 일반 직원은 403 → 낙관적 통과 (API POST가 추가 검증).
-    fetch("/api/approval-lines")
-      .then((r) => {
-        if (r.status === 403 || !r.ok) return null;
-        return r.json();
-      })
-      .then((data) => {
-        if (data == null) {
-          // 응답 없음(403 또는 에러) → 부서는 있으므로 일단 낙관적 통과
-          setApprovalLineStatus({
-            hasDepartment: true,
-            hasApprovalLine: true,
-            loading: false,
-          });
-          return;
-        }
-        // admin이 가져온 전체 결재선 중 본인 부서 매칭 찾기
-        const myLine = Array.isArray(data)
-          ? data.find(
-              (l: { departmentId: number; primaryApproverId: number | null }) =>
-                l.departmentId === departmentId
-            )
-          : null;
-        const hasLine = !!(myLine && myLine.primaryApproverId);
-        setApprovalLineStatus({
-          hasDepartment: true,
-          hasApprovalLine: hasLine,
-          loading: false,
-        });
-      })
-      .catch(() => {
-        // 네트워크 오류 — 낙관적 통과 (POST API가 최종 검증)
-        setApprovalLineStatus({
-          hasDepartment: true,
-          hasApprovalLine: true,
-          loading: false,
-        });
-      });
-  }, [me]);
 
   const fetchRequests = useCallback(async () => {
     if (!currentId) {
@@ -527,7 +471,8 @@ export default function RequestPage() {
       try {
         const res = await fetch(
           `/api/annual-leave/preview?categoryId=${Number(form.categoryId)}` +
-          `&startDate=${form.startDate}&endDate=${form.endDate}`
+          `&startDate=${form.startDate}&endDate=${form.endDate}` +
+          (editTarget ? `&excludeRequestId=${editTarget.id}` : "")
         );
         if (res.ok) {
           const d = await res.json();
@@ -540,7 +485,35 @@ export default function RequestPage() {
       }
     }, 300);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [form.categoryId, form.startDate, form.endDate, selectedCategory?.type]);
+  }, [form.categoryId, form.startDate, form.endDate, selectedCategory?.type, editTarget]);
+
+  // 결재 안내 — 항목을 고르거나 바꾸면 서버에 실제 결재선 판정을 묻는다
+  const routeKey =
+    showForm && form.categoryId && currentId !== null
+      ? `${form.categoryId}:${currentId}`
+      : null;
+  useEffect(() => {
+    if (!routeKey) return;
+    const [categoryIdPart, employeeIdPart] = routeKey.split(":");
+    let cancelled = false;
+    (async () => {
+      let data: RoutePreview | null = null;
+      try {
+        const res = await fetch(
+          `/api/attendance-requests/route-preview?categoryId=${categoryIdPart}` +
+            `&employeeId=${employeeIdPart}`
+        );
+        const d = await res.json().catch(() => null);
+        data = res.ok ? d : { error: d?.error || "결재선을 확인하지 못했습니다." };
+      } catch {
+        data = null;
+      }
+      if (!cancelled) setRoutePreviewState({ key: routeKey, data });
+    })();
+    return () => { cancelled = true; };
+  }, [routeKey]);
+  const routePreview =
+    routeKey && routePreviewState?.key === routeKey ? routePreviewState.data : null;
 
   const memoHeader = useMemo(
     () =>
@@ -677,10 +650,17 @@ export default function RequestPage() {
       }
     }
 
-    // 연차 잔여 소프트 가드 (UX용 — 최종 판정은 서버 초과 차단)
+    // 결재자 없음 — 서버 판정(route-preview) 그대로 막는다
+    if (routePreview?.error) {
+      setFormError(routePreview.error);
+      return;
+    }
+
+    // 연차 잔여 소프트 가드 (UX용 — 최종 판정은 서버 초과 차단). remainingAfter 는 결재 대기 포함 값.
     if (preview && preview.deductPerDay > 0 && preview.remainingAfter < 0) {
       setFormError(
-        `연차 잔여가 부족합니다. (신청 ${fmtDays(preview.requestAmount)}일 / 잔여 ${fmtDays(preview.remaining)}일)`
+        preview.message ||
+          `연차 잔여가 부족합니다. (신청 ${fmtDays(preview.requestAmount)}일 / 잔여 ${fmtDays(preview.remaining)}일)`
       );
       return;
     }
@@ -754,10 +734,10 @@ export default function RequestPage() {
       }
       showToast(
         "✅ " +
-          (editTarget
-            ? "수정되었습니다"
-            : data.status === "auto_approved"
+          (data.status === "auto_approved"
             ? "자동 승인 완료"
+            : editTarget
+            ? "수정되었습니다"
             : "신청되었습니다")
       );
       setShowForm(false);
@@ -833,11 +813,8 @@ export default function RequestPage() {
     return { backgroundColor: "#f3f4f6", color: "#4b5563" };
   }
 
-  // Phase 6-2F: 부서/결재선 체크 통과 + 본인 선택 시에만 신청 가능
-  const blockedByApprovalLine =
-    !approvalLineStatus.loading &&
-    (!approvalLineStatus.hasDepartment || !approvalLineStatus.hasApprovalLine);
-  const canRequest = currentId !== null && !blockedByApprovalLine;
+  // 본인 선택 시에만 신청 가능 (결재선 없음 등은 항목을 고르면 서버 안내로 막는다)
+  const canRequest = currentId !== null;
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
@@ -872,8 +849,6 @@ export default function RequestPage() {
             title={
               currentId === null
                 ? "본인을 선택하세요"
-                : blockedByApprovalLine
-                ? "부서/결재선 설정이 필요합니다"
                 : categories.length === 0
                 ? "활성 근태 항목이 없습니다"
                 : ""
@@ -920,24 +895,11 @@ export default function RequestPage() {
               {leaveInfo.remaining.toFixed(leaveInfo.remaining % 1 === 0 ? 0 : 1)}
               <span className="text-sm font-medium text-emerald-400 ml-1">일</span>
             </p>
-          </div>
-        </div>
-      )}
-
-      {/* Phase 6-2F: 부서/결재선 없음 안내 (본인이 매핑된 경우만 표시) */}
-      {currentId !== null && blockedByApprovalLine && (
-        <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl">
-          <div className="flex items-start gap-2">
-            <AlertCircle size={18} className="shrink-0 mt-0.5" />
-            <div className="text-sm">
-              <p className="font-semibold mb-1">신청을 진행할 수 없습니다</p>
-              <p>
-                {!approvalLineStatus.hasDepartment
-                  ? "본인 계정에 부서가 지정되지 않았습니다. "
-                  : "본인 부서에 결재선이 설정되지 않았습니다. "}
-                관리자에게 요청하세요.
+            {!!leaveInfo.pending && leaveInfo.pending > 0 && (
+              <p className="text-[11px] text-amber-600 mt-0.5">
+                결재 대기 {fmtDays(leaveInfo.pending)}일
               </p>
-            </div>
+            )}
           </div>
         </div>
       )}
@@ -991,24 +953,37 @@ export default function RequestPage() {
                 </select>
               </div>
 
-              {/* 자동 승인 안내 */}
-              {selectedCategory && (
+              {/* 결재 안내 — 서버 판정(route-preview) 그대로 */}
+              {selectedCategory && routePreview && (
                 <div
                   className={`px-3 py-2 rounded-xl text-xs ${
-                    selectedCategory.requireApproval
-                      ? "bg-blue-100 text-blue-800"
-                      : "bg-amber-50 border border-amber-200 text-amber-800"
+                    routePreview.error
+                      ? "bg-rose-50 border border-rose-200 text-rose-700"
+                      : routePreview.autoApprove
+                      ? "bg-amber-50 border border-amber-200 text-amber-800"
+                      : "bg-blue-100 text-blue-800"
                   }`}
                 >
-                  {selectedCategory.requireApproval ? (
+                  {routePreview.error ? (
                     <>
-                      <CheckCircle size={12} className="inline mr-1 -translate-y-px" />
-                      이 항목은 결재가 필요합니다. 신청 후 결재자 승인 대기 상태가 됩니다.
+                      <AlertCircle size={12} className="inline mr-1 -translate-y-px" />
+                      {routePreview.error}
+                    </>
+                  ) : routePreview.autoApprove ? (
+                    <>
+                      <AlertCircle size={12} className="inline mr-1 -translate-y-px" />
+                      자동 승인됩니다 — 결재 없이 바로 등록
+                      {routePreview.autoReason && (
+                        <span className="opacity-80">
+                          {" "}({AUTO_REASON_LABEL[routePreview.autoReason] ?? routePreview.autoReason})
+                        </span>
+                      )}
                     </>
                   ) : (
                     <>
-                      <AlertCircle size={12} className="inline mr-1 -translate-y-px" />
-                      이 항목은 자동 승인됩니다. 결재 절차 없이 즉시 등록됩니다.
+                      <CheckCircle size={12} className="inline mr-1 -translate-y-px" />
+                      결재자: {(routePreview.approvers ?? []).map((a) => a.name ?? `#${a.id}`).join(", ")}{" "}
+                      ({routePreview.approvalMode === "any" ? "한 명만 승인" : "전원 승인"})
                     </>
                   )}
                 </div>
@@ -1107,11 +1082,30 @@ export default function RequestPage() {
                         ? "bg-rose-50 border border-rose-200 text-rose-700"
                         : "bg-emerald-50 border border-emerald-200 text-emerald-800"
                     }`}>
-                      이번 신청 <b>{fmtDays(preview.requestAmount)}일</b> 차감 · 신청 후 잔여{" "}
-                      <b>{fmtDays(preview.remainingAfter)}일</b>
-                      <span className="opacity-70"> (현재 잔여 {fmtDays(preview.remaining)}일)</span>
+                      {preview.years && preview.years.length > 1 ? (
+                        preview.years.map((y) => (
+                          <div key={y.year}>
+                            {y.year}년: 이번 신청 <b>{fmtDays(y.amount)}일</b> 차감 · 신청 후 신청 가능{" "}
+                            <b>{fmtDays(y.availableAfter)}일</b>
+                            <span className="opacity-70">
+                              {" "}(잔여 {fmtDays(y.remaining)}일, 결재 대기 {fmtDays(y.pending)}일)
+                            </span>
+                          </div>
+                        ))
+                      ) : (
+                        <>
+                          이번 신청 <b>{fmtDays(preview.requestAmount)}일</b> 차감 · 신청 후 신청 가능{" "}
+                          <b>{fmtDays(preview.remainingAfter)}일</b>
+                          <span className="opacity-70">
+                            {" "}(잔여 {fmtDays(preview.remaining)}일, 결재 대기{" "}
+                            {fmtDays(preview.years?.[0]?.pending ?? 0)}일)
+                          </span>
+                        </>
+                      )}
                       {preview.remainingAfter < 0 && (
-                        <div className="mt-1 font-medium">⚠ 잔여를 초과합니다. 이대로는 신청할 수 없습니다.</div>
+                        <div className="mt-1 font-medium">
+                          ⚠ {preview.message || "신청 가능 일수를 초과합니다. 이대로는 신청할 수 없습니다."}
+                        </div>
                       )}
                     </div>
                   )}

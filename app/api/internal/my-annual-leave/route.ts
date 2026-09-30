@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireHrPortalAuth } from "@/lib/internal-portal-auth";
 import { resolveHrIdentity } from "@/lib/internal-identity";
-import { getRemainingDays } from "@/lib/annual-leave";
+import { getRemainingDays, computePendingLeaveDays } from "@/lib/annual-leave";
 
 export const dynamic = "force-dynamic";
 
@@ -15,12 +15,14 @@ export async function GET(request: NextRequest) {
   const year = Number(new URL(request.url).searchParams.get("year")) || new Date().getFullYear();
 
   if (!Number.isInteger(identity.employeeId)) {
-    return NextResponse.json({ mapped: false, email: auth.actingEmail, year, granted: 0, used: 0, remaining: 0 });
+    return NextResponse.json({ mapped: false, email: auth.actingEmail, year, granted: 0, used: 0, remaining: 0, pending: 0 });
   }
 
   const { granted, initialUsed, systemUsed, remaining } = await getRemainingDays(
     identity.employeeId as number, year
   );
+  // 결재 대기 연차(그 연도 안 날짜만) — 신청 가능 = 잔여 − 결재 대기
+  const pending = await computePendingLeaveDays(identity.employeeId as number, year);
 
   return NextResponse.json({
     mapped: true,
@@ -29,5 +31,6 @@ export async function GET(request: NextRequest) {
     year, granted,
     used: initialUsed + systemUsed,
     remaining,
+    pending,
   });
 }

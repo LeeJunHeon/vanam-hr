@@ -1,11 +1,21 @@
+import type { Prisma } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { createNotifications } from "@/lib/notify";
 import { loadShiftAndGrace, shiftEndBoundary } from "@/lib/attendance-correction";
-import { applyApprovedRequestToDaily } from "@/lib/finalize-approval";
-import { computeLeaveImpact } from "@/lib/annual-leave";
+import {
+  applyApprovedRequestToDaily,
+  syncApprovedRequestToCalendar,
+  notifyTeamOfApprovedRequest,
+} from "@/lib/finalize-approval";
+import { checkLeaveRequest } from "@/lib/annual-leave";
 import { resolveApprovers, getApprovalCategoryId } from "@/lib/approval-resolver";
-import { createCalendarEvent } from "@/lib/calendar-event";
-import { notifyTeamOfApprovedRequest } from "@/lib/team-schedule-notify";
+
+// ─────────────────────────────────────────────────────────────
+// 근태 신청 규칙 — 신청(웹·챗)·결재 대기 중 수정·신청 화면 안내가 모두 이 파일의 함수를 쓴다.
+//   validateAttendanceRequestInput  신청 검사 (날짜·직원·항목·연차 잔여·정정 규칙·시간 규칙)
+//   decideApprovalRoute             결재선 결정 (자동승인 여부·이유, 결재자)
+//   applyAutoApprovalInTx / runAutoApprovalSideEffects  자동승인 후처리
+// ─────────────────────────────────────────────────────────────
 
 function parseDate(s: string | null | undefined): Date | null {
   if (!s || typeof s !== "string") return null;
@@ -19,39 +29,54 @@ function ymdFromDate(d: Date): string {
 }
 
 // category.type → requestType 매핑
-function categoryTypeToRequestType(categoryType: string): string {
+export function categoryTypeToRequestType(categoryType: string): string {
   if (categoryType === "correction") return "correction";
   if (categoryType === "work") return "external_work";
   // leave, long_leave, 기타
   return "leave";
 }
 
-export type CreateAttendanceRequestInput = {
+type Fail = { ok: false; error: string; status: number };
+
+export type AttendanceRequestInput = {
   employeeId: number;
   categoryId: number;
   startDate: string;
   endDate: string;
-  reason?: string | null;
   correctedCheckIn?: string | null;
   correctedCheckOut?: string | null;
-  calendarSourceId?: string | number | null;
-  calendarEventTitle?: string | null;
-  calendarEventDescription?: string | null;
 };
-export type CreateAttendanceRequestResult =
-  | { ok: true; id: number; status: string }
-  | { ok: false; error: string; status: number };
 
-export async function createAttendanceRequest(
-  input: CreateAttendanceRequestInput
-): Promise<CreateAttendanceRequestResult> {
+const employeeWithPosition = {
+  include: { position: { select: { code: true } } },
+} satisfies Prisma.EmployeeDefaultArgs;
+export type RequestEmployee = Prisma.EmployeeGetPayload<typeof employeeWithPosition>;
+export type RequestCategory = NonNullable<
+  Awaited<ReturnType<typeof prisma.attendanceCategory.findUnique>>
+>;
+
+export type ValidatedAttendanceRequest = {
+  ok: true;
+  startD: Date;
+  endD: Date;
+  cciDate: Date | null;
+  ccoDate: Date | null;
+  reqType: string;
+  emp: RequestEmployee;
+  category: RequestCategory;
+};
+
+/**
+ * 근태 신청 검사 — 신청(웹·챗)과 결재 대기 중 수정이 같이 쓴다.
+ * excludeRequestId: 수정 중인 신청 id. 연차 잔여의 결재 대기 합계에서 자기 자신을 뺀다.
+ */
+export async function validateAttendanceRequestInput(
+  input: AttendanceRequestInput,
+  opts: { excludeRequestId?: number } = {}
+): Promise<ValidatedAttendanceRequest | Fail> {
   const employeeIdNum = input.employeeId;
   const categoryIdNum = input.categoryId;
-  const {
-    startDate, endDate, reason,
-    correctedCheckIn, correctedCheckOut,
-    calendarSourceId, calendarEventTitle, calendarEventDescription,
-  } = input;
+  const { startDate, endDate, correctedCheckIn, correctedCheckOut } = input;
 
   const startD = parseDate(startDate);
   const endD = parseDate(endDate);
@@ -65,7 +90,7 @@ export async function createAttendanceRequest(
   // 직원 활성 검증
   const emp = await prisma.employee.findUnique({
     where: { id: employeeIdNum },
-    include: { position: { select: { code: true } } },
+    ...employeeWithPosition,
   });
   if (!emp || !emp.isActive) {
     return { ok: false, error: "활성 직원이 아닙니다.", status: 400 };
@@ -82,23 +107,16 @@ export async function createAttendanceRequest(
   const reqType = categoryTypeToRequestType(category.type);
 
   // ── 연차 잔여 검증 (annualLeaveDeduct > 0인 카테고리만) ──
-  // 연차/반차 등 차감 대상이면, 이번 신청량이 잔여를 넘는지 확인.
+  // 연도별로 "이번 차감량 ≤ 신청 가능(잔여 − 결재 대기)". 부여 0 이어도 같은 검사.
   const deductPerDay = category.annualLeaveDeduct
     ? Number(category.annualLeaveDeduct)
     : 0;
   if (deductPerDay > 0) {
-    // 신청량(본인 근무일 × 차감계수)과 신청 시작 연도 기준 잔여 — lib/annual-leave 공용 계산
-    const { amount: requestAmount, granted, remaining } = await computeLeaveImpact(
-      employeeIdNum,
-      startD,
-      endD,
-      deductPerDay
-    );
-    // 부여가 0인데 차감 신청이면(정책 미설정 등) 막지 않고 통과시킬지 결정:
-    // 여기서는 granted=0이면 "부여 정보 없음"으로 보고 통과(차단 안 함).
-    // 단, granted>0이면 잔여 검증.
-    if (granted > 0 && requestAmount > remaining) {
-      return { ok: false, error: `연차 잔여가 부족합니다. (신청 ${requestAmount}일 / 잔여 ${remaining.toFixed(1)}일)`, status: 400 };
+    const check = await checkLeaveRequest(employeeIdNum, startD, endD, deductPerDay, {
+      excludeRequestId: opts.excludeRequestId,
+    });
+    if (!check.ok) {
+      return { ok: false, error: check.message ?? "연차 잔여가 부족합니다.", status: 400 };
     }
   }
 
@@ -220,9 +238,37 @@ export async function createAttendanceRequest(
     }
   }
 
-  // 결재선 결정 (다중 결재자 + 모드 + fallback)
-  // 정책: CEO는 자동승인. ADMIN은 외근(EXTERNAL_WORK)만 자동승인이고, 그 외(휴가/재택/정정 등)는
-  //       EMPLOYEE와 동일하게 부서 결재선(없으면 fallback)을 거친다.
+  return { ok: true, startD, endD, cciDate, ccoDate, reqType, emp, category };
+}
+
+export type AutoApproveReason =
+  | "ceo"
+  | "admin_external"
+  | "no_approval_needed"
+  | "self_approval";
+
+export type ApprovalRoute = {
+  ok: true;
+  autoApprove: boolean;
+  autoReason: AutoApproveReason | null;
+  approverIds: number[];
+  approvalMode: "all" | "any";
+  primaryApproverId: number | null;
+  deputyApproverId: number | null;
+};
+
+export const NO_APPROVER_ERROR =
+  "결재자를 찾을 수 없습니다. 관리자에게 결재선 또는 대체 결재자(fallback) 설정을 요청하세요.";
+
+/**
+ * 결재선 결정 — 항상 신청자(직원) 기준. 신청·수정·신청 화면 안내가 같이 쓴다.
+ * 정책: CEO는 자동승인. ADMIN은 외근(EXTERNAL_WORK)만 자동승인이고, 그 외(휴가/재택/정정 등)는
+ *       EMPLOYEE와 동일하게 부서 결재선(없으면 fallback)을 거친다.
+ */
+export async function decideApprovalRoute(
+  emp: { id: number; departmentId: number | null; position: { code: string } | null },
+  category: { id: number; code: string; requireApproval: boolean }
+): Promise<ApprovalRoute | Fail> {
   const isCeoRequester = emp.position?.code === "CEO";
   const isAdminRequester = emp.position?.code === "ADMIN";
 
@@ -232,7 +278,6 @@ export async function createAttendanceRequest(
 
   let approverIds: number[] = [];
   let approvalMode: "all" | "any" = "all";
-  let primaryApproverId: number | null = null; // 호환용 컬럼
   let deputyApproverId: number | null = null; // 호환용 컬럼
   // 자기결재 여부. resolveApprovers를 타지 않는 분기(CEO/ADMIN 외근)에선 false 유지.
   let isSelfApproval = false;
@@ -242,7 +287,7 @@ export async function createAttendanceRequest(
   if (!isCeoRequester && !adminAutoApprove) {
     // 외근/출장은 '출장 및 외근'(BUSINESS_TRIP) 결재선을 공유 → 외근이면 출장 categoryId로 정규화
     const approvalCategoryId = await getApprovalCategoryId({
-      id: categoryIdNum,
+      id: category.id,
       code: category.code,
     });
     // 결재선 결정을 resolveApprovers로 통일: (부서+카테고리) 항목별 라인 → 부서 기본 → fallback
@@ -251,44 +296,122 @@ export async function createAttendanceRequest(
       prisma,
       emp.departmentId,
       approvalCategoryId,
-      employeeIdNum
+      emp.id
     );
     approverIds = resolved.approverIds;
     approvalMode = resolved.approvalMode;
     deputyApproverId = resolved.deputyApproverId;
-    primaryApproverId = approverIds.length > 0 ? approverIds[0] : null;
 
-    // 본인 제외 후 결재자가 남지 않으면 자기결재 → 자동승인 (기존과 동일 결과)
+    // 본인 제외 후 결재자가 남지 않으면 자기결재 → 자동승인
     //  - 예: fallback이 LEE인데 신청자도 LEE면 원본 [LEE] → 제외 후 [] → 자기결재.
-    //  - 자기결재는 형식상 의미 없으므로 자동승인하되, 신청 기록(attendance_request)은 남는다.
     //  - 원래 결재선이 비어 있던 경우(excludedSelf=false)는 자기결재가 아니라
     //    "결재자 없음"이므로 아래 가드에서 차단된다.
     isSelfApproval = resolved.excludedSelf && approverIds.length === 0;
   }
 
-  // 자동승인 조건:
-  //  - CEO 신청
-  //  - ADMIN의 외근(adminAutoApprove)
-  //  - 카테고리가 결재 불필요(requireApproval=false)
-  //  - 자기결재(isSelfApproval)
-  const isAutoApproved =
-    isCeoRequester ||
-    adminAutoApprove ||
-    !category.requireApproval ||
-    isSelfApproval;
+  const autoReason: AutoApproveReason | null = isCeoRequester
+    ? "ceo"
+    : adminAutoApprove
+    ? "admin_external"
+    : !category.requireApproval
+    ? "no_approval_needed"
+    : isSelfApproval
+    ? "self_approval"
+    : null;
+  const autoApprove = autoReason !== null;
 
   // 결재 필요한데 결재자를 못 찾으면 차단
-  if (!isAutoApproved && approverIds.length === 0) {
-    return { ok: false, error: "결재자를 찾을 수 없습니다. 관리자에게 결재선 또는 대체 결재자(fallback) 설정을 요청하세요.", status: 400 };
+  if (!autoApprove && approverIds.length === 0) {
+    return { ok: false, error: NO_APPROVER_ERROR, status: 400 };
   }
+
+  return {
+    ok: true,
+    autoApprove,
+    autoReason,
+    approverIds,
+    approvalMode,
+    primaryApproverId: approverIds.length > 0 ? approverIds[0] : null,
+    deputyApproverId,
+  };
+}
+
+// 결재선 필드 — 자동승인이면 신청과 같게 비운다(approvalMode 는 계산값 그대로 저장).
+export function approvalRouteFields(route: ApprovalRoute) {
+  return {
+    approverIds: route.autoApprove ? [] : route.approverIds,
+    approvalMode: route.approvalMode,
+    primaryApproverId: route.autoApprove ? null : route.primaryApproverId, // 호환
+    deputyApproverId: route.autoApprove ? null : route.deputyApproverId, // 호환
+  };
+}
+
+/**
+ * 자동승인 후처리 (1) — 근태 반영. **트랜잭션 안에서** 호출할 것.
+ * type 과 무관하게 결재자 승인과 같은 applyApprovedRequestToDaily 를 쓴다
+ * (지난 날은 재계산 표시, 오늘·앞날은 기록, 정정은 정정 반영).
+ */
+export async function applyAutoApprovalInTx(
+  tx: Prisma.TransactionClient,
+  req: {
+    id: number;
+    employeeId: number;
+    categoryId: number;
+    startDate: Date;
+    endDate: Date;
+    correctedCheckIn: Date | null;
+    correctedCheckOut: Date | null;
+  },
+  category: { type: string; name: string }
+): Promise<number> {
+  return applyApprovedRequestToDaily(tx, {
+    ...req,
+    category: { type: category.type, name: category.name },
+  });
+}
+
+/**
+ * 자동승인 후처리 (2) — 캘린더 등록 + 팀 일정 알림. **트랜잭션 밖에서** 호출할 것.
+ * 둘 다 실패해도 신청은 유지된다.
+ */
+export async function runAutoApprovalSideEffects(
+  requestId: number,
+  logTag: string = "create-attendance-request"
+): Promise<void> {
+  await syncApprovedRequestToCalendar(requestId, logTag);
+  await notifyTeamOfApprovedRequest(requestId, logTag);
+}
+
+export type CreateAttendanceRequestInput = AttendanceRequestInput & {
+  reason?: string | null;
+  calendarSourceId?: string | number | null;
+  calendarEventTitle?: string | null;
+  calendarEventDescription?: string | null;
+};
+export type CreateAttendanceRequestResult =
+  | { ok: true; id: number; status: string }
+  | { ok: false; error: string; status: number };
+
+export async function createAttendanceRequest(
+  input: CreateAttendanceRequestInput
+): Promise<CreateAttendanceRequestResult> {
+  const { reason, calendarSourceId, calendarEventTitle, calendarEventDescription } = input;
+
+  const v = await validateAttendanceRequestInput(input);
+  if (!v.ok) return v;
+  const { startD, endD, cciDate, ccoDate, reqType, emp, category } = v;
+
+  const route = await decideApprovalRoute(emp, category);
+  if (!route.ok) return route;
+  const isAutoApproved = route.autoApprove;
 
   const now = new Date();
 
   const created = await prisma.$transaction(async (tx) => {
     const req = await tx.attendanceRequest.create({
       data: {
-        employeeId: employeeIdNum,
-        categoryId: categoryIdNum,
+        employeeId: emp.id,
+        categoryId: category.id,
         requestType: reqType,
         startDate: startD,
         endDate: endD,
@@ -296,11 +419,8 @@ export async function createAttendanceRequest(
         correctedCheckIn: cciDate,
         correctedCheckOut: ccoDate,
         status: isAutoApproved ? "auto_approved" : "pending",
-        approverIds: isAutoApproved ? [] : approverIds,
-        approvalMode,
+        ...approvalRouteFields(route),
         approvedByIds: [],
-        primaryApproverId: isAutoApproved ? null : primaryApproverId, // 호환
-        deputyApproverId: isAutoApproved ? null : deputyApproverId, // 호환
         approvedAt: isAutoApproved ? now : null,
         // Phase 6-2E 캘린더 등록 정보 (NULL 허용)
         calendarSourceId:
@@ -312,89 +432,28 @@ export async function createAttendanceRequest(
       },
     });
 
-    // 자동승인이면 type 과 무관하게 결재자 승인과 같은 함수로 attendance_daily 에 반영
-    // (지난 날은 재계산 표시, 오늘·앞날은 기록, 정정은 정정 반영).
-    // 일반 승인은 결재 경로에서 처리되지만, 자동승인은 여기서 처리해야 누락 안 됨.
+    // 자동승인이면 결재자 승인과 같은 함수로 attendance_daily 에 반영
+    // (일반 승인은 결재 경로에서 처리되지만, 자동승인은 여기서 처리해야 누락 안 됨)
     if (isAutoApproved) {
-      await applyApprovedRequestToDaily(tx, {
-        id: req.id,
-        employeeId: employeeIdNum,
-        categoryId: categoryIdNum,
-        startDate: startD,
-        endDate: endD,
-        correctedCheckIn: cciDate,
-        correctedCheckOut: ccoDate,
-        category: { type: category.type, name: category.name },
-      });
+      await applyAutoApprovalInTx(tx, req, category);
     }
 
     return req;
   });
 
-  // 자동승인 + 캘린더 정보 있으면 → Google Calendar 등록
-  // (approvals/route.ts 의 결재 승인 시 캘린더 등록과 동일한 조건/로직.
-  //  자동승인 신청은 approvals API를 거치지 않으므로 여기서 반드시 처리해야
-  //  누락되지 않는다 — 트랜잭션 밖에서 실행, 실패해도 신청 생성 자체는 유지)
+  // 자동승인 → 캘린더 등록 + 팀 일정 알림 (트랜잭션 밖, 실패해도 신청 유지)
   if (isAutoApproved) {
-    const finalRequest = await prisma.attendanceRequest.findUnique({
-      where: { id: created.id },
-      include: {
-        calendarSource: { select: { calendarId: true, calendarName: true } },
-      },
-    });
-
-    if (
-      finalRequest?.calendarSource &&
-      finalRequest.calendarEventTitle &&
-      !finalRequest.externalEventId // 이미 등록된 경우 중복 방지
-    ) {
-      try {
-        const calendarEventId = await createCalendarEvent({
-          calendarId: finalRequest.calendarSource.calendarId,
-          summary: finalRequest.calendarEventTitle,
-          description: finalRequest.calendarEventDescription ?? "",
-          startDate: finalRequest.startDate,
-          endDate: finalRequest.endDate,
-          correctedCheckIn: finalRequest.correctedCheckIn,
-          correctedCheckOut: finalRequest.correctedCheckOut,
-        });
-        if (calendarEventId) {
-          await prisma.attendanceRequest.update({
-            where: { id: created.id },
-            data: {
-              externalSource: "hr",
-              externalEventId: calendarEventId,
-            },
-          });
-          console.log(
-            `[create-attendance-request] 캘린더 등록 완료: eventId=${calendarEventId}`
-          );
-        }
-      } catch (e) {
-        console.error(
-          `[create-attendance-request] 캘린더 등록 실패 (신청은 유지):`,
-          e
-        );
-        // 캘린더 실패해도 신청은 유지 (멱등적 — 관리자가 수동 등록하면 됨)
-      }
-    }
-  }
-
-  // 자동승인이면 팀 일정 알림 (트랜잭션 밖, 실패해도 신청 유지)
-  if (isAutoApproved) {
-    await notifyTeamOfApprovedRequest(created.id, "create-attendance-request");
+    await runAutoApprovalSideEffects(created.id, "create-attendance-request");
   }
 
   // 결재 요청 알림 — 자동승인이 아니고 결재자가 있을 때만
-  if (!isAutoApproved && approverIds.length > 0) {
+  if (!isAutoApproved && route.approverIds.length > 0) {
     try {
-      const cat = category.name; // 카테고리명 (이미 위에서 조회된 category 사용)
-      const requesterName = emp.name ?? "직원"; // 위에서 조회된 emp 사용
       await createNotifications({
-        employeeIds: approverIds,
+        employeeIds: route.approverIds,
         type: "approval_request",
         title: "새 결재 요청",
-        body: `${requesterName}님의 ${cat} 결재 요청`,
+        body: `${emp.name ?? "직원"}님의 ${category.name} 결재 요청`,
         linkPage: "approval",
         linkRefId: created.id,
         sourceType: "attendance_request",

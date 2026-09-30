@@ -55,6 +55,14 @@ function usedLeaveRequestWhere(employeeId: number): Prisma.AttendanceRequestWher
   };
 }
 
+// 연차 "결재 대기" — 사용과 같은 조건인데 status 'pending'. 신청 가능 일수에서 미리 뺀다.
+function pendingLeaveRequestWhere(employeeId: number): Prisma.AttendanceRequestWhereInput {
+  return {
+    ...usedLeaveRequestWhere(employeeId),
+    status: "pending",
+  };
+}
+
 type ShiftAssignmentRow = {
   employee_id: number;
   start_date: Date;
@@ -126,18 +134,21 @@ export function countWorkDays(
   return count;
 }
 
-// [from, toExclusive) 기간과 겹치는 연차 요청의, 기간 안 근무일 × 차감계수 합.
-// 연차 관리와 같은 요청 필터·같은 근무일 판정을 쓴다.
-export async function computeLeaveDaysInPeriod(
+// [from, toExclusive) 기간과 겹치는 요청(where)의, 기간 안 근무일 × 차감계수 합.
+// 기간 밖 날짜는 세지 않는다(연도를 넘는 신청은 날짜별로 해당 연도에서 차감).
+async function sumLeaveDaysInPeriod(
+  where: Prisma.AttendanceRequestWhereInput,
   employeeId: number,
   from: Date,
-  toExclusive: Date
+  toExclusive: Date,
+  excludeRequestId?: number
 ): Promise<number> {
   const reqs = await prisma.attendanceRequest.findMany({
     where: {
-      ...usedLeaveRequestWhere(employeeId),
+      ...where,
       startDate: { lt: toExclusive },
       endDate: { gte: from },
+      ...(excludeRequestId !== undefined ? { id: { not: excludeRequestId } } : {}),
     },
     select: {
       startDate: true,
@@ -162,6 +173,23 @@ export async function computeLeaveDaysInPeriod(
     total += countWorkDays(isWorkDay, employeeId, s, e) * deduct;
   }
   return total;
+}
+
+// [from, toExclusive) 기간과 겹치는 연차 사용의, 기간 안 근무일 × 차감계수 합.
+// 연차 관리와 같은 요청 필터·같은 근무일 판정을 쓴다.
+export async function computeLeaveDaysInPeriod(
+  employeeId: number,
+  from: Date,
+  toExclusive: Date
+): Promise<number> {
+  return sumLeaveDaysInPeriod(usedLeaveRequestWhere(employeeId), employeeId, from, toExclusive);
+}
+
+function yearRange(year: number): { from: Date; toExclusive: Date } {
+  return {
+    from: new Date(Date.UTC(year, 0, 1)),
+    toExclusive: new Date(Date.UTC(year + 1, 0, 1)),
+  };
 }
 
 // targetYear의 부여량 계산.
@@ -219,41 +247,29 @@ export function computeGrantedDays(
   return Math.min(policy.baseDays + cycles * policy.incrementDays, policy.maxDays);
 }
 
-// 해당 연도(역년) 시스템 사용 연차 합계.
+// 해당 연도(역년) 시스템 사용 연차 합계 — 그 연도 안의 날짜만 센다.
 export async function computeSystemUsedDays(
   employeeId: number,
   year: number
 ): Promise<number> {
-  const yearStart = new Date(Date.UTC(year, 0, 1));
-  const yearEnd = new Date(Date.UTC(year, 11, 31, 23, 59, 59));
-  const reqs = await prisma.attendanceRequest.findMany({
-    where: {
-      ...usedLeaveRequestWhere(employeeId),
-      startDate: { gte: yearStart, lte: yearEnd },
-    },
-    select: {
-      startDate: true,
-      endDate: true,
-      category: { select: { annualLeaveDeduct: true } },
-    },
-  });
-  if (reqs.length === 0) return 0;
-  const minStart = new Date(Math.min(...reqs.map((r) => r.startDate.getTime())));
-  const maxEnd = new Date(Math.max(...reqs.map((r) => r.endDate.getTime())));
-  const isWorkDay = await loadWorkDayChecker(
-    [employeeId],
-    minStart.toISOString().split("T")[0],
-    maxEnd.toISOString().split("T")[0]
+  const { from, toExclusive } = yearRange(year);
+  return computeLeaveDaysInPeriod(employeeId, from, toExclusive);
+}
+
+// 해당 연도(역년) 결재 대기 연차 합계 — 그 연도 안의 날짜만. excludeRequestId 는 빼고 센다.
+export async function computePendingLeaveDays(
+  employeeId: number,
+  year: number,
+  excludeRequestId?: number
+): Promise<number> {
+  const { from, toExclusive } = yearRange(year);
+  return sumLeaveDaysInPeriod(
+    pendingLeaveRequestWhere(employeeId),
+    employeeId,
+    from,
+    toExclusive,
+    excludeRequestId
   );
-  let total = 0;
-  for (const r of reqs) {
-    const deduct = r.category.annualLeaveDeduct
-      ? Number(r.category.annualLeaveDeduct)
-      : 0;
-    if (deduct <= 0) continue;
-    total += countWorkDays(isWorkDay, employeeId, r.startDate, r.endDate) * deduct;
-  }
-  return total;
 }
 
 // 특정 직원·연도의 연차 부여값 계산 (grant 행 우선, 없으면 정책 자동계산).
@@ -295,30 +311,91 @@ export async function getRemainingDays(
   };
 }
 
-// 연차 차감 신청 1건의 영향: 본인 근무일 × 차감계수 = 차감량, 신청 시작 연도 기준 잔여.
-// 신청 초과 검사(create-attendance-request)·미리보기(annual-leave/preview)·결재함 표시가 공용.
-// deductPerDay <= 0(차감 없는 항목)이면 근무일을 세지 않고 workDays·amount = 0.
-export async function computeLeaveImpact(
+export interface LeaveYearCheck {
+  year: number;
+  amount: number;         // 이번 신청 중 그 연도 날짜의 차감량
+  granted: number;
+  used: number;           // 도입 전 사용 + 시스템 사용
+  pending: number;        // 결재 대기 (검사 대상 신청 자신 제외)
+  remaining: number;      // 부여 − 도입 전 사용 − 사용
+  available: number;      // 잔여 − 대기 (= 신청 가능)
+  availableAfter: number; // 신청 가능 − 이번 차감량
+}
+
+function fmtLeaveDays(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
+// 연차 차감 신청 검사 — 신청·수정 검사, 미리보기, 결재함 카드가 모두 이 함수를 쓴다.
+// - 연도를 넘는 신청은 날짜별로 해당 연도에서 차감하고, 연도별로 검사한다.
+// - 신청 가능 = 잔여 − 결재 대기 (excludeRequestId 로 검사 대상 신청 자신은 대기에서 뺀다).
+// - 부여가 0 이어도 같은 검사를 한다(예외 없음).
+// deductPerDay <= 0(차감 없는 항목)이면 years 는 비고 ok=true.
+export async function checkLeaveRequest(
   employeeId: number,
   startDate: Date,
   endDate: Date,
-  deductPerDay: number
+  deductPerDay: number,
+  opts: { excludeRequestId?: number } = {}
 ): Promise<{
   workDays: number;
   amount: number;
-  granted: number;
-  remaining: number;
-  remainingAfter: number;
+  years: LeaveYearCheck[];
+  ok: boolean;
+  message: string | null;
 }> {
-  let workDays = 0;
-  if (deductPerDay > 0) {
-    const ymd = (d: Date) => d.toISOString().split("T")[0];
-    const isWorkDay = await loadWorkDayChecker([employeeId], ymd(startDate), ymd(endDate));
-    workDays = countWorkDays(isWorkDay, employeeId, startDate, endDate);
+  if (deductPerDay <= 0) {
+    return { workDays: 0, amount: 0, years: [], ok: true, message: null };
   }
-  const amount = workDays * deductPerDay;
-  const { granted, remaining } = await getRemainingDays(employeeId, startDate.getUTCFullYear());
-  return { workDays, amount, granted, remaining, remainingAfter: remaining - amount };
+  const ymd = (d: Date) => d.toISOString().split("T")[0];
+  const isWorkDay = await loadWorkDayChecker([employeeId], ymd(startDate), ymd(endDate));
+
+  const years: LeaveYearCheck[] = [];
+  let workDays = 0;
+  for (let y = startDate.getUTCFullYear(); y <= endDate.getUTCFullYear(); y++) {
+    const { from, toExclusive } = yearRange(y);
+    const lastDay = new Date(toExclusive.getTime() - 86400000);
+    const s = startDate > from ? startDate : from;
+    const e = endDate < lastDay ? endDate : lastDay;
+    const days = countWorkDays(isWorkDay, employeeId, s, e);
+    workDays += days;
+    const amount = days * deductPerDay;
+    const { granted, initialUsed, systemUsed, remaining } = await getRemainingDays(employeeId, y);
+    const pending = await computePendingLeaveDays(employeeId, y, opts.excludeRequestId);
+    const available = remaining - pending;
+    years.push({
+      year: y,
+      amount,
+      granted,
+      used: initialUsed + systemUsed,
+      pending,
+      remaining,
+      available,
+      availableAfter: available - amount,
+    });
+  }
+
+  let message: string | null = null;
+  for (const y of years) {
+    if (y.amount <= 0) continue;
+    if (y.granted <= 0) {
+      message = `${y.year}년 연차 부여가 0일입니다. 연차 관리에서 부여를 확인하세요.`;
+      break;
+    }
+    if (y.availableAfter < 0) {
+      message =
+        `연차 잔여가 부족합니다. (${y.year}년: 신청 ${fmtLeaveDays(y.amount)}일 / ` +
+        `신청 가능 ${fmtLeaveDays(y.available)}일, 결재 대기 ${fmtLeaveDays(y.pending)}일)`;
+      break;
+    }
+  }
+  return {
+    workDays,
+    amount: workDays * deductPerDay,
+    years,
+    ok: message === null,
+    message,
+  };
 }
 
 export async function getPolicy(): Promise<AnnualLeavePolicyValues> {
@@ -346,8 +423,8 @@ export async function getPolicy(): Promise<AnnualLeavePolicyValues> {
 }
 
 // 특정 직원·연도의 연차 사용 내역(승인된 연차차감 신청) 목록 + 합계.
-// 계산은 /api/internal/my-leave-detail 라우트와 100% 동일하다 →
-// grants의 systemUsedDays 합계와 이 화면의 totalUsed가 일치한다.
+// 그 연도와 겹치는 신청을 그 연도 안 날짜만큼으로 보여준다(연도를 넘는 신청은 연도별로 나뉨).
+// 계산은 computeSystemUsedDays 와 같다 → grants의 systemUsedDays 합계와 totalUsed가 일치한다.
 export async function getLeaveDetailItems(
   employeeId: number,
   year: number
@@ -355,12 +432,13 @@ export async function getLeaveDetailItems(
   totalUsed: number;
   items: { startDate: string; endDate: string; categoryName: string | null; usedDays: number }[];
 }> {
-  const yearStart = new Date(Date.UTC(year, 0, 1));
-  const yearEnd = new Date(Date.UTC(year, 11, 31, 23, 59, 59));
+  const { from, toExclusive } = yearRange(year);
+  const lastDay = new Date(toExclusive.getTime() - 86400000);
   const reqs = await prisma.attendanceRequest.findMany({
     where: {
       ...usedLeaveRequestWhere(employeeId),
-      startDate: { gte: yearStart, lte: yearEnd },
+      startDate: { lt: toExclusive },
+      endDate: { gte: from },
     },
     orderBy: [{ startDate: "desc" }],
     select: {
@@ -371,22 +449,22 @@ export async function getLeaveDetailItems(
   });
 
   if (reqs.length === 0) return { totalUsed: 0, items: [] };
-  const minStart = new Date(Math.min(...reqs.map((r) => r.startDate.getTime())));
-  const maxEnd = new Date(Math.max(...reqs.map((r) => r.endDate.getTime())));
   const isWorkDay = await loadWorkDayChecker(
     [employeeId],
-    minStart.toISOString().split("T")[0],
-    maxEnd.toISOString().split("T")[0]
+    from.toISOString().split("T")[0],
+    lastDay.toISOString().split("T")[0]
   );
 
   let totalUsed = 0;
   const items = reqs.map((r) => {
     const deduct = r.category?.annualLeaveDeduct ? Number(r.category.annualLeaveDeduct) : 0;
-    const used = countWorkDays(isWorkDay, employeeId, r.startDate, r.endDate) * deduct;
+    const s = r.startDate > from ? r.startDate : from;
+    const e = r.endDate < lastDay ? r.endDate : lastDay;
+    const used = deduct > 0 ? countWorkDays(isWorkDay, employeeId, s, e) * deduct : 0;
     totalUsed += used;
     return {
-      startDate: r.startDate.toISOString().split("T")[0],
-      endDate: r.endDate.toISOString().split("T")[0],
+      startDate: s.toISOString().split("T")[0],
+      endDate: e.toISOString().split("T")[0],
       categoryName: r.category?.name ?? null,
       usedDays: used,
     };

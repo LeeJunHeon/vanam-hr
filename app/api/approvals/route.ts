@@ -16,7 +16,7 @@ import {
 } from "@/lib/trip-calendar";
 import { createNotifications } from "@/lib/notify";
 import { sweepEligibleDelegations } from "@/lib/sweep-delegations";
-import { computeLeaveImpact } from "@/lib/annual-leave";
+import { checkLeaveRequest } from "@/lib/annual-leave";
 
 // 결재함 조회 시 위임 자동 마감을 throttle로 트리거(B). 모듈 레벨 상태.
 const DELEGATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 결재함 조회 트리거 throttle
@@ -375,24 +375,26 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    // 연차 차감 신청만 차감량 계산 (미리보기·초과차단과 같은 computeLeaveImpact)
-    // - pending: 잔여·이번 차감·신청 후 잔여 모두 (결재 판단용)
+    // 연차 차감 신청만 차감량 계산 (미리보기·초과차단과 같은 checkLeaveRequest)
+    // - pending: 잔여·이번 차감·신청 후 신청 가능 (결재 판단용). 결재 대기는 그 신청 자신을 빼고 센다.
+    //   leaveRemaining = 시작 연도 잔여, leaveRemainingAfter = 연도별 신청 후 신청 가능 중 최솟값.
     // - approved: 차감량만 ("N일 차감됨"). 지금 잔여는 이미 차감이 반영돼 있어 신청 후 잔여 계산이 틀어지므로 null.
     // - rejected/cancelled: 연차 필드 모두 null
     for (const it of attendanceItems) {
       if (it.leaveDeductPerDay <= 0) continue;
       if (it.status !== "pending" && it.status !== "approved") continue;
-      const impact = await computeLeaveImpact(
+      const check = await checkLeaveRequest(
         it.employeeId,
         new Date(it.startDate + "T00:00:00.000Z"),
         new Date(it.endDate + "T00:00:00.000Z"),
-        it.leaveDeductPerDay
+        it.leaveDeductPerDay,
+        { excludeRequestId: it.id }
       );
-      it.leaveRequestAmount = impact.amount;
-      if (it.status === "pending") {
-        it.leaveGranted = impact.granted;
-        it.leaveRemaining = impact.remaining;
-        it.leaveRemainingAfter = impact.remainingAfter;
+      it.leaveRequestAmount = check.amount;
+      if (it.status === "pending" && check.years.length > 0) {
+        it.leaveGranted = check.years[0].granted;
+        it.leaveRemaining = check.years[0].remaining;
+        it.leaveRemainingAfter = Math.min(...check.years.map((y) => y.availableAfter));
       }
     }
 

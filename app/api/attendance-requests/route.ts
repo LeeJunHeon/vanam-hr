@@ -6,8 +6,15 @@ import {
   isAdminSession,
 } from "@/lib/auth-helpers";
 import { createNotifications } from "@/lib/notify";
-import { createAttendanceRequest } from "@/lib/create-attendance-request";
-import { loadShiftAndGrace, shiftEndBoundary } from "@/lib/attendance-correction";
+import type { Prisma } from "@/app/generated/prisma/client";
+import {
+  createAttendanceRequest,
+  validateAttendanceRequestInput,
+  decideApprovalRoute,
+  approvalRouteFields,
+  applyAutoApprovalInTx,
+  runAutoApprovalSideEffects,
+} from "@/lib/create-attendance-request";
 import { revertCancelledRequestFromDaily } from "@/lib/finalize-approval";
 
 function parseDate(s: string | null | undefined): Date | null {
@@ -43,14 +50,6 @@ async function deleteCalendarEvent(
   if (!res.ok) {
     throw new Error(`calendar-syncer DELETE failed: ${res.status}`);
   }
-}
-
-// category.type → requestType 매핑
-function categoryTypeToRequestType(categoryType: string): string {
-  if (categoryType === "correction") return "correction";
-  if (categoryType === "work") return "external_work";
-  // leave, long_leave, 기타
-  return "leave";
 }
 
 // GET /api/attendance-requests?employeeId=N&status=...&from=...&to=...
@@ -244,7 +243,8 @@ export async function POST(request: NextRequest) {
 }
 
 // PUT /api/attendance-requests?id=N
-// 두 흐름: action="cancel" 취소 / 그 외 필드 수정 (둘 다 pending 만 가능)
+// 두 흐름: action="cancel" 취소 / 그 외 필드 수정 (수정은 pending 만 — 신청과 같은 검사·결재선 재계산,
+//        승인 초기화, requested_at 갱신. 자동승인 대상이 되면 바로 auto_approved + 후처리)
 // 비관리자: 본인 요청만 수정/취소 가능.
 export async function PUT(request: NextRequest) {
   try {
@@ -455,136 +455,50 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ id: updated.id, status: updated.status });
     }
 
-    // 수정 흐름
-    const data: any = {};
-    if (categoryId !== undefined) {
-      const cid = Number(categoryId);
-      if (!Number.isInteger(cid)) {
-        return NextResponse.json(
-          { error: "categoryId는 정수여야 합니다." },
-          { status: 400 }
-        );
-      }
-      const cat = await prisma.attendanceCategory.findUnique({
-        where: { id: cid },
-      });
-      if (!cat || !cat.isActive) {
-        return NextResponse.json(
-          { error: "활성 근태 항목이 아닙니다." },
-          { status: 400 }
-        );
-      }
-      data.categoryId = cid;
-      data.requestType = categoryTypeToRequestType(cat.type);
-    }
-    if (startDate !== undefined) {
-      const d = parseDate(startDate);
-      if (!d)
-        return NextResponse.json(
-          { error: "startDate 형식 오류" },
-          { status: 400 }
-        );
-      data.startDate = d;
-    }
-    if (endDate !== undefined) {
-      const d = parseDate(endDate);
-      if (!d)
-        return NextResponse.json(
-          { error: "endDate 형식 오류" },
-          { status: 400 }
-        );
-      data.endDate = d;
-    }
-    // 시작/종료일 일관성 (최종값 기준)
-    const finalStart = data.startDate ?? before.startDate;
-    const finalEnd = data.endDate ?? before.endDate;
-    if (finalEnd < finalStart) {
+    // 수정 흐름 — 결재 대기 중 수정 = 다시 신청.
+    // 기존값에 바뀐 값을 합친 최종값으로 신청과 같은 검사·결재선 계산을 다시 한다.
+    const toIsoOrNull = (d: Date | null) => (d ? d.toISOString() : null);
+    const finalInput = {
+      employeeId: before.employeeId,
+      categoryId: categoryId !== undefined ? Number(categoryId) : before.categoryId,
+      startDate: startDate !== undefined ? startDate : ymdFromDate(before.startDate),
+      endDate: endDate !== undefined ? endDate : ymdFromDate(before.endDate),
+      correctedCheckIn:
+        correctedCheckIn !== undefined ? correctedCheckIn || null : toIsoOrNull(before.correctedCheckIn),
+      correctedCheckOut:
+        correctedCheckOut !== undefined ? correctedCheckOut || null : toIsoOrNull(before.correctedCheckOut),
+    };
+    if (!Number.isInteger(finalInput.categoryId)) {
       return NextResponse.json(
-        { error: "종료일은 시작일 이후여야 합니다." },
+        { error: "categoryId는 정수여야 합니다." },
         { status: 400 }
       );
     }
+    const v = await validateAttendanceRequestInput(finalInput, { excludeRequestId: idNum });
+    if (!v.ok) {
+      return NextResponse.json({ error: v.error }, { status: v.status });
+    }
+    const route = await decideApprovalRoute(v.emp, v.category);
+    if (!route.ok) {
+      return NextResponse.json({ error: route.error }, { status: route.status });
+    }
+
+    const now = new Date();
+    const data: Prisma.AttendanceRequestUncheckedUpdateManyInput = {
+      categoryId: v.category.id,
+      requestType: v.reqType,
+      startDate: v.startD,
+      endDate: v.endD,
+      correctedCheckIn: v.cciDate,
+      correctedCheckOut: v.ccoDate,
+      ...approvalRouteFields(route),
+      // 기존 승인 초기화 + 다시 신청(대리 위임 시간도 여기서 다시 센다)
+      approvedByIds: [],
+      approvedById: null,
+      requestedAt: now,
+      ...(route.autoApprove ? { status: "auto_approved", approvedAt: now } : {}),
+    };
     if (reason !== undefined) data.reason = reason?.trim() || null;
-    if (correctedCheckIn !== undefined) {
-      data.correctedCheckIn = correctedCheckIn
-        ? new Date(correctedCheckIn)
-        : null;
-    }
-    if (correctedCheckOut !== undefined) {
-      data.correctedCheckOut = correctedCheckOut
-        ? new Date(correctedCheckOut)
-        : null;
-    }
-
-    // Phase 6-2G: 정정 외 카테고리는 시간 한쪽만 입력 차단 (병합 후 최종 상태 기준)
-    // 카테고리는 정정인지 판단해야 하므로 before.requestType 사용
-    if (before.requestType !== "correction") {
-      const finalCci =
-        data.correctedCheckIn !== undefined
-          ? data.correctedCheckIn
-          : before.correctedCheckIn;
-      const finalCco =
-        data.correctedCheckOut !== undefined
-          ? data.correctedCheckOut
-          : before.correctedCheckOut;
-      if (!!finalCci !== !!finalCco) {
-        return NextResponse.json(
-          {
-            error:
-              "시작 시간과 종료 시간 중 하나만 입력할 수 없습니다. 모두 입력하거나 모두 비워주세요.",
-          },
-          { status: 400 }
-        );
-      }
-      if (finalCci && finalCco && finalCco < finalCci) {
-        return NextResponse.json(
-          { error: "종료 시간은 시작 시간 이후여야 합니다." },
-          { status: 400 }
-        );
-      }
-    } else {
-      // 정정(correction) — POST 경로와 같은 규칙 A/B. 미래 시각 + 근무 종료 이후 출근 차단.
-      const finalCci =
-        data.correctedCheckIn !== undefined
-          ? data.correctedCheckIn
-          : before.correctedCheckIn;
-      const finalCco =
-        data.correctedCheckOut !== undefined
-          ? data.correctedCheckOut
-          : before.correctedCheckOut;
-      const now = new Date();
-      if (finalCci && finalCci > now) {
-        return NextResponse.json(
-          { error: "정정 출근 시각이 현재 시각보다 미래입니다. 오전/오후를 확인해주세요." },
-          { status: 400 }
-        );
-      }
-      if (finalCco && finalCco > now) {
-        return NextResponse.json(
-          { error: "정정 퇴근 시각이 현재 시각보다 미래입니다. 오전/오후를 확인해주세요." },
-          { status: 400 }
-        );
-      }
-      if (finalCci) {
-        const { shiftStartHHMM, shiftEndHHMM } = await loadShiftAndGrace(
-          prisma,
-          before.employeeId,
-          finalStart
-        );
-        const endBoundary = shiftEndBoundary(finalCci, shiftStartHHMM, shiftEndHHMM);
-        if (endBoundary && finalCci > endBoundary) {
-          return NextResponse.json(
-            {
-              error:
-                `정정 출근 시각이 해당 일자의 근무 종료 시각(${shiftEndHHMM}) 이후입니다. ` +
-                "오전/오후를 확인해주세요.",
-            },
-            { status: 400 }
-          );
-        }
-      }
-    }
-
     // Phase 6-2E 캘린더 필드 수정
     if (calendarSourceId !== undefined) {
       data.calendarSourceId =
@@ -600,11 +514,51 @@ export async function PUT(request: NextRequest) {
         calendarEventDescription?.trim() || null;
     }
 
-    const updated = await prisma.attendanceRequest.update({
-      where: { id: idNum },
-      data,
+    const saved = await prisma.$transaction(async (tx) => {
+      // 조회 이후 상태가 바뀌었으면(동시 승인·취소) 409
+      const upd = await tx.attendanceRequest.updateMany({
+        where: { id: idNum, status: "pending" },
+        data,
+      });
+      if (upd.count === 0) return null;
+
+      // 이 신청의 기존 결재 요청 알림 삭제 (결재선이 바뀌었거나 승인이 초기화됨)
+      await tx.notification.deleteMany({
+        where: { linkRefId: BigInt(idNum), type: "approval_request" },
+      });
+
+      const req = await tx.attendanceRequest.findUniqueOrThrow({ where: { id: idNum } });
+      if (route.autoApprove) {
+        await applyAutoApprovalInTx(tx, req, v.category);
+      }
+      return req;
     });
-    return NextResponse.json({ id: updated.id, status: updated.status });
+    if (!saved) {
+      return NextResponse.json(
+        { error: "요청 상태가 바뀌었습니다. 새로고침 후 다시 시도하세요." },
+        { status: 409 }
+      );
+    }
+
+    if (route.autoApprove) {
+      // 자동승인 → 캘린더 등록 + 팀 일정 알림 (트랜잭션 밖, 실패해도 수정 유지)
+      await runAutoApprovalSideEffects(saved.id, "attendance-requests:edit");
+    } else if (route.approverIds.length > 0) {
+      try {
+        await createNotifications({
+          employeeIds: route.approverIds,
+          type: "approval_request",
+          title: "결재 요청 (수정됨)",
+          body: `${v.emp.name ?? "직원"}님의 ${v.category.name} 결재 요청이 수정되었습니다`,
+          linkPage: "approval",
+          linkRefId: saved.id,
+          sourceType: "attendance_request",
+        });
+      } catch (e) {
+        console.error("[notify] 수정 결재 요청 알림 생성 실패:", e);
+      }
+    }
+    return NextResponse.json({ id: saved.id, status: saved.status });
   } catch (error) {
     console.error("PUT /api/attendance-requests error:", error);
     return NextResponse.json(

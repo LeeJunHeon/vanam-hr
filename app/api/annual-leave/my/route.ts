@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/auth-helpers";
-import { getRemainingDays } from "@/lib/annual-leave";
+import { getRemainingDays, computePendingLeaveDays } from "@/lib/annual-leave";
 
 export async function GET(request: NextRequest) {
   const r = await requireSession();
@@ -16,6 +16,7 @@ export async function GET(request: NextRequest) {
       granted: 0,
       used: 0,
       remaining: 0,
+      pending: 0,
     });
   }
 
@@ -26,6 +27,8 @@ export async function GET(request: NextRequest) {
     employeeId as number,
     year
   );
+  // 결재 대기 연차(그 연도 안 날짜만) — 신청 가능 = 잔여 − 결재 대기
+  const pending = await computePendingLeaveDays(employeeId as number, year);
 
   return NextResponse.json({
     mapped: true,
@@ -34,5 +37,6 @@ export async function GET(request: NextRequest) {
     // 사용 = 도입 전 사용 + 시스템 사용 (전체 사용량)
     used: initialUsed + systemUsed,
     remaining,
+    pending,
   });
 }
