@@ -102,7 +102,8 @@ class Syncer:
             f"SUBJECT={self.config.subject_email}"
         )
 
-        # DB 연결
+        # DB 연결 — psycopg2 연결 1개. 메인 루프 스레드만 쓴다(일정·공휴일 동기화, purge).
+        # HTTP 핸들러(별도 스레드)에서 DB 를 쓰려면 이 연결을 공유하지 말고 별도 연결을 만들 것.
         self.db = Database(
             host=self.config.db_host,
             port=self.config.db_port,
@@ -124,7 +125,10 @@ class Syncer:
         self.logger.info("초기화 완료")
 
     def _create_http_app(self) -> Flask:
-        """Flask 앱 생성. /internal/calendar-event(POST/DELETE) + /internal/health.
+        """Flask 앱 생성. /internal/calendar-event(POST/PATCH/DELETE) + /internal/health.
+
+        스레드: threaded=True 라 요청마다 별도 스레드. 구글 API 는 self.client 가 요청마다 새 연결을
+        만들어 스레드 안전하다. self.db 는 쓰지 않는다(메인 루프 전용 — 필요하면 별도 연결).
 
         - X-Internal-Token 헤더로 인증 (env INTERNAL_API_TOKEN과 비교)
         - 같은 docker network의 컨테이너만 접근 (expose만, ports 매핑 X)

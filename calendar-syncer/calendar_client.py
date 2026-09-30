@@ -1,13 +1,24 @@
-"""Google Calendar 읽기 전용 클라이언트 (1단계).
+"""Google Calendar 클라이언트.
 
-서비스 계정 + 도메인 위임(with_subject)으로 인증해 근태 캘린더의 일정을 읽는다.
-events().list 만 호출 — 생성/수정/삭제는 절대 하지 않는다.
+서비스 계정 + 도메인 위임(with_subject)으로 인증한다.
+- 메인 루프(일정 동기화): events().list
+- Flask HTTP 스레드(내부 API): events().insert / patch / delete
+
+스레드 안전: 두 스레드가 같은 self.service 를 쓴다. httplib2.Http 는 스레드 안전하지 않으므로
+(google-api-python-client docs/thread_safety) requestBuilder 로 요청마다 새 AuthorizedHttp(새 httplib2.Http)
+를 만든다. 호출부(self.service.events()...execute())는 그대로 써도 요청끼리 연결을 공유하지 않는다.
 """
 
 from datetime import datetime, timedelta
 
+import google_auth_httplib2
+import httplib2
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.http import HttpRequest
+
+# 기존 build(credentials=...) 가 쓰던 googleapiclient.http.build_http 기본 타임아웃과 같다.
+HTTP_TIMEOUT_SECONDS = 60
 
 # 도메인 위임 admin 콘솔에 등록된 scope(calendar)와 일치시킴.
 # 1단계는 코드에 쓰기 메서드를 두지 않아 실제로는 읽기만 한다.
@@ -27,7 +38,7 @@ class CalendarClient:
             )
             # 도메인 위임 — 대행할 사용자 계정
             delegated = credentials.with_subject(subject_email)
-            self.service = build("calendar", "v3", credentials=delegated, cache_discovery=False)
+            self.service = self._build_service(delegated)
             self.subject_email = subject_email
         except FileNotFoundError as e:
             raise RuntimeError(
@@ -37,6 +48,32 @@ class CalendarClient:
             raise RuntimeError(
                 f"Google Calendar 인증 실패 (key_file={key_file}, subject={subject_email}): {e}"
             ) from e
+
+    @staticmethod
+    def _new_http(credentials) -> google_auth_httplib2.AuthorizedHttp:
+        """요청 1건용 인증 연결 — 매번 새 httplib2.Http (스레드 간 공유 안 함)."""
+        return google_auth_httplib2.AuthorizedHttp(
+            credentials, http=httplib2.Http(timeout=HTTP_TIMEOUT_SECONDS)
+        )
+
+    @classmethod
+    def _build_service(cls, credentials):
+        """Calendar v3 서비스. requestBuilder 가 요청마다 새 연결로 HttpRequest 를 만든다.
+
+        build() 에는 credentials 와 http 를 함께 넘길 수 없어 http 에도 AuthorizedHttp 를 넘긴다
+        (정적 discovery 라 이 연결로 discovery 를 받지는 않는다).
+        """
+
+        def request_builder(_http, *args, **kwargs):
+            return HttpRequest(cls._new_http(credentials), *args, **kwargs)
+
+        return build(
+            "calendar",
+            "v3",
+            http=cls._new_http(credentials),
+            requestBuilder=request_builder,
+            cache_discovery=False,
+        )
 
     def list_events(
         self,
