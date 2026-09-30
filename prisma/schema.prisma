@@ -425,6 +425,9 @@ model AttendanceRequest {
   approvedAt               DateTime? @map("approved_at") @db.Timestamptz(6)
   rejectReason             String?   @map("reject_reason")
   teamNotifiedAt           DateTime? @map("team_notified_at") @db.Timestamptz(6)
+  // 취소 출처: 'user'(웹에서 본인·관리자 취소) / 'calendar_sync'(동기화가 캘린더에서 빠진 기록을 자동 취소)
+  // NULL = 취소 아님 또는 이전 기록. calendar-syncer 는 'calendar_sync' 로 취소한 행만 되살린다.
+  cancelSource             String?   @map("cancel_source") @db.VarChar(20)
   requestedAt              DateTime  @default(now()) @map("requested_at") @db.Timestamptz(6)
   updatedAt                DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 

@@ -311,6 +311,20 @@ export async function getRemainingDays(
   };
 }
 
+// 연차 차감 신청 1건의 차감량(본인 근무일 × 차감계수)만. checkLeaveRequest 와 같은 근무일 판정.
+// 잔여·결재 대기가 필요 없는 곳(결재함 처리 완료 목록 등)에서 쓴다.
+export async function computeLeaveAmount(
+  employeeId: number,
+  startDate: Date,
+  endDate: Date,
+  deductPerDay: number
+): Promise<number> {
+  if (deductPerDay <= 0) return 0;
+  const ymd = (d: Date) => d.toISOString().split("T")[0];
+  const isWorkDay = await loadWorkDayChecker([employeeId], ymd(startDate), ymd(endDate));
+  return countWorkDays(isWorkDay, employeeId, startDate, endDate) * deductPerDay;
+}
+
 export interface LeaveYearCheck {
   year: number;
   amount: number;         // 이번 신청 중 그 연도 날짜의 차감량

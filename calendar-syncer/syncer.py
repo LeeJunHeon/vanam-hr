@@ -1,22 +1,24 @@
-"""Google Calendar 동기화 데몬 (Phase 6 2-A — 카테고리 판정 로그) + 캘린더 쓰기 endpoint.
+"""Google Calendar 동기화 데몬 + 캘린더 쓰기 endpoint.
 
 흐름:
-1. config 로드 → logger 셋업 → 시작 로그
-2. DB 연결
-3. CalendarClient 인증 (도메인 위임)
-4. Flask HTTP 서버를 별도 스레드로 시작 (내부망 전용)
-   - POST /internal/calendar-event: 재고관리 등 내부 시스템이 일정 등록
+1. config 로드 → logger 셋업 → DB 연결 → CalendarClient 인증 (도메인 위임)
+2. Flask HTTP 서버를 별도 스레드로 시작 (내부망 전용)
+   - POST/PATCH/DELETE /internal/calendar-event: HR·재고관리 등 내부 시스템이 일정 등록·수정·삭제
    - GET  /internal/health: liveness 체크
-5. 메인 루프:
-   - 매일 04:00 KST에 sync_once 1회 실행
-   - 부팅 직후 1회 즉시 실행 (검증 편의)
-   - DB의 calendar_sources (sync_enabled=true) 동적 조회
-   - 당일 일정만 읽기
-   - 키워드 매칭으로 카테고리 판정 (priority 오름차순, 첫 매칭 사용)
-   - 매칭 안 되면 default_category 사용
-   - 결과를 로그로만 출력 (DB INSERT 안 함, Phase 6-2B에서 추가)
+3. 메인 루프 (60초마다 깨어남):
+   - 일정 동기화(sync_events): N분마다. N = policy_settings 'calendar_sync_interval_minutes'
+     (5~1440, 없거나 숫자가 아니면 10). 루프마다 다시 읽어 재시작 없이 반영.
+   - 공휴일 동기화(KASI) + 보관기간 정리(purge): 매일 04:00 KST 1번.
+   - 부팅 직후: 공휴일 1번 + 일정 동기화 1번.
 
-체크 주기: 60초 (분 단위로 04:00 도달 감지). CPU 부담 거의 없음.
+일정 동기화 (판단 규칙은 calendar_sync.py):
+- 당일 일정만 읽는다(모든 페이지). 시스템 생성 일정(vanam_source·설명 태그)은 스킵.
+- 키워드 → 카테고리 판정, 대상 직원 선정 → 직원별 google_calendar 신청 행 업서트.
+- 사람 취소(cancel_source 'user')·이전 취소는 되살리지 않는다. 동기화가 취소한 행('calendar_sync')만
+  일정이 다시 보이면 되살린다.
+- 모든 캘린더 조회에 성공한 사이클에서만, 캘린더에서 빠진 기록을 정리한다(오늘 시작=취소,
+  지난 시작=어제로 단축).
+- 신청 변경에 맞춰 근태(attendance_daily)를 웹과 같은 규칙으로 반영한다.
 """
 
 import os
@@ -25,6 +27,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import requests
 from flask import Flask, jsonify, request
@@ -33,6 +36,15 @@ from config import load_config
 from db import Database
 from logger import setup_logger
 from calendar_client import CalendarClient
+from calendar_sync import (
+    CLEANUP_SAFETY_CAP,
+    apply_event_for_employee,
+    execute_cleanup,
+    parse_event_times,
+    plan_cleanup,
+    resolve_sync_interval,
+    select_target_emails,
+)
 
 # 한국 시간대 (UTC+9). ZoneInfo 대신 고정 오프셋 사용 (한국은 DST 없음).
 KST = timezone(timedelta(hours=9))
@@ -78,11 +90,15 @@ class Syncer:
         self.config = load_config()
         self.logger = setup_logger(self.config.log_level, self.config.log_file)
         self.running = True
-        self.last_run_date = None  # 같은 날 중복 실행 방지
+        self.last_run_date = None  # 공휴일·purge 같은 날 중복 실행 방지
+        self.last_events_sync_at = None  # 마지막 일정 동기화 시작 시각 (KST aware)
+        # 출장보고서가 있어 취소하지 못한 행 warning 을 하루 1번만: {request_id: date}
+        self._trip_report_warned: dict = {}
 
-        self.logger.info("Calendar Syncer 시작 (Phase 6 2-A — 카테고리 판정 로그)")
+        self.logger.info("Calendar Syncer 시작")
         self.logger.info(
-            f"실행 시각: 매일 {RUN_HOUR:02d}:{RUN_MINUTE:02d} KST, "
+            f"공휴일·purge: 매일 {RUN_HOUR:02d}:{RUN_MINUTE:02d} KST, "
+            f"일정 동기화: policy calendar_sync_interval_minutes 분마다, "
             f"SUBJECT={self.config.subject_email}"
         )
 
@@ -546,236 +562,223 @@ class Syncer:
             f"스킵 {total_skip}개월"
         )
 
-    def sync_once(self):
-        """1회 실행: DB에서 캘린더 목록 읽고 → 일정 조회 → 카테고리 판정 로그."""
-        cycle_start = time.time()
-
-        # 읽기 범위: 오늘 00:00 ~ 23:59:59 KST (당일만)
-        now_kst = datetime.now(KST)
-        time_min = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
-        time_max = now_kst.replace(hour=23, minute=59, second=59, microsecond=0)
-
-        self.logger.info(
-            f"=== 동기화 사이클 시작 (당일: {time_min.date()}) ==="
-        )
-
-        # 직원 매칭 맵 갱신
-        email_map = self.db.get_employee_email_map()
-        self.logger.info(f"직원 {len(email_map)}명 매칭 맵 로드")
-
-        # Phase 6-2L+ B-2: 공휴일 캘린더 → hr.holidays 동기화 (1회)
-        # 근태 캘린더와 독립. 실패해도 근태 동기화에 영향 없도록 try/except로 격리.
-        # 직원 매칭/attendance_request INSERT는 절대 하지 않는다(공휴일은 근태 요청 아님).
+    def sync_holidays(self):
+        """공휴일 동기화(KASI) 1회. 실패해도 예외를 올리지 않는다(근태 동기화와 분리)."""
         try:
-            self._sync_holidays(now_kst)
+            self._sync_holidays(datetime.now(KST))
         except Exception as e:
             self.logger.exception(f"공휴일 동기화 실패 (계속 진행): {e}")
 
-        # 동기화 대상 캘린더 목록 (DB 동적 조회)
+    def sync_interval_minutes(self) -> int:
+        """일정 동기화 주기(분) — 매 루프 다시 읽는다. 조회 실패면 기본값."""
+        try:
+            raw = self.db.get_policy("calendar_sync_interval_minutes")
+        except Exception as e:
+            self.logger.warning(f"calendar_sync_interval_minutes 조회 실패 (기본값 사용): {e}")
+            raw = None
+        return resolve_sync_interval(raw)
+
+    def events_sync_due(self, now_kst: datetime) -> bool:
+        """마지막 일정 동기화 시작에서 N분이 지났으면 True."""
+        if self.last_events_sync_at is None:
+            return True
+        interval = self.sync_interval_minutes()
+        return now_kst - self.last_events_sync_at >= timedelta(minutes=interval)
+
+    def sync_events(self, now_kst: Optional[datetime] = None):
+        """일정 동기화 1회: 캘린더 일정 → google_calendar 신청 행 업서트 → 빠진 기록 정리."""
+        cycle_start = time.time()
+        now_kst = now_kst or datetime.now(KST)
+        self.last_events_sync_at = now_kst
+        today = now_kst.date()  # KST 달력 날짜 — SQL 에는 파라미터로 넘긴다
+
+        # 읽기 범위: 오늘 00:00 ~ 23:59:59 KST (당일만)
+        time_min = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
+        time_max = now_kst.replace(hour=23, minute=59, second=59, microsecond=0)
+
+        email_map = self.db.get_employee_email_map()
+        cat_types = self.db.get_category_types()
+
         try:
             calendar_sources = self.db.get_calendar_sources()
         except Exception as e:
-            self.logger.exception(f"calendar_sources 조회 실패: {e}")
+            self.logger.exception(f"calendar_sources 조회 실패 (정리 생략): {e}")
             return
-
         if not calendar_sources:
             self.logger.warning("calendar_sources에 등록된 캘린더 없음 (sync_enabled=true 0건)")
             return
 
-        self.logger.info(f"동기화 대상 캘린더: {len(calendar_sources)}개")
-
-        # 캘린더별 처리
-        grand_all_day = 0
-        grand_timed = 0
-        grand_matched = 0
+        counts = {
+            "created": 0, "updated": 0, "revived": 0, "unchanged": 0,
+            "skipped_hr_overlap": 0, "kept_cancelled": 0, "conflict": 0, "error": 0,
+        }
+        events_total = 0
+        seen: set = set()        # 이번 사이클에 대상이 된 (event_id, employee_id)
+        uncertain: set = set()   # 날짜·시간 파싱 실패 event_id — 그 행은 정리하지 않는다
+        failed_calendars: list[str] = []
 
         for cs in calendar_sources:
             cs_id = cs["id"]
             cal_name = cs["calendar_name"]
-            cal_id = cs["calendar_id"]
-            default_cat_id = cs["default_category_id"]
-            default_cat_code = cs["default_category_code"]
-
-            # 이 캘린더에 적용되는 키워드 룰 로드 (priority 오름차순)
             try:
                 keyword_rules = self.db.get_keyword_rules(cs_id)
             except Exception as e:
                 self.logger.warning(f"  [{cal_name}] keyword_rules 조회 실패 (default만 사용): {e}")
                 keyword_rules = []
 
-            self.logger.info(
-                f"  [{cal_name}] default={default_cat_code}, "
-                f"키워드 룰 {len(keyword_rules)}개"
-            )
-
-            # 일정 조회
             try:
-                events = self.client.list_events(cal_id, time_min, time_max)
+                events = self.client.list_events(cs["calendar_id"], time_min, time_max)
             except Exception as e:
-                self.logger.warning(f"  [{cal_name}] 일정 조회 실패: {e}")
+                # 페이지 도중 예외 포함 — 이번 사이클은 불완전 → 정리하지 않는다
+                self.logger.warning(f"  [{cal_name}] 일정 조회 실패 (이번 사이클 정리 생략): {e}")
+                failed_calendars.append(cal_name)
                 continue
-
-            all_day_cnt = 0
-            timed_cnt = 0
-            matched_cnt = 0
 
             for event in events:
                 p = self.client.parse_event(event)
+                event_id = event.get("id")
 
                 # 시스템 생성분은 스킵 (무한루프 방지)
                 # - vanam_source(extendedProperties): 정상 경로로 만든 신규 이벤트
                 # - description 태그: vanam_source가 없는 과거 생성 이벤트까지 커버
                 _desc = event.get("description") or ""
                 if p["ext_props"].get("vanam_source") or "[VanaM HR 자동 등록]" in _desc:
-                    self.logger.info(
-                        f"  [{cal_name}] [SKIP-시스템생성] {p['summary']}"
-                    )
+                    self.logger.debug(f"  [{cal_name}] [SKIP-시스템생성] {p['summary']}")
                     continue
+                events_total += 1
 
-                if p["is_all_day"]:
-                    all_day_cnt += 1
-                    when_label = f"종일 {p['start_date_or_datetime']}"
-                else:
-                    timed_cnt += 1
-                    when_label = f"시간 {p['start_date_or_datetime']}"
-
-                # 카테고리 판정 (일정 단위 1회 — 모든 직원에게 공통 적용)
-                cat_id, cat_code, matched_kw = self._match_category(
-                    p["summary"], keyword_rules, default_cat_id, default_cat_code
-                )
-                if matched_kw:
-                    cat_label = f"category={cat_code} (키워드:{matched_kw})"
-                else:
-                    cat_label = f"category={cat_code} (default)"
-
-                # 처리 대상 이메일 집합 — accepted 참석자만 (없으면 creator)
-                # - creator: accepted 참석자가 한 명도 없을 때만 대상에 포함
-                # - 참석자: response_status='accepted'만 (declined/needsAction/tentative 제외)
-                creator = p["creator_email"]
-                target_emails: set[str] = set()
-                accepted_count = 0
-                for a in p.get("attendees") or []:
-                    email = a.get("email")
-                    if a.get("response_status") == "accepted" and email:
-                        target_emails.add(email.lower().strip())
-                        accepted_count += 1
-                # 참석자(accepted)가 한 명도 없을 때만 생성자를 출장/외근 대상으로 처리
-                if accepted_count == 0 and creator:
-                    target_emails.add(creator.lower().strip())
-
-                # 카테고리 없으면 아무도 처리 안 함
-                if not cat_id:
-                    self.logger.info(
-                        f"  [{cal_name}] {when_label} | {p['summary']} "
-                        f"| creator={creator or '-'} | 대상 {len(target_emails)}명 "
-                        f"(accepted {accepted_count}) | {cat_label} → 스킵 (cat 없음)"
-                    )
-                    continue
-
-                # 날짜/시간 계산 (일정 단위 1회 — 모든 직원에게 공통)
-                try:
-                    end_raw = (event.get("end") or {})
-                    if p["is_all_day"]:
-                        # 종일: start.date / end.date (end.date는 Google API exclusive=다음날)
-                        start_date_str = p["start_date_or_datetime"]  # "YYYY-MM-DD"
-                        end_exclusive = end_raw.get("date")
-                        if end_exclusive:
-                            end_dt_obj = datetime.strptime(
-                                end_exclusive, "%Y-%m-%d"
-                            ).date()
-                            end_date_str = (
-                                end_dt_obj - timedelta(days=1)
-                            ).strftime("%Y-%m-%d")
-                        else:
-                            end_date_str = start_date_str
-                        corrected_check_in = None
-                        corrected_check_out = None
-                    else:
-                        # 시간 지정: start.dateTime / end.dateTime (ISO 문자열, TZ 포함)
-                        start_iso = p["start_date_or_datetime"]
-                        end_iso = end_raw.get("dateTime")
-                        if not end_iso:
-                            raise ValueError("end.dateTime 없음")
-                        # Python 3.11+은 Z 직접 지원하나 안전하게 +00:00로 치환
-                        start_dt_obj = datetime.fromisoformat(
-                            start_iso.replace("Z", "+00:00")
-                        )
-                        end_dt_obj = datetime.fromisoformat(
-                            end_iso.replace("Z", "+00:00")
-                        )
-                        start_date_str = start_dt_obj.strftime("%Y-%m-%d")
-                        end_date_str = end_dt_obj.strftime("%Y-%m-%d")
-                        corrected_check_in = start_dt_obj
-                        corrected_check_out = end_dt_obj
-                except Exception as e:
-                    self.logger.exception(
-                        f"  [{cal_name}] 날짜/시간 파싱 실패: {e}"
-                    )
-                    continue
-
-                # ⭐ 직원별 attendance_request UPSERT
-                # 같은 일정이라도 직원마다 1행. DB UNIQUE는 (external_source,
-                # external_event_id, employee_id)이므로 중복 없이 직원별 갱신.
-                per_event_matched = 0
-                per_event_results: list[str] = []
-                for email in sorted(target_emails):
+                target_emails = select_target_emails(p, email_map)
+                emp_ids = []
+                for email in target_emails:
                     emp_id = email_map.get(email)
-                    if not emp_id:
-                        per_event_results.append(f"{email}: 매칭 안 됨")
-                        continue
-                    try:
-                        request_id = self.db.upsert_attendance_request(
-                            employee_id=emp_id,
-                            category_id=cat_id,
-                            start_date=start_date_str,
-                            end_date=end_date_str,
-                            external_event_id=event["id"],
-                            reason=p["summary"],
-                            corrected_check_in=corrected_check_in,
-                            corrected_check_out=corrected_check_out,
-                        )
-                        if request_id > 0:
-                            per_event_matched += 1
-                            per_event_results.append(
-                                f"emp={emp_id}({email}) → req#{request_id} ✅"
-                            )
-                        else:
-                            # HR 신청과 기간이 겹쳐 생성하지 않음 (db.upsert_attendance_request 참조)
-                            per_event_results.append(
-                                f"emp={emp_id}({email}) → skip (HR 신청과 겹침)"
-                            )
-                    except Exception as e:
-                        self.logger.exception(
-                            f"  [{cal_name}] UPSERT 실패 (emp={emp_id}, email={email}): {e}"
-                        )
-                        per_event_results.append(
-                            f"emp={emp_id}({email}) → UPSERT 실패 ❌"
-                        )
-
-                matched_cnt += per_event_matched
-
-                self.logger.info(
-                    f"  [{cal_name}] {when_label} | {p['summary']} "
-                    f"| creator={creator or '-'} | 대상 {len(target_emails)}명 "
-                    f"(accepted {accepted_count}) | {cat_label} | 매칭 {per_event_matched}건"
+                    if emp_id:
+                        emp_ids.append(emp_id)
+                        seen.add((event_id, emp_id))
+                self.logger.debug(
+                    f"  [{cal_name}] {p['summary']} | creator={p['creator_email'] or '-'} "
+                    f"| 대상 {target_emails} → emp {emp_ids}"
                 )
-                for entry in per_event_results:
-                    self.logger.info(f"  [{cal_name}]   - {entry}")
 
+                cat_id, cat_code, matched_kw = self._match_category(
+                    p["summary"], keyword_rules,
+                    cs["default_category_id"], cs["default_category_code"],
+                )
+                if not cat_id:
+                    self.logger.debug(f"  [{cal_name}] {p['summary']} → 스킵 (cat 없음)")
+                    continue
+
+                try:
+                    start_d, end_d, ci, co = parse_event_times(event, p)
+                except Exception as e:
+                    uncertain.add(event_id)
+                    self.logger.warning(
+                        f"  [{cal_name}] 날짜/시간 파싱 실패 event={event_id} "
+                        f"'{p['summary']}': {e} (이 일정의 기록은 정리하지 않음)"
+                    )
+                    continue
+
+                new = {
+                    "category_id": cat_id,
+                    "start_date": start_d,
+                    "end_date": end_d,
+                    "reason": p["summary"],
+                    "ci": ci,
+                    "co": co,
+                }
+                for emp_id in emp_ids:
+                    try:
+                        res = apply_event_for_employee(
+                            self.db, emp_id, event_id, new, today, cat_types
+                        )
+                    except Exception as e:
+                        counts["error"] += 1
+                        self.logger.exception(
+                            f"  [{cal_name}] 업서트 실패 (emp={emp_id}, event={event_id}): {e}"
+                        )
+                        continue
+                    kind = res["kind"]
+                    counts[kind] += 1
+                    self._log_upsert_result(cal_name, p["summary"], emp_id, cat_code, matched_kw, res)
+
+        # 정리 — 모든 캘린더 조회에 성공한 사이클에서만
+        cleanup = {"cancelled": 0, "shortened": 0, "conflict": 0}
+        if failed_calendars:
             self.logger.info(
-                f"  [{cal_name}] 요약 — 종일 {all_day_cnt}건 / "
-                f"시간지정 {timed_cnt}건 / 직원매칭 {matched_cnt}건"
+                f"  [정리] 생략 — 조회 실패 캘린더 {failed_calendars} (불완전 사이클)"
             )
-
-            grand_all_day += all_day_cnt
-            grand_timed += timed_cnt
-            grand_matched += matched_cnt
+        else:
+            cleanup = self._cleanup_missing(today, seen, uncertain, set(email_map.values()), cat_types)
 
         elapsed = time.time() - cycle_start
         self.logger.info(
-            f"=== 사이클 종료: {elapsed:.2f}s "
-            f"(전체 종일 {grand_all_day} / 시간지정 {grand_timed} / 매칭 {grand_matched}) ==="
+            f"=== 일정 동기화 {today} {elapsed:.2f}s — 일정 {events_total}건, "
+            f"신규 {counts['created']} / 갱신 {counts['updated']} / 되살림 {counts['revived']} / "
+            f"변경없음 {counts['unchanged']} / HR겹침 {counts['skipped_hr_overlap']} / "
+            f"취소유지 {counts['kept_cancelled']} / 충돌 {counts['conflict']} / 오류 {counts['error']}, "
+            f"정리 취소 {cleanup['cancelled']} / 단축 {cleanup['shortened']}"
+            f"{' (정리 생략)' if failed_calendars else ''} ==="
         )
+
+    def _log_upsert_result(self, cal_name, summary, emp_id, cat_code, matched_kw, res):
+        """변경(신규·갱신·되살림)은 info, 매 사이클 반복되는 결과는 debug."""
+        kind = res["kind"]
+        old, new = res["old"], res["new"]
+        cat_label = f"{cat_code}({'키워드:' + matched_kw if matched_kw else 'default'})"
+        rid = res["request_id"]
+        if kind == "created":
+            self.logger.info(
+                f"  [{cal_name}] 신규 req#{rid} emp={emp_id} '{summary}' {cat_label} "
+                f"{new['start']}~{new['end']}"
+            )
+        elif kind in ("updated", "revived"):
+            label = "갱신" if kind == "updated" else "되살림(캘린더에 다시 보임)"
+            self.logger.info(
+                f"  [{cal_name}] {label} req#{rid} emp={emp_id} '{summary}' "
+                f"{old['start']}~{old['end']} cat={old['category_id']} → "
+                f"{new['start']}~{new['end']} cat={new['category_id']}"
+            )
+        elif kind == "conflict":
+            self.logger.info(
+                f"  [{cal_name}] 건너뜀 req#{rid} emp={emp_id} — 읽은 뒤 상태가 바뀜(웹 취소 등)"
+            )
+        else:
+            reason = {
+                "unchanged": "변경 없음",
+                "skipped_hr_overlap": "HR 신청과 같은 카테고리·기간 겹침 → 만들지/되살리지 않음",
+                "kept_cancelled": "사람 취소·이전 취소 → 유지",
+            }.get(kind, kind)
+            self.logger.debug(f"  [{cal_name}] req#{rid or '-'} emp={emp_id} '{summary}' — {reason}")
+
+    def _cleanup_missing(self, today, seen, uncertain, target_employee_ids, cat_types) -> dict:
+        """캘린더에서 빠진 기록 정리 (사이클당 1번). 계획을 다 세운 뒤 상한을 넘으면 아무것도 안 한다."""
+        empty = {"cancelled": 0, "shortened": 0, "conflict": 0}
+        try:
+            rows = self.db.list_live_calendar_requests_covering(today)
+            plan = plan_cleanup(
+                rows, seen, uncertain, today, target_employee_ids, self.db.has_trip_report
+            )
+        except Exception as e:
+            self.logger.exception(f"  [정리] 계획 실패 (생략): {e}")
+            return empty
+
+        for r in plan["trip_blocked"]:
+            if self._trip_report_warned.get(r["id"]) != today:
+                self._trip_report_warned[r["id"]] = today
+                self.logger.warning(
+                    f"  [정리] 취소 보류 req#{r['id']} emp={r['employee_id']} "
+                    f"event={r['external_event_id']} — 출장보고서가 있어 취소하지 않음"
+                )
+
+        if plan["total"] > CLEANUP_SAFETY_CAP:
+            self.logger.warning(
+                f"  [정리] 대상 {plan['total']}건(취소 {len(plan['cancels'])} / 단축 "
+                f"{len(plan['shortens'])})이 상한 {CLEANUP_SAFETY_CAP} 초과 → 아무것도 하지 않음. "
+                f"대상 req: {[r['id'] for r in plan['cancels'] + plan['shortens']]}"
+            )
+            return empty
+        if plan["total"] == 0:
+            return empty
+        return execute_cleanup(self.db, plan, today, cat_types, self.logger)
 
     def purge_old_data(self):
         """데이터 보관기간 정리. PURGE_ENABLED=False면 대상 건수만 로그(dry-run).
@@ -857,7 +860,7 @@ class Syncer:
         self.logger.info("=== [PURGE] 데이터 보관기간 정리 종료 ===")
 
     def _should_run_now(self, now_kst: datetime) -> bool:
-        """지금이 실행 시각(RUN_HOUR:RUN_MINUTE)이고, 오늘 아직 안 돌았으면 True."""
+        """공휴일·purge: 지금이 실행 시각(RUN_HOUR)이고, 오늘 아직 안 돌았으면 True."""
         if now_kst.hour != RUN_HOUR:
             return False
         # 같은 날 중복 방지
@@ -866,13 +869,31 @@ class Syncer:
             return False
         return True
 
+    def run_loop_once(self, now_kst: datetime) -> None:
+        """메인 루프 한 번 — 04:00 공휴일·purge, N분마다 일정 동기화."""
+        if self._should_run_now(now_kst):
+            self.logger.info(
+                f"공휴일·purge 실행 시각 도달 ({now_kst.strftime('%Y-%m-%d %H:%M:%S')} KST)"
+            )
+            self.sync_holidays()
+            try:
+                self.purge_old_data()
+            except Exception as e:
+                self.logger.exception(f"[PURGE] purge_old_data 예외 (계속 진행): {e}")
+            self.last_run_date = now_kst.date()
+
+        if self.events_sync_due(now_kst):
+            try:
+                self.sync_events(now_kst)
+            except Exception as e:
+                self.logger.exception(f"sync_events 예외 (계속 진행): {e}")
+
     def run(self):
         """메인 루프.
 
         - HTTP 서버를 별도 스레드(daemon)로 먼저 시작 (재고관리 연동용)
-        - 부팅 직후 1회 즉시 sync_once 실행 (검증 편의)
-        - 그 후 매 60초마다 깨어나서 04:00 도달 체크
-        - 04:00이면 sync_once 실행, last_run_date 갱신
+        - 부팅 직후: 공휴일 1번 + 일정 동기화 1번
+        - 그 후 매 60초마다 깨어나서 04:00(공휴일·purge)과 일정 동기화 주기 체크
         """
         # HTTP 서버를 별도 스레드로 시작 (데몬 스레드, 메인 종료 시 함께 종료)
         # threaded=True: Flask 기본은 single-threaded, 동시 요청 처리 위해 활성화
@@ -892,30 +913,17 @@ class Syncer:
             f"HTTP 서버 시작 (포트 {self.config.http_port}, 내부망 전용)"
         )
 
-        # 부팅 즉시 1회 실행 (검증/디버깅 편의)
+        # 부팅 직후: 공휴일 1번 + 일정 동기화 1번
+        self.logger.info("부팅 직후 공휴일 1번 + 일정 동기화 1번")
+        self.sync_holidays()
+        self.last_run_date = datetime.now(KST).date()
         try:
-            self.logger.info("부팅 직후 즉시 1회 실행 (검증용)")
-            self.sync_once()
-            self.last_run_date = datetime.now(KST).date()
+            self.sync_events()
         except Exception as e:
-            self.logger.exception(f"초기 sync_once 예외 (계속 진행): {e}")
+            self.logger.exception(f"초기 sync_events 예외 (계속 진행): {e}")
 
-        # 메인 루프: 1분마다 깨어나서 04:00 체크
         while self.running:
-            now_kst = datetime.now(KST)
-            if self._should_run_now(now_kst):
-                self.logger.info(
-                    f"실행 시각 도달 ({now_kst.strftime('%Y-%m-%d %H:%M:%S')} KST)"
-                )
-                try:
-                    self.sync_once()
-                except Exception as e:
-                    self.logger.exception(f"sync_once 예외 (계속 진행): {e}")
-                try:
-                    self.purge_old_data()
-                except Exception as e:
-                    self.logger.exception(f"[PURGE] purge_old_data 예외 (계속 진행): {e}")
-                self.last_run_date = now_kst.date()
+            self.run_loop_once(datetime.now(KST))
 
             if not self.running:
                 break

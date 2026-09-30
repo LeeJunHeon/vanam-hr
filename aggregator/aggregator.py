@@ -141,6 +141,8 @@ class Aggregator:
         # - 연결 복귀 시 해당 emp 제거 → 다시 끊기면 같은 날에도 재발송
         # - 날짜가 바뀌면 기록값이 오늘과 달라 자동으로 재발송 허용
         self._disconnect_notified: dict[int, str] = {}
+        # 출퇴근 시각이 남은 calendar 흔적 행 warning 을 하루 1번만: {(emp_id, work_date): 오늘 date}
+        self._trace_times_warned: dict = {}
         # 출근 미감지(no-show) 알림 중복 발송 방지용 메모리 상태: {emp_id: "YYYY-MM-DD"}
         # - 출근시각+유예분 경과 후 출근 기록 없으면 오늘 날짜 기록(같은 날 재발송 X)
         # - 날짜가 바뀌면 기록값이 오늘과 달라 자동으로 재발송 허용
@@ -355,7 +357,9 @@ class Aggregator:
                 else:
                     skip_no_data += 1
                 if result == "no_data":
-                    self._cleanup_request_trace_row(emp, work_date)
+                    self._cleanup_request_trace_row(
+                        emp, work_date, cutoff_hour=cutoff_hour, allow_times_delete=True
+                    )
 
             # 근무중 끊김 알림 — 오늘 work_date 에 대해서만 점검
             try:
@@ -1055,15 +1059,22 @@ class Aggregator:
             return True
         return False
 
-    def _cleanup_request_trace_row(self, emp: dict, work_date) -> None:
+    def _cleanup_request_trace_row(
+        self, emp: dict, work_date, cutoff_hour: int = 4, allow_times_delete: bool = False
+    ) -> None:
         """no_data 로 끝난 날의 '요청 흔적 행' 정리.
 
         신청(정정 제외)이 하나도 없는 날에만 적용한다 — 신청이 있는 날의 no_data(시간형 일정이
         아직 시작 전)는 웹이 미리 적어둔 행을 지키기 위해 건드리지 않는다(판정은 SQL 이 한다).
         - 요청 흔적 행(calendar 보정 + 출퇴근 없음 + 미확정 + 사유 없음·첨부 없음) → 삭제 + info
-        - 출퇴근 시각이 있는 calendar 행인데 raw 도 신청도 없음 → 지우지 않고 warning
+        - 출퇴근 시각이 있는 calendar 흔적 행(시간형 일정 때문에 시각이 붙었던 행):
+          · 메인 루프(allow_times_delete=True)에서, 그 work_date 창에 presence_raw 가 0건이고
+            창 끝 이전 마지막 상태가 online 이 아니면(무기록 결근 판정과 같은 검사) 삭제 + info
+          · 그 외(마지막 상태 online, 재계산 루프 등)는 남기고 warning (같은 직원·날짜 하루 1번)
+            재계산 루프는 오래된 raw 가 보관기간 정리로 없을 수 있어 지우지 않는다.
         """
         emp_id = emp["id"]
+        label = f"직원 {emp_id}({emp.get('employee_no')}/{emp.get('name')}) work_date={work_date}"
         try:
             outcome = self.db.cleanup_request_trace_row(emp_id, work_date)
         except Exception as e:
@@ -1072,14 +1083,38 @@ class Aggregator:
             )
             return
         if outcome == "deleted":
-            self.logger.info(
-                f"  [흔적정리] 직원 {emp_id}({emp.get('employee_no')}/{emp.get('name')}) "
-                f"work_date={work_date} — 신청 없는 요청 흔적 행 삭제"
-            )
-        elif outcome == "has_times":
+            self.logger.info(f"  [흔적정리] {label} — 신청 없는 요청 흔적 행 삭제")
+            return
+        if outcome != "has_times":
+            return
+
+        if allow_times_delete:
+            try:
+                has_raw = self.db.has_presence_on_work_date(emp_id, work_date, cutoff_hour)
+                last = None
+                if not has_raw:
+                    from datetime import datetime as _dt3, time as _time3, timedelta as _td3
+                    _day_end = _dt3.combine(work_date, _time3(hour=cutoff_hour), tzinfo=KST) + _td3(days=1)
+                    last = self.db.get_last_presence_status(emp_id, before=_day_end)
+                if not has_raw and not (last and last["status"] == "online"):
+                    deleted = self.db.delete_trace_row_with_times(emp_id, work_date)
+                    if deleted is not None:
+                        self.logger.info(
+                            f"  [흔적정리] {label} — 출퇴근 시각이 남은 calendar 흔적 행 삭제 "
+                            f"(raw 없음, 마지막 상태 {last['status'] if last else '없음'}): "
+                            f"check_in={deleted[0]}, check_out={deleted[1]}"
+                        )
+                        return
+            except Exception as e:
+                self.logger.error(f"  [흔적정리] {label} 시각 있는 흔적 행 처리 예외: {e}")
+                return
+
+        today_key = datetime.now(KST).date()
+        if self._trace_times_warned.get((emp_id, work_date)) != today_key:
+            self._trace_times_warned[(emp_id, work_date)] = today_key
             self.logger.warning(
-                f"  [흔적정리] 직원 {emp_id}({emp.get('employee_no')}/{emp.get('name')}) "
-                f"work_date={work_date} — 출퇴근 시각이 있는 calendar 행인데 raw·신청 없음, 유지"
+                f"  [흔적정리] {label} — 출퇴근 시각이 있는 calendar 행인데 신청 없음, 유지"
+                f"{'' if allow_times_delete else ' (재계산 경로)'}"
             )
 
     def _sync_manual_row_category(

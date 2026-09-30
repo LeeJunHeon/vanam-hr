@@ -3,8 +3,11 @@
 Phase 6-2A: 캘린더 소스/키워드 룰 조회 추가 (읽기 전용).
 Phase 6-2B: attendance_requests UPSERT 추가 (캘린더 일정 → 자동 결재 요청).
 Phase 6-2L+ B-2: 공휴일 캘린더 → hr.holidays UPSERT.
+B-다: 일정 동기화는 calendar_sync.py 가 판단하고, 여기는 작은 SQL 함수만 둔다.
+      한 행의 신청 변경 + 근태 반영은 transaction() 으로 묶는다(끝나면 autocommit 복원).
 """
 
+from contextlib import contextmanager
 from datetime import date, datetime
 from typing import Optional
 
@@ -22,6 +25,7 @@ class Database:
             "password": password,
         }
         self.conn = None
+        self._in_tx = False
         self._connect()
 
     def _connect(self):
@@ -38,7 +42,9 @@ class Database:
             c.execute("SET TIME ZONE 'Asia/Seoul'")
 
     def _ensure_connected(self):
-        """매 쿼리 전 ping. 끊겼으면 재연결."""
+        """매 쿼리 전 ping. 끊겼으면 재연결. 트랜잭션 중에는 재연결하지 않는다."""
+        if self._in_tx:
+            return
         try:
             with self.conn.cursor() as c:
                 c.execute("SELECT 1")
@@ -150,72 +156,50 @@ class Database:
                 })
         return result
 
-    def upsert_attendance_request(
-        self,
-        employee_id: int,
-        category_id: int,
-        start_date: str,        # "YYYY-MM-DD"
-        end_date: str,          # "YYYY-MM-DD"
-        external_event_id: str,
-        reason: str,
-        corrected_check_in: Optional[datetime] = None,    # 시간 지정 일정만
-        corrected_check_out: Optional[datetime] = None,
-    ) -> int:
-        """Google Calendar 일정 → attendance_request UPSERT.
+    # ========================================================================
+    # 일정 동기화 (B-다) — 판단은 calendar_sync.py. 여기는 SQL 만.
+    # ========================================================================
 
-        UNIQUE (external_source, external_event_id)로 중복 방지.
-        캘린더 일정 수정 시 자동 UPDATE (employee/category/날짜/이유 모두 갱신).
-        신규 생성 시에는 같은 카테고리의 HR 신청과 기간이 겹치는지 검사해, 겹치면 만들지 않는다
-        (연차 이중 차감 방지). 이미 만들어 둔 행은 검사 없이 갱신한다.
+    @contextmanager
+    def transaction(self):
+        """이 블록만 트랜잭션(autocommit=False). 끝나면 commit/rollback 후 autocommit 복원."""
+        self._ensure_connected()
+        self.conn.autocommit = False
+        self._in_tx = True
+        try:
+            yield
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            self._in_tx = False
+            self.conn.autocommit = True
 
-        Args:
-            employee_id: 매칭된 직원 ID
-            category_id: 판정된 카테고리 ID (ANNUAL, BUSINESS_TRIP, ETC 등)
-            start_date: 일정 시작 날짜 "YYYY-MM-DD"
-            end_date: 일정 종료 날짜 "YYYY-MM-DD" (inclusive)
-            external_event_id: Google Calendar event id
-            reason: 일정 제목 (캘린더 summary 그대로)
-            corrected_check_in: 시간 지정 일정의 시작 시각 (TIMESTAMPTZ), 종일은 None
-            corrected_check_out: 시간 지정 일정의 종료 시각 (TIMESTAMPTZ), 종일은 None
-
-        Returns:
-            INSERT/UPDATE된 attendance_request id.
-            신규 생성인데 같은 카테고리의 HR 신청과 기간이 겹치면 -1 (생성하지 않음).
-        """
-        sql = """
-            INSERT INTO hr.attendance_requests (
-                employee_id, category_id, request_type,
-                start_date, end_date, reason,
-                corrected_check_in, corrected_check_out,
-                external_source, external_event_id,
-                status, requested_at, updated_at
-            )
-            VALUES (
-                %s, %s, 'calendar_auto',
-                %s, %s, %s,
-                %s, %s,
-                'google_calendar', %s,
-                'auto_approved', NOW(), NOW()
-            )
-            ON CONFLICT (external_source, external_event_id, employee_id)
-            DO UPDATE SET
-                category_id = EXCLUDED.category_id,
-                start_date = EXCLUDED.start_date,
-                end_date = EXCLUDED.end_date,
-                reason = EXCLUDED.reason,
-                corrected_check_in = EXCLUDED.corrected_check_in,
-                corrected_check_out = EXCLUDED.corrected_check_out,
-                status = 'auto_approved',
-                updated_at = NOW()
-            RETURNING id
-        """
+    def get_policy(self, key: str) -> Optional[str]:
+        """hr.policy_settings 단일 값. 없으면 None."""
         self._ensure_connected()
         with self.conn.cursor() as c:
-            # 이 구글 이벤트로 이미 만들어 둔 행이 있으면 겹침 검사 없이 그대로 UPSERT(=UPDATE) 한다.
-            # 캘린더에서 일정을 수정했을 때 그 변경이 반영되어야 하기 때문이다.
+            c.execute("SELECT value FROM hr.policy_settings WHERE key = %s", (key,))
+            row = c.fetchone()
+            return row[0] if row else None
+
+    def get_category_types(self) -> dict:
+        """{category_id: type} — 근태 반영 대상(휴가·외근) 판정용."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute("SELECT id, type FROM hr.attendance_categories")
+            return {r[0]: r[1] for r in c.fetchall()}
+
+    def find_calendar_request(self, external_event_id: str, employee_id: int) -> Optional[dict]:
+        """이 일정·직원의 google_calendar 신청 행 (없으면 None)."""
+        self._ensure_connected()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as c:
             c.execute(
                 """
-                SELECT id FROM hr.attendance_requests
+                SELECT id, status, cancel_source, category_id, start_date, end_date,
+                       reason, corrected_check_in, corrected_check_out
+                FROM hr.attendance_requests
                 WHERE external_source = 'google_calendar'
                   AND external_event_id = %s
                   AND employee_id = %s
@@ -223,38 +207,232 @@ class Database:
                 """,
                 (external_event_id, employee_id),
             )
-            already_exists = c.fetchone() is not None
-
-            if not already_exists:
-                # 신규 생성일 때만 HR 신청과의 중복을 검사한다.
-                # 연차를 HR 에 신청하고 구글 캘린더에도 적어두는 관행 때문에 같은 일정이
-                # 2건이 되어 연차가 이중 차감됐다(215/224, 237/348). 2026-09 수정.
-                # 카테고리가 같을 때만 중복으로 본다 — 연차 기간에 겹치는 출장·재택 등
-                # 다른 종류의 일정까지 막으면 안 된다.
-                c.execute(
-                    """
-                    SELECT id FROM hr.attendance_requests
-                    WHERE employee_id = %s
-                      AND category_id = %s
-                      AND request_type <> 'calendar_auto'
-                      AND status IN ('approved', 'auto_approved', 'auto_delegated', 'pending')
-                      AND start_date <= %s::date
-                      AND end_date   >= %s::date
-                    LIMIT 1
-                    """,
-                    (employee_id, category_id, end_date, start_date),
-                )
-                if c.fetchone():
-                    return -1  # HR 신청과 같은 카테고리·겹치는 기간 → 캘린더발 요청을 만들지 않음
-
-            c.execute(sql, (
-                employee_id, category_id,
-                start_date, end_date, reason,
-                corrected_check_in, corrected_check_out,
-                external_event_id,
-            ))
             row = c.fetchone()
-            return row[0]
+            return dict(row) if row else None
+
+    def hr_overlap_exists(self, employee_id: int, category_id: int, start_date: date, end_date: date) -> bool:
+        """같은 카테고리의 HR 신청과 기간이 겹치는가 (새로 만들거나 되살릴 때만 검사).
+
+        연차를 HR 에 신청하고 구글 캘린더에도 적어두는 관행 때문에 같은 일정이
+        2건이 되어 연차가 이중 차감됐다(215/224, 237/348). 2026-09 수정.
+        카테고리가 같을 때만 중복으로 본다 — 연차 기간에 겹치는 출장·재택 등
+        다른 종류의 일정까지 막으면 안 된다.
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                SELECT id FROM hr.attendance_requests
+                WHERE employee_id = %s
+                  AND category_id = %s
+                  AND request_type <> 'calendar_auto'
+                  AND status IN ('approved', 'auto_approved', 'auto_delegated', 'pending')
+                  AND start_date <= %s::date
+                  AND end_date   >= %s::date
+                LIMIT 1
+                """,
+                (employee_id, category_id, end_date, start_date),
+            )
+            return c.fetchone() is not None
+
+    def insert_calendar_request(self, employee_id: int, external_event_id: str, new: dict) -> int:
+        """새 google_calendar 신청 (auto_approved). 반환: id."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                INSERT INTO hr.attendance_requests (
+                    employee_id, category_id, request_type,
+                    start_date, end_date, reason,
+                    corrected_check_in, corrected_check_out,
+                    external_source, external_event_id,
+                    status, requested_at, updated_at
+                )
+                VALUES (%s, %s, 'calendar_auto', %s, %s, %s, %s, %s,
+                        'google_calendar', %s, 'auto_approved', NOW(), NOW())
+                RETURNING id
+                """,
+                (
+                    employee_id, new["category_id"],
+                    new["start_date"], new["end_date"], new.get("reason"),
+                    new.get("ci"), new.get("co"),
+                    external_event_id,
+                ),
+            )
+            return c.fetchone()[0]
+
+    def update_calendar_request(
+        self,
+        request_id: int,
+        expected_status: str,
+        expected_cancel_source: Optional[str],
+        new: dict,
+        revive: bool,
+    ) -> bool:
+        """값 갱신(조건: 읽은 상태 그대로). revive=True 면 auto_approved + cancel_source NULL.
+        0건(그 사이 웹 취소 등)이면 False."""
+        self._ensure_connected()
+        status_sql = ", status = 'auto_approved', cancel_source = NULL" if revive else ""
+        cancel_cond = "AND cancel_source = %s" if expected_cancel_source is not None else ""
+        params = [
+            new["category_id"], new["start_date"], new["end_date"], new.get("reason"),
+            new.get("ci"), new.get("co"), request_id, expected_status,
+        ]
+        if expected_cancel_source is not None:
+            params.append(expected_cancel_source)
+        with self.conn.cursor() as c:
+            c.execute(
+                f"""
+                UPDATE hr.attendance_requests
+                SET category_id = %s, start_date = %s, end_date = %s, reason = %s,
+                    corrected_check_in = %s, corrected_check_out = %s,
+                    updated_at = NOW(){status_sql}
+                WHERE id = %s
+                  AND external_source = 'google_calendar'
+                  AND status = %s
+                  {cancel_cond}
+                """,
+                params,
+            )
+            return c.rowcount == 1
+
+    def list_live_calendar_requests_covering(self, today: date) -> list[dict]:
+        """오늘을 덮는 살아 있는 google_calendar 신청 (정리 후보)."""
+        self._ensure_connected()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute(
+                """
+                SELECT id, employee_id, external_event_id, start_date, end_date,
+                       category_id, status, corrected_check_in, corrected_check_out
+                FROM hr.attendance_requests
+                WHERE external_source = 'google_calendar'
+                  AND status IN ('approved', 'auto_approved', 'auto_delegated')
+                  AND start_date <= %s
+                  AND end_date >= %s
+                ORDER BY id
+                """,
+                (today, today),
+            )
+            return [dict(r) for r in c.fetchall()]
+
+    def has_trip_report(self, request_id: int) -> bool:
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                "SELECT 1 FROM hr.trip_reports WHERE attendance_request_id = %s LIMIT 1",
+                (request_id,),
+            )
+            return c.fetchone() is not None
+
+    def cancel_calendar_request(self, request_id: int, expected_status: str, expected_end: date) -> bool:
+        """캘린더에서 빠진 오늘 시작 기록 취소 (cancel_source='calendar_sync'). 조건부."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                UPDATE hr.attendance_requests
+                SET status = 'cancelled', cancel_source = 'calendar_sync', updated_at = NOW()
+                WHERE id = %s AND external_source = 'google_calendar'
+                  AND status = %s AND end_date = %s
+                """,
+                (request_id, expected_status, expected_end),
+            )
+            return c.rowcount == 1
+
+    def shorten_calendar_request(
+        self, request_id: int, expected_status: str, expected_end: date, new_end: date
+    ) -> bool:
+        """캘린더에서 빠진 지난 시작 기록의 종료일을 어제로 단축(지난 날 보존). 조건부."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                UPDATE hr.attendance_requests
+                SET end_date = %s, updated_at = NOW()
+                WHERE id = %s AND external_source = 'google_calendar'
+                  AND status = %s AND end_date = %s
+                """,
+                (new_end, request_id, expected_status, expected_end),
+            )
+            return c.rowcount == 1
+
+    # ── 근태(attendance_daily) 반영 — calendar_sync.reflect_removed_day 가 쓴다 ──
+
+    def get_daily_row(self, employee_id: int, work_date: date) -> Optional[dict]:
+        self._ensure_connected()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute(
+                """
+                SELECT id, is_overridden, override_source, category_id, check_in, check_out
+                FROM hr.attendance_daily
+                WHERE employee_id = %s AND work_date = %s
+                """,
+                (employee_id, work_date),
+            )
+            row = c.fetchone()
+            return dict(row) if row else None
+
+    def find_live_leave_work_requests(
+        self, employee_id: int, work_date: date, exclude_request_id: Optional[int]
+    ) -> list[dict]:
+        """그 날을 덮는 살아 있는 휴가·외근(출처 무관), id 오름차순.
+        lib/attendance-live-requests.ts findLiveLeaveWorkRequests 와 같은 조건."""
+        self._ensure_connected()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute(
+                """
+                SELECT r.id, r.category_id
+                FROM hr.attendance_requests r
+                JOIN hr.attendance_categories cat ON cat.id = r.category_id
+                WHERE r.employee_id = %s
+                  AND r.status IN ('approved', 'auto_approved', 'auto_delegated')
+                  AND r.start_date <= %s AND r.end_date >= %s
+                  AND cat.type IN ('leave', 'long_leave', 'work')
+                  AND (%s::int IS NULL OR r.id <> %s::int)
+                ORDER BY r.id
+                """,
+                (employee_id, work_date, work_date, exclude_request_id, exclude_request_id),
+            )
+            return [dict(r) for r in c.fetchall()]
+
+    def set_daily_category(self, daily_id: int, category_id: Optional[int]) -> None:
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                "UPDATE hr.attendance_daily SET category_id = %s, updated_at = NOW() WHERE id = %s",
+                (category_id, daily_id),
+            )
+
+    def delete_daily_if_no_files(self, daily_id: int) -> bool:
+        """사유 첨부가 없을 때만 행 삭제."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                DELETE FROM hr.attendance_daily d
+                WHERE d.id = %s
+                  AND NOT EXISTS (SELECT 1 FROM hr.attendance_reason_files f WHERE f.daily_id = d.id)
+                """,
+                (daily_id,),
+            )
+            return c.rowcount == 1
+
+    def mark_recalc(self, employee_id: int, work_date: date) -> None:
+        """지난 날 재계산 표시 — lib/attendance-recalc.ts markAttendanceRecalc 와 같다
+        (한쪽을 바꾸면 다른 쪽도). 호출자가 오늘 미만만 넘긴다.
+        행이 있으면 needs_recalc=true, 없으면 needs_recalc 만 켠 빈 행."""
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                INSERT INTO hr.attendance_daily
+                    (employee_id, work_date, needs_recalc, created_at, updated_at)
+                VALUES (%s, %s, true, NOW(), NOW())
+                ON CONFLICT (employee_id, work_date)
+                DO UPDATE SET needs_recalc = true
+                """,
+                (employee_id, work_date),
+            )
 
     def get_holiday_calendar_id(self) -> Optional[str]:
         """Phase 6-2L+ B-2: hr.policy_settings에서 'holiday_calendar_id' 값 조회.

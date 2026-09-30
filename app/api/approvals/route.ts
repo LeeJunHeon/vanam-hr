@@ -16,7 +16,7 @@ import {
 } from "@/lib/trip-calendar";
 import { createNotifications } from "@/lib/notify";
 import { sweepEligibleDelegations } from "@/lib/sweep-delegations";
-import { checkLeaveRequest } from "@/lib/annual-leave";
+import { checkLeaveRequest, computeLeaveAmount } from "@/lib/annual-leave";
 
 // 결재함 조회 시 위임 자동 마감을 throttle로 트리거(B). 모듈 레벨 상태.
 const DELEGATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 결재함 조회 트리거 throttle
@@ -383,6 +383,16 @@ export async function GET(request: NextRequest) {
     for (const it of attendanceItems) {
       if (it.leaveDeductPerDay <= 0) continue;
       if (it.status !== "pending" && it.status !== "approved") continue;
+      if (it.status === "approved") {
+        // 처리 완료 목록은 차감량만 — 잔여·대기 조회 없이 근무일 × 계수만 센다
+        it.leaveRequestAmount = await computeLeaveAmount(
+          it.employeeId,
+          new Date(it.startDate + "T00:00:00.000Z"),
+          new Date(it.endDate + "T00:00:00.000Z"),
+          it.leaveDeductPerDay
+        );
+        continue;
+      }
       const check = await checkLeaveRequest(
         it.employeeId,
         new Date(it.startDate + "T00:00:00.000Z"),

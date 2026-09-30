@@ -142,6 +142,7 @@ export async function GET(request: NextRequest) {
         calendarEventDescription: r.calendarEventDescription ?? null,
         externalSource: r.externalSource ?? null,
         externalEventId: r.externalEventId ?? null,
+        cancelSource: r.cancelSource ?? null,
       }))
     );
   } catch (error) {
@@ -343,7 +344,8 @@ export async function PUT(request: NextRequest) {
         // 조회 이후 상태가 바뀌었으면(동시 승인·취소) 409
         const upd = await tx.attendanceRequest.updateMany({
           where: { id: idNum, status: before.status },
-          data: { status: "cancelled" },
+          // 사람 취소 — calendar-syncer 는 이 행을 캘린더에 일정이 남아 있어도 되살리지 않는다
+          data: { status: "cancelled", cancelSource: "user" },
         });
         if (upd.count === 0) return null;
 

@@ -48,11 +48,13 @@ class CalendarClient:
         """해당 캘린더의 일정 조회 (singleEvents=True, startTime 정렬).
 
         time_min/time_max는 timezone-aware datetime이어야 함 (isoformat으로 변환).
-        페이지네이션은 1단계에선 생략하고 max_results 250으로 충분.
+        nextPageToken 을 따라 모든 페이지를 합쳐 반환한다(페이지당 max_results).
+        페이지 도중 예외는 그대로 올린다 — 호출자가 이 캘린더를 "조회 실패"로 본다.
         """
-        resp = (
-            self.service.events()
-            .list(
+        items: list[dict] = []
+        page_token = None
+        while True:
+            params = dict(
                 calendarId=calendar_id,
                 timeMin=time_min.isoformat(),
                 timeMax=time_max.isoformat(),
@@ -60,9 +62,13 @@ class CalendarClient:
                 orderBy="startTime",
                 maxResults=max_results,
             )
-            .execute()
-        )
-        return resp.get("items", [])
+            if page_token:
+                params["pageToken"] = page_token
+            resp = self.service.events().list(**params).execute()
+            items.extend(resp.get("items", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                return items
 
     def parse_event(self, event: dict) -> dict:
         """일정 1건에서 필요한 필드 추출.

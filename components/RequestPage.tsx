@@ -54,6 +54,7 @@ interface AttendanceRequest {
   calendarEventTitle: string | null;
   calendarEventDescription: string | null;
   externalSource: string | null;
+  cancelSource?: string | null;
   externalEventId: string | null;
 }
 
@@ -751,9 +752,13 @@ export default function RequestPage() {
 
   const handleCancel = async (r: AttendanceRequest) => {
     if (!currentId) return;
+    const calendarNote =
+      r.externalSource === "google_calendar"
+        ? "\n구글 캘린더 일정은 지워지지 않고 근태 기록에서만 빠집니다. 캘린더가 다시 동기화돼도 되살아나지 않습니다."
+        : "";
     if (
       !confirm(
-        `"${r.categoryName}" 결재 요청을 취소하시겠습니까?\n취소 후에는 복구할 수 없습니다.`
+        `"${r.categoryName}" 결재 요청을 취소하시겠습니까?\n취소 후에는 복구할 수 없습니다.${calendarNote}`
       )
     )
       return;
@@ -1446,7 +1451,9 @@ export default function RequestPage() {
                           className="text-xs font-semibold px-2 py-0.5 rounded-full shrink-0"
                           style={statusBadge(r.status)}
                         >
-                          {getStatusLabel(r.status)}
+                          {r.status === "cancelled" && r.cancelSource === "calendar_sync"
+                            ? "취소됨 (캘린더에서 빠짐)"
+                            : getStatusLabel(r.status)}
                         </span>
                       </div>
 
@@ -1569,7 +1576,9 @@ export default function RequestPage() {
                               onClick={() => handleCancel(r)}
                               className="p-1.5 rounded-lg hover:bg-rose-100 text-gray-400 hover:text-rose-600"
                               title={
-                                isPending
+                                r.externalSource === "google_calendar"
+                                  ? "취소 (근태에서만 제외 — 구글 캘린더 일정은 그대로)"
+                                  : isPending
                                   ? "취소"
                                   : "취소 (캘린더 일정 함께 삭제)"
                               }
