@@ -75,6 +75,14 @@ from typing import Optional
 from config import load_config
 from db import Database
 from logger import setup_logger
+from day_rules import (
+    LEAVE_TYPES,
+    day_alert_context,
+    effective_work_window,
+    eval_keys,
+    leave_intervals,
+    shift_bounds,
+)
 
 # 한국 시간대 (UTC+9, DST 없음) — 끊김 알림에서 KST 비교용
 KST = timezone(timedelta(hours=9))
@@ -591,6 +599,8 @@ class Aggregator:
 
         # 시프트 로깅에 쓰일 정보 (분기 둘 다에서 필요)
         shift_info = self.db.get_employee_shift(emp_id, work_date)
+        # 반차 등 시간형 휴가가 있는 날의 유효 근무 구간 (day_rules.effective_work_window)
+        leave_window = None
 
         if active_requests:
             # ── work_date의 실제 시간 범위 [day_start, day_end) 계산 (cutoff 기준) ──
@@ -634,6 +644,23 @@ class Aggregator:
                 and r["corrected_check_out"] is not None
                 and _in_work_date(r["corrected_check_in"])
             ]
+            # 시간형 휴가(반차 등)와 시간형 근무(외근·출장·재택)를 나눈다.
+            # - 시간형 휴가: 출퇴근에 합치지 않고, 유효 근무 구간(기준 출퇴근·의무 시간)으로 판정한다.
+            # - 시간형 근무: 기존 그대로(출퇴근 합치기, timed_trip_exempt·margin 정책, 진행 중 보류).
+            in_range_leave = [
+                r for r in in_range_timed if r.get("category_type") in LEAVE_TYPES
+            ]
+            in_range_work = [
+                r for r in in_range_timed if r.get("category_type") not in LEAVE_TYPES
+            ]
+            if in_range_leave:
+                _bounds = shift_bounds(work_date, shift_info)
+                if _bounds is not None:
+                    leave_window = effective_work_window(
+                        _bounds[0], _bounds[1], leave_intervals(in_range_leave)
+                    )
+            # 이미 시작된 시간형 휴가 — WiFi 가 없어도 행을 만든다(화면이 반차 중임을 보여 주도록)
+            started_leave = [r for r in in_range_leave if r["corrected_check_in"] <= now]
 
             # 시간형 일정(범위 내) vs 종일 일정 구분
             # 종일: corrected 둘 중 하나라도 None (날짜 범위로만 판단, 경계 필터 제외)
@@ -642,10 +669,11 @@ class Aggregator:
                 for r in active_requests
             )
 
-            # 정책1: 이미 시작된 부분만 합산 (미래 시작 제외) + work_date 범위 내 시간형만
+            # 정책1: 이미 시작된 부분만 합산 (미래 시작 제외) + work_date 범위 내 시간형 근무만
+            #        (시간형 휴가는 합치지 않는다 — 오전반차 뒤 늦게 와도 출근이 09:00 으로 잡히던 문제)
             cal_in_candidates = []
             cal_out_candidates = []
-            for r in in_range_timed:
+            for r in in_range_work:
                 ci = r["corrected_check_in"]
                 co = r["corrected_check_out"]
                 if ci <= now:
@@ -671,7 +699,8 @@ class Aggregator:
                 )
 
             # 정책1: 시작된 것도 없고 종일도 없고 WiFi도 없으면 → 아직 기록 없음
-            if not has_allday and check_in is None and check_out is None:
+            #        (시간형 휴가가 시작됐으면 행을 만든다)
+            if not has_allday and check_in is None and check_out is None and not started_leave:
                 return "no_data"
 
             # 정책2: 대표 카테고리 — work_date 범위 내 시간형 + 종일 일정만 후보.
@@ -692,7 +721,7 @@ class Aggregator:
             # 종일 휴가/출장이면 결근/조퇴 판정 면제(정상). (기존 동작)
             # 정책1(timed_trip_exempt): 켜지면 시간형 출장/외근이 있는 날도 면제(normal).
             # 정책3(margin): 정책1이 꺼졌을 때만, 출장 시간 + 앞뒤 마진만큼 의무시간 차감.
-            has_timed_trip = len(in_range_timed) > 0
+            has_timed_trip = len(in_range_work) > 0
             # 외근/출장이 "지금 진행 중"(시작 <= now < 종료)이면 아직 하루가 안 끝난 것.
             # 점심 끊김 등을 미리 퇴근/조퇴로 확정하지 않도록 판정을 보류한다.
             # 외근이 끝난 뒤 재연결이 없으면 다음 사이클에 위 융합으로 check_out=외근종료가
@@ -701,9 +730,13 @@ class Aggregator:
                 r["corrected_check_in"] is not None
                 and r["corrected_check_out"] is not None
                 and r["corrected_check_in"] <= now < r["corrected_check_out"]
-                for r in in_range_timed
+                for r in in_range_work
             )
             if has_allday:
+                auto_status = "normal"
+                is_late_flag, is_early_flag = False, False
+            elif leave_window is not None and leave_window["full_cover"]:
+                # 시간형 휴가가 시프트 전체를 덮음 → 종일과 같게
                 auto_status = "normal"
                 is_late_flag, is_early_flag = False, False
             elif timed_trip_exempt and has_timed_trip:
@@ -716,10 +749,11 @@ class Aggregator:
                 check_out = None
                 auto_status = "working"
                 is_late_flag, is_early_flag = None, None  # 판정 보류
-            elif check_in is not None and check_out is not None:
-                # 정책3용: 이 work_date 범위 내 시간형 일정 총 시간(분) 합산
+            elif check_in is not None and (check_out is not None or leave_window is not None):
+                # 정책3용: 이 work_date 범위 내 시간형 근무 총 시간(분) 합산
+                # (반차 날은 퇴근 전에도 기준 출근으로 지각을 판정한다)
                 trip_minutes = 0
-                for r in in_range_timed:
+                for r in in_range_work:
                     ci = r["corrected_check_in"]
                     co = r["corrected_check_out"]
                     if ci is not None and co is not None and co > ci:
@@ -736,10 +770,25 @@ class Aggregator:
                     trip_minutes=trip_minutes,
                     margin_hours=timed_event_margin_hours,
                     is_holiday=(holiday_name is not None),
+                    ref_window=leave_window,
                 )
             elif check_in is not None:
                 auto_status = "working"
                 is_late_flag, is_early_flag = None, None  # 판정 보류
+            elif started_leave:
+                # 시간형 휴가만 있고 출근 기록 없음:
+                #  - 진행 중인 오늘 → 평가 보류
+                #  - 마감된 지난 날 → 결근(구분은 휴가 그대로). 조건은 무기록 결근 행과 같다.
+                is_late_flag, is_early_flag = None, None
+                auto_status = None
+                if (
+                    cycle_today is not None
+                    and work_date < cycle_today
+                    and shift_bounds(work_date, shift_info) is not None
+                    and holiday_name is None
+                    and not self._connected_all_day(emp_id, work_date, cutoff_hour)
+                ):
+                    auto_status = "absent"
             else:
                 auto_status = "normal"
                 is_late_flag, is_early_flag = False, False
@@ -910,6 +959,17 @@ class Aggregator:
                 f", 보정(category_id={category_id}, 요청 {len(active_requests)}건)"
                 if active_requests else ""
             )
+            # 기준 출근·퇴근이 시프트와 다른 날(반차 등)은 기준 시각을 덧붙인다
+            if leave_window is not None and (
+                leave_window["ref_in"] != leave_window["shift_start"]
+                or leave_window["ref_out"] != leave_window["shift_end"]
+                or leave_window["middle_minutes"]
+            ):
+                _ri = leave_window["ref_in"].astimezone(KST).strftime("%H:%M")
+                _ro = leave_window["ref_out"].astimezone(KST).strftime("%H:%M")
+                calendar_label += f", 기준 {_ri}~{_ro}"
+                if leave_window["middle_minutes"]:
+                    calendar_label += f"(가운데 휴가 {leave_window['middle_minutes']}분)"
             self.logger.info(
                 f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} — "
                 f"check_in={check_in}, check_out={check_out}, "
@@ -1188,6 +1248,7 @@ class Aggregator:
         trip_minutes: int = 0,
         margin_hours: float = 0.0,
         is_holiday: bool = False,
+        ref_window: Optional[dict] = None,
     ) -> tuple[Optional[str], Optional[bool], Optional[bool]]:
         """
         정책 A 기반 auto_status 판정.
@@ -1218,6 +1279,12 @@ class Aggregator:
 
         판정 규칙은 aggregator 와 웹(lib/attendance-correction.ts determineAutoStatus·
         determineAttendanceFlags)이 같아야 한다 — 한쪽을 바꾸면 다른 쪽도.
+
+        ref_window(반차 등 시간형 휴가가 있는 날, day_rules.effective_work_window):
+          지각 = 출근 > 기준 출근 + grace_in
+          조퇴 = 퇴근 < 기준 퇴근 − grace_out 이면서 근무시간 < 의무 근무시간
+          의무 근무시간 = 유효 구간 길이 − 가운데 휴가 겹침 − grace_out (점심 차감 정책이 켜져 있으면
+          유효 구간 안의 점심만큼 더 뺀다). ref_window 가 없으면 아래 기존 계산 그대로.
         """
         from datetime import timedelta
 
@@ -1252,6 +1319,13 @@ class Aggregator:
             return None, None, None
 
         # 여기 도달 = check_in은 반드시 있음 (check_out은 있을 수도/없을 수도)
+
+        if ref_window is not None:
+            return self._determine_with_window(
+                check_in, check_out, ref_window, grace_in_minutes, grace_out_minutes,
+                lunch_deduct_enabled, lunch_start_str, lunch_end_str,
+                trip_minutes, margin_hours,
+            )
 
         # 시프트 시작/종료 시각 파싱 ("HH:MM")
         shift_start_str = shift_info["start"]
@@ -1338,6 +1412,65 @@ class Aggregator:
         auto_status = "late" if is_late else ("early_leave" if is_early_leave else "normal")
         return auto_status, is_late, is_early_leave
 
+    def _alert_context(self, emp_id, today, shift, now: datetime) -> dict:
+        """알림 공용 판단 (day_rules.day_alert_context) — 출근 전·출근 미감지·근무 중 끊김이 같이 쓴다.
+        대상 신청 = 살아 있는 휴가·근무(정정 제외, 결재 대기는 get_active_requests 가 돌려주지 않음)."""
+        requests = self.db.get_active_requests(emp_id, today)
+        return day_alert_context(requests, shift, today, now)
+
+    def _connected_all_day(self, emp_id, work_date, cutoff_hour: int) -> bool:
+        """그 work_date 창 끝 이전 마지막 전환이 online — 하루 종일 연결 유지(전환 0건) 예외.
+        무기록 결근 판정과 같은 검사."""
+        from datetime import time as _time4
+        try:
+            _day_end = datetime.combine(work_date, _time4(hour=cutoff_hour), tzinfo=KST) + timedelta(days=1)
+            last = self.db.get_last_presence_status(emp_id, before=_day_end)
+        except Exception as e:
+            self.logger.debug(f"  [absent] get_last_presence_status 실패 (emp={emp_id}): {e}")
+            return False
+        return bool(last and last["status"] == "online")
+
+    def _determine_with_window(
+        self, check_in, check_out, win, grace_in_minutes, grace_out_minutes,
+        lunch_deduct_enabled, lunch_start_str, lunch_end_str, trip_minutes, margin_hours,
+    ):
+        """유효 근무 구간 기준 판정 (반차 등). _determine_auto_status 참고.
+        웹 lib/attendance-correction.ts 의 window 경로와 같은 규칙 — 한쪽을 바꾸면 다른 쪽도."""
+        ref_in, ref_out = win["ref_in"], win["ref_out"]
+        is_late = check_in > ref_in + timedelta(minutes=grace_in_minutes)
+        if check_out is None:
+            return ("late" if is_late else "working"), is_late, None
+
+        def _lunch_bounds(base):
+            ls_h, ls_m = map(int, str(lunch_start_str).split(":"))
+            le_h, le_m = map(int, str(lunch_end_str).split(":"))
+            b = base.astimezone(KST)
+            return (b.replace(hour=ls_h, minute=ls_m, second=0, microsecond=0),
+                    b.replace(hour=le_h, minute=le_m, second=0, microsecond=0))
+
+        def _overlap(a_s, a_e, b_s, b_e):
+            s_, e_ = max(a_s, b_s), min(a_e, b_e)
+            return int((e_ - s_).total_seconds() // 60) if e_ > s_ else 0
+
+        actual_minutes = int((check_out - check_in).total_seconds() / 60)
+        required_minutes = win["window_minutes"] - win["middle_minutes"] - grace_out_minutes
+        if lunch_deduct_enabled:
+            try:
+                l_s, l_e = _lunch_bounds(check_in)
+                actual_minutes -= _overlap(check_in, check_out, l_s, l_e)
+                w_s, w_e = _lunch_bounds(ref_in)
+                required_minutes -= _overlap(ref_in, ref_out, w_s, w_e)
+            except (ValueError, AttributeError):
+                pass
+        if margin_hours > 0:
+            required_minutes -= (trip_minutes + 2 * int(margin_hours * 60))
+        if required_minutes < 0:
+            required_minutes = 0
+        early_threshold = ref_out - timedelta(minutes=grace_out_minutes)
+        is_early_leave = actual_minutes < required_minutes and check_out < early_threshold
+        auto_status = "late" if is_late else ("early_leave" if is_early_leave else "normal")
+        return auto_status, is_late, is_early_leave
+
     def _check_attendance_alerts(self, today, now: datetime, holiday_name=None) -> None:
         """직전 근무일이 비정상인 직원에게 '근태 확인 요청' 메일 발송.
 
@@ -1393,8 +1526,16 @@ class Aggregator:
                 # 아직 출근시각 전 → 다음 사이클에 재시도
                 continue
 
-            status = p["auto_status"]
             work_date = p["work_date"]
+            # 비정상 판단은 평가 키로 (day_rules.eval_keys — 웹 evalKeys 와 같음)
+            keys = eval_keys(
+                p["auto_status"], p.get("is_late"), p.get("is_early_leave"),
+                p.get("check_out") is not None,
+            )
+            bad = [k for k in keys if k in ("absent", "late", "early_leave")]
+            if not bad:
+                continue
+            status = "absent" if "absent" in bad else ("late" if "late" in bad else "early_leave")
 
             # 로그 먼저 → 성공(새 기록) 시에만 발송 (중복 차단)
             try:
@@ -1408,19 +1549,9 @@ class Aggregator:
 
             # 알림 본문 작성 (기존 톤 유지) → createNotifications 경유로 발송
             name = p.get("name", "")
-            # auto_status 는 하나만 담기므로(지각이면 조퇴 검사를 건너뜀) 문구는
-            # is_late / is_early_leave 불린을 조합해 만든다. 화면(전체 근태 조회)과 동일 기준.
+            # 문구는 평가 키(지각·조퇴 플래그 우선)를 조합한다 — 화면(전체 근태 조회)과 동일 기준.
             # 결근은 지각·조퇴와 동시에 나올 수 없어 단독 표시.
-            if status == "absent":
-                status_label = status_kr["absent"]
-            else:
-                labels = []
-                if p.get("is_late"):
-                    labels.append(status_kr["late"])
-                if p.get("is_early_leave"):
-                    labels.append(status_kr["early_leave"])
-                # 불린이 비어 있으면(이론상 없음) auto_status 로 폴백
-                status_label = "·".join(labels) if labels else status_kr.get(status, status)
+            status_label = "·".join(status_kr[k] for k in bad)
             try:
                 dow = weekday_kr[work_date.weekday()]
                 wd_str = f"{work_date.strftime('%Y-%m-%d')}({dow})"
@@ -1447,8 +1578,10 @@ class Aggregator:
           a) 오늘 이미 발송함
           b) 공휴일
           c) 시프트 없음/휴무(off)/시작시각 없음
-          d) 아직 시프트 시작 + 유예분(no_show_alert_minutes, 기본 0(정시)) 전
-          e) 승인된 휴가/출장/외근/정정 등록(active_requests)이 있음
+          d) 아직 기준 출근 + 유예분(no_show_alert_minutes, 기본 0(정시)) 전
+             기준 출근 = 유효 근무 구간 시작(오전반차면 반차 끝, day_rules.day_alert_context)
+          e) 알림 없는 날(종일 휴가·근무, 시프트 전체를 덮는 휴가)이거나 지금 면제 구간
+             (시간형 휴가 중, 시간형 근무 시작 후). 정정·결재 대기는 보지 않는다.
           f) 이미 출근 기록(check_in) 있음
           g) 기기가 지금 연결 중이거나 오늘(cutoff 이후) 네트워크에 잡힌 적 있음
              (04:00 경계 넘어 연결 유지 중인 기기 오탐 방지 — 기록은 남기지 않음)
@@ -1483,24 +1616,19 @@ class Aggregator:
 
         now_kst = now.astimezone(KST)
         try:
-            sh_h, sh_m = map(int, str(shift["start"]).split(":"))
-        except (ValueError, AttributeError):
+            ctx = self._alert_context(emp_id, today, shift, now)
+        except Exception as e:
+            self.logger.debug(f"  [no-show] 알림 판단 실패 (emp={emp_id}): {e}")
             return
-        shift_start_dt = now_kst.replace(
-            hour=sh_h, minute=sh_m, second=0, microsecond=0
-        )
-        if now_kst < shift_start_dt + timedelta(minutes=threshold):
+        if ctx["ref_in"] is None:
+            return
+        ref_in_kst = ctx["ref_in"].astimezone(KST)
+        sh_h, sh_m = ref_in_kst.hour, ref_in_kst.minute
+        if now_kst < ref_in_kst + timedelta(minutes=threshold):
             return
 
-        # e) 승인된 휴가/출장/외근/정정 등록자 제외 (종일 외근 등 check_in NULL 오발송 방지)
-        try:
-            active_requests = self.db.get_active_requests(emp_id, today)
-        except Exception as e:
-            self.logger.debug(
-                f"  [no-show] get_active_requests 실패 (emp={emp_id}): {e}"
-            )
-            return
-        if active_requests:
+        # e) 알림 없는 날 / 지금 면제 구간 (종일 외근 등 check_in NULL 오발송 방지)
+        if ctx["no_alert_today"] or ctx["exempt_now"]:
             return
 
         # f) 이미 출근 기록 있으면 제외
@@ -1576,12 +1704,13 @@ class Aggregator:
         발송 조건(전부 AND):
           - 오늘이 공휴일이 아님
           - 그 직원의 오늘 시프트가 존재하고 type != 'off' 이며 start 파싱 가능
-          - 현재 시각(KST)이 [시프트시작 - alert_minutes, 시프트시작) 구간 안
+          - 현재 시각(KST)이 [기준 출근 - alert_minutes, 기준 출근) 구간 안
+            (기준 출근 = 유효 근무 구간 시작 — 오전반차면 반차 끝, day_rules.day_alert_context)
           - 오늘 attendance_daily.check_in 이 아직 없음 (이미 출근했으면 불필요).
             presence_raw 대신 check_in을 쓰는 이유: presence_raw에는 offline도 들어가서
             stale ARP 엔트리가 정리된 흔적(예: 08:14 offline)만으로도 '기록 있음'이 되어
             실제 미출근자의 알림이 누락된다.
-          - 오늘 종일 캘린더(휴가/출장)가 없음
+          - 알림 없는 날이 아님(종일 휴가·근무, 시프트 전체를 덮는 휴가) — 정정·결재 대기는 보지 않는다
           - shift_prestart_alert_log에 오늘 기록이 없음
 
         중복 발송은 '로그 먼저 INSERT → 성공 시 발송'(try_log_prestart_alert)으로 차단.
@@ -1615,23 +1744,20 @@ class Aggregator:
                     continue
                 considered += 1
 
-                # 2) 시프트 시작 시각 파싱 ("HH:MM") — 실패하면 그 직원만 skip
-                try:
-                    sh_h, sh_m = map(int, str(shift["start"]).split(":"))
-                except (ValueError, AttributeError):
+                # 2) 기준 출근 (유효 근무 구간) — 시프트 파싱 실패면 그 직원만 skip
+                ctx = self._alert_context(emp_id, today, shift, now_kst)
+                if ctx["ref_in"] is None:
                     self.logger.warning(
-                        f"  [prestart] 시프트 시작 시각 파싱 실패 "
+                        f"  [prestart] 시프트 시각 파싱 실패 "
                         f"(emp={emp_id}, start={shift.get('start')}) — 스킵"
                     )
                     skip_parse += 1
                     continue
 
-                # 3) 발송 창: [시프트시작 - alert_minutes, 시프트시작)
-                shift_start_dt = now_kst.replace(
-                    hour=sh_h, minute=sh_m, second=0, microsecond=0
-                )
-                window_open = shift_start_dt - timedelta(minutes=alert_minutes)
-                if not (window_open <= now_kst < shift_start_dt):
+                # 3) 발송 창: [기준 출근 - alert_minutes, 기준 출근)
+                ref_in_kst = ctx["ref_in"].astimezone(KST)
+                window_open = ref_in_kst - timedelta(minutes=alert_minutes)
+                if not (window_open <= now_kst < ref_in_kst):
                     skip_window += 1
                     continue
 
@@ -1642,13 +1768,8 @@ class Aggregator:
                     skip_checked_in += 1
                     continue
 
-                # 5) 종일 휴가/출장이면 제외 (캘린더 보정 분기와 동일한 종일 판정)
-                active_requests = self.db.get_active_requests(emp_id, today)
-                has_allday = any(
-                    r["corrected_check_in"] is None or r["corrected_check_out"] is None
-                    for r in active_requests
-                )
-                if has_allday:
+                # 5) 알림 없는 날(종일 휴가·근무, 시프트 전체를 덮는 휴가) 제외
+                if ctx["no_alert_today"]:
                     skip_allday += 1
                     continue
 
@@ -1805,14 +1926,17 @@ class Aggregator:
         - 알림 안 함 조건(아래 중 하나라도 해당):
           · 직원 이메일 없음
           · 오늘이 공휴일
+          · 알림 없는 날(종일 휴가·근무, 시프트 전체를 덮는 휴가) 또는 지금 면제 구간
+            (시간형 휴가 중, 시간형 근무 시작 후) — day_rules.day_alert_context
           · 오늘 시프트가 휴무/미배정
-          · 현재 시각이 시프트 [start, end] 밖
+          · 현재 시각이 유효 근무 구간 [기준 출근, 기준 퇴근] 밖
           · 현재 시각이 점심시간 [lunch_start, lunch_end] 안
           · 오늘 presence_raw 마지막이 'online' (연결됨)
           · 오늘 전환 기록 0건이나 마지막 전환이 'online' (경계 넘어 연결 유지 중)
         - 끊김 판정:
           A) raw 마지막 'offline' + (now - 마지막.checked_at) >= 임계분
-          B) raw 비어있음 + (시프트 start + 임계분) <= now
+          B) raw 비어있음 + (기준 출근 + 임계분) <= now
+          (경과 시간에서 점심·가운데 휴가 겹침은 뺀다)
         - 임계분: hr.policy_settings.disconnect_alert_minutes (기본 30)
         - 점심: lunch_start/lunch_end (기본 12:00/13:00)
         """
@@ -1824,22 +1948,6 @@ class Aggregator:
 
         # 공휴일이면 끊김 알림 스킵 (근무일이 아니므로) — 상태도 리셋.
         if holiday_name:
-            self._disconnect_notified.pop(emp_id, None)
-            return
-
-        # 0) 오늘 승인된 부재(휴가/외근/출장/재택)가 있으면 알림 자체를 스킵.
-        #    회사 WiFi에 안 잡히는 게 정상인 날이므로 상태도 리셋.
-        try:
-            absence = self.db.get_active_absence_today(emp_id, today)
-        except Exception as e:
-            self.logger.debug(
-                f"  [disconnect] get_active_absence_today 실패 (emp={emp_id}): {e}"
-            )
-            absence = None
-        if absence:
-            self.logger.debug(
-                f"[끊김알림] {emp.get('name')} 오늘 부재({absence}) — 스킵"
-            )
             self._disconnect_notified.pop(emp_id, None)
             return
 
@@ -1880,12 +1988,34 @@ class Aggregator:
             self._disconnect_notified.pop(emp_id, None)
             return
 
-        shift_start_dt = now_kst.replace(
-            hour=sh_h, minute=sh_m, second=0, microsecond=0
-        )
-        shift_end_dt = now_kst.replace(
-            hour=eh_h, minute=eh_m, second=0, microsecond=0
-        )
+        # 0) 알림 공용 판단 — 종일 휴가·근무 등 알림 없는 날이면 상태 리셋 후 스킵,
+        #    시간형 휴가 중·시간형 근무 시작 후면 스킵. 회사 WiFi에 안 잡히는 게 정상인 시간.
+        try:
+            ctx = self._alert_context(emp_id, today, shift, now)
+        except Exception as e:
+            self.logger.debug(f"  [disconnect] 알림 판단 실패 (emp={emp_id}): {e}")
+            return
+        if ctx["no_alert_today"]:
+            self._disconnect_notified.pop(emp_id, None)
+            return
+        if ctx["exempt_now"]:
+            return
+
+        # 근무 시간 = 유효 근무 구간 [기준 출근, 기준 퇴근]
+        shift_start_dt = ctx["ref_in"].astimezone(KST)
+        shift_end_dt = ctx["ref_out"].astimezone(KST)
+        # 가운데 휴가 구간 — 끊김 경과 시간에서 뺀다
+        middle_leaves = [
+            (r["corrected_check_in"].astimezone(KST), r["corrected_check_out"].astimezone(KST))
+            for r in ctx["timed_leave"]
+        ]
+
+        def _minus_leaves(start_dt, end_dt, sec):
+            for ls, le in middle_leaves:
+                _s, _e = max(start_dt, ls), min(end_dt, le)
+                sec -= max(0.0, (_e - _s).total_seconds())
+            return sec
+
         if now_kst < shift_start_dt or now_kst > shift_end_dt:
             # 근무시간 밖 → 상태 리셋 (다음 근무시간에 깨끗하게 시작)
             self._disconnect_notified.pop(emp_id, None)
@@ -1951,6 +2081,7 @@ class Aggregator:
                 _ovs = max(shift_start_dt, lunch_start_dt)
                 _ove = min(now_kst, lunch_end_dt)
                 _eff_sec_b -= max(0.0, (_ove - _ovs).total_seconds())
+            _eff_sec_b = _minus_leaves(shift_start_dt, now_kst, _eff_sec_b)
             if _eff_sec_b >= threshold_min * 60:
                 disconnected = True
         else:
@@ -1963,17 +2094,19 @@ class Aggregator:
                 # A) 마지막 offline 이후 임계분 경과 여부
                 last_offline_at = last_record["checked_at"]
                 # presence_raw.checked_at은 timezone-aware (DB timestamptz)
-                # now도 aware(UTC) → 차이 계산 가능
-                elapsed = (now - last_offline_at).total_seconds()
+                # 경과는 유효 근무 구간 시작부터 센다(오전반차 중 끊긴 것은 세지 않음).
+                _lo_kst = (
+                    last_offline_at.astimezone(KST)
+                    if last_offline_at.tzinfo is not None
+                    else last_offline_at
+                )
+                _from = max(_lo_kst, shift_start_dt)
+                elapsed = (now_kst - _from).total_seconds()
                 if lunch_start_dt is not None and lunch_end_dt is not None:
-                    _lo_kst = (
-                        last_offline_at.astimezone(KST)
-                        if last_offline_at.tzinfo is not None
-                        else last_offline_at
-                    )
-                    _ovs = max(_lo_kst, lunch_start_dt)
+                    _ovs = max(_from, lunch_start_dt)
                     _ove = min(now_kst, lunch_end_dt)
                     elapsed -= max(0.0, (_ove - _ovs).total_seconds())
+                elapsed = _minus_leaves(_from, now_kst, elapsed)
                 if elapsed >= threshold_min * 60:
                     disconnected = True
                     disconnect_at = last_offline_at

@@ -39,6 +39,7 @@ export function isAllDayRequest(
 export interface LiveLeaveWorkRequest {
   id: number;
   categoryId: number;
+  categoryType: string;
   correctedCheckIn: Date | null;
   correctedCheckOut: Date | null;
 }
@@ -51,7 +52,7 @@ export async function findLiveLeaveWorkRequests(
   workDate: Date,
   excludeId?: number
 ): Promise<LiveLeaveWorkRequest[]> {
-  return db.attendanceRequest.findMany({
+  const rows = await db.attendanceRequest.findMany({
     where: {
       employeeId,
       status: { in: LIVE_REQUEST_STATUSES },
@@ -65,9 +66,34 @@ export async function findLiveLeaveWorkRequests(
       categoryId: true,
       correctedCheckIn: true,
       correctedCheckOut: true,
+      category: { select: { type: true } },
     },
     orderBy: { id: "asc" },
   });
+  return rows.map((r) => ({
+    id: r.id,
+    categoryId: r.categoryId,
+    categoryType: r.category.type,
+    correctedCheckIn: r.correctedCheckIn,
+    correctedCheckOut: r.correctedCheckOut,
+  }));
+}
+
+// 그 날 살아 있는 "시간형 휴가"(반차 등) — type leave·long_leave 이면서 KST 같은 날 시각 둘 다.
+// aggregator 의 in_range_leave 와 같은 기준.
+export async function findLiveTimedLeaves(
+  db: Db,
+  employeeId: number,
+  workDate: Date
+): Promise<{ start: Date; end: Date }[]> {
+  const reqs = await findLiveLeaveWorkRequests(db, employeeId, workDate);
+  return reqs
+    .filter(
+      (r) =>
+        (r.categoryType === "leave" || r.categoryType === "long_leave") &&
+        !isAllDayRequest(r.correctedCheckIn, r.correctedCheckOut)
+    )
+    .map((r) => ({ start: r.correctedCheckIn!, end: r.correctedCheckOut! }));
 }
 
 // 그 날 살아 있는 "종일" 휴가·외근이 있는가.

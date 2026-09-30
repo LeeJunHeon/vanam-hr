@@ -69,37 +69,6 @@ class Database:
             )
             return [dict(r) for r in c.fetchall()]
 
-    def get_active_absence_today(
-        self, employee_id: int, work_date: date
-    ) -> Optional[str]:
-        """오늘(work_date)에 걸쳐 승인된 '회사 부재' 신청이 있으면 그 카테고리 code 반환.
-
-        부재 = 휴가류(type IN 'leave','long_leave') 또는 회사 밖 근무
-              (외근/출장/재택, code IN 'EXTERNAL_WORK','BUSINESS_TRIP','REMOTE_WORK').
-        get_auto_approved_request는 external_source='google_calendar'만 잡아
-        수동 결재된 연차/반차/병가가 누락되므로, attendance_requests를 직접 조회.
-        """
-        self._ensure_connected()
-        with self.conn.cursor() as c:
-            c.execute(
-                """
-                SELECT cat.code
-                FROM hr.attendance_requests r
-                JOIN hr.attendance_categories cat ON r.category_id = cat.id
-                WHERE r.employee_id = %s
-                  AND r.status IN ('approved', 'auto_approved', 'auto_delegated')
-                  AND r.start_date <= %s
-                  AND r.end_date >= %s
-                  AND (cat.type IN ('leave', 'long_leave')
-                       OR cat.code IN ('EXTERNAL_WORK', 'BUSINESS_TRIP', 'REMOTE_WORK'))
-                ORDER BY r.requested_at DESC
-                LIMIT 1
-                """,
-                (employee_id, work_date, work_date),
-            )
-            row = c.fetchone()
-            return row[0] if row else None
-
     def get_presence_raw_by_work_date(
         self,
         employee_id: int,
@@ -324,16 +293,17 @@ class Database:
         return (start_t, end_t) if week_diff % interval == 0 else None
 
     def get_pending_attendance_alerts(self) -> list[dict]:
-        """직전 근무일이 비정상(absent/late/early_leave)이고 아직 알림을 안 보낸
-        활성 직원 목록. 연차/출장/외근(category 있음)·휴무(행 없음)는 직전 근무일
-        탐색에서 자동 제외된다.
+        """직전 근무일이 비정상(지각·조퇴·결근)이고 아직 알림을 안 보낸 활성 직원 목록.
 
-        반환: [{id, name, email, work_date(date), auto_status, is_late, is_early_leave}, ...]
-              is_late/is_early_leave 는 알림 문구 조합용(auto_status 는 하나만 담기므로).
-        - work_date < CURRENT_DATE (오늘 이전; CURRENT_DATE는 KST 날짜)
-        - 직전 근무일 = category_id IS NULL AND auto_status IS NOT NULL 인 가장 최근 일자
-        - 공휴일(hr.holidays)은 직전 근무일 탐색에서 제외
-        - daily_attendance_alert_log에 (employee_id, work_date)가 이미 있으면 제외
+        - 직전 근무일 = 오늘(KST) 이전, 공휴일 아님, 평가(auto_status)가 있는 가장 최근 행.
+          구분(category)이 있는 날도 포함한다 — 종일 휴가 날은 정상이라 메일이 가지 않고,
+          반차 + 결근, 오전 지각 + 오후 외근 같은 날은 메일이 간다.
+        - 비정상 = 평가 키 기준(day_rules.eval_keys / 웹 evalKeys 와 같음):
+          지각·조퇴 플래그가 하나라도 있으면 플래그(+ auto_status absent),
+          둘 다 NULL 인 옛 행은 auto_status (absent/late/early_leave).
+        - daily_attendance_alert_log에 (employee_id, work_date)가 이미 있으면 제외.
+
+        반환: [{id, name, email, work_date(date), auto_status, is_late, is_early_leave, check_out}, ...]
         """
         self._ensure_connected()
         with self.conn.cursor(cursor_factory=RealDictCursor) as c:
@@ -341,14 +311,13 @@ class Database:
                 """
                 SELECT e.id, e.name, e.email,
                        sub.work_date, sub.auto_status,
-                       sub.is_late, sub.is_early_leave
+                       sub.is_late, sub.is_early_leave, sub.check_out
                 FROM hr.employees e
                 JOIN LATERAL (
                     SELECT d.work_date, d.auto_status,
-                           d.is_late, d.is_early_leave
+                           d.is_late, d.is_early_leave, d.check_out
                     FROM hr.attendance_daily d
                     WHERE d.employee_id = e.id
-                      AND d.category_id IS NULL
                       AND d.auto_status IS NOT NULL
                       AND d.work_date < CURRENT_DATE
                       AND NOT EXISTS (
@@ -360,7 +329,14 @@ class Database:
                 ) sub ON true
                 WHERE e.is_active = true
                   AND e.email IS NOT NULL
-                  AND sub.auto_status IN ('absent', 'late', 'early_leave')
+                  AND (
+                        ((sub.is_late IS NOT NULL OR sub.is_early_leave IS NOT NULL)
+                          AND (COALESCE(sub.is_late, false)
+                               OR COALESCE(sub.is_early_leave, false)
+                               OR sub.auto_status = 'absent'))
+                     OR (sub.is_late IS NULL AND sub.is_early_leave IS NULL
+                          AND sub.auto_status IN ('absent', 'late', 'early_leave'))
+                  )
                   AND NOT EXISTS (
                       SELECT 1 FROM hr.daily_attendance_alert_log l
                       WHERE l.employee_id = e.id
