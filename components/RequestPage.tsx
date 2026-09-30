@@ -1551,8 +1551,14 @@ export default function RequestPage() {
                         <p className="text-[10px] text-gray-400">
                           신청: {new Date(r.requestedAt).toLocaleString("ko-KR")}
                         </p>
-                        {/* Phase 6-2E: 수정은 pending만, 취소는 pending/auto_approved/approved 허용 */}
-                        {(isPending ||
+                        {/* 출장에서 만든 근태 기록은 출장 화면에서만 바꾼다 (서버도 취소를 막는다) */}
+                        {r.externalSource === "trip" ? (
+                          <span className="text-[10px] text-gray-400">
+                            출장 및 외근 관리에서 변경
+                          </span>
+                        ) : (
+                        /* Phase 6-2E: 수정은 pending만, 취소는 pending/auto_approved/approved 허용 */
+                        (isPending ||
                           r.status === "auto_approved" ||
                           r.status === "approved") && (
                           <div className="flex gap-1">
@@ -1577,7 +1583,7 @@ export default function RequestPage() {
                               <X size={14} />
                             </button>
                           </div>
-                        )}
+                        ))}
                       </div>
                     </div>
                   );

@@ -797,6 +797,62 @@ class Database:
             row = c.fetchone()
             return row[0] if row else None
 
+    def cleanup_request_trace_row(self, employee_id: int, work_date: date) -> Optional[str]:
+        """신청(정정 제외)이 없는 날의 '요청 흔적 행' 삭제.
+
+        요청 흔적 행 = is_overridden=true AND override_source='calendar' AND 출퇴근 NULL
+                       AND 미확정 AND status_reason NULL AND 사유 첨부 없음.
+        반환:
+          'deleted'   — 흔적 행을 지움
+          'has_times' — calendar 행인데 출퇴근 시각이 있음(지우지 않음, 호출자가 warning)
+          None        — 해당 없음(행 없음·calendar 아님·살아 있는 신청 있음·사람 흔적 있음)
+        """
+        self._ensure_connected()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute(
+                """
+                SELECT d.id, d.check_in, d.check_out,
+                       EXISTS (
+                           SELECT 1
+                           FROM hr.attendance_requests r
+                           JOIN hr.attendance_categories cat ON cat.id = r.category_id
+                           WHERE r.employee_id = d.employee_id
+                             AND r.status IN ('approved', 'auto_approved', 'auto_delegated')
+                             AND r.start_date <= d.work_date
+                             AND r.end_date >= d.work_date
+                             AND cat.type <> 'correction'
+                       ) AS has_request
+                FROM hr.attendance_daily d
+                WHERE d.employee_id = %s AND d.work_date = %s
+                  AND d.is_overridden = true
+                  AND d.override_source = 'calendar'
+                """,
+                (employee_id, work_date),
+            )
+            row = c.fetchone()
+            if row is None or row["has_request"]:
+                return None
+            if row["check_in"] is not None or row["check_out"] is not None:
+                return "has_times"
+            c.execute(
+                """
+                DELETE FROM hr.attendance_daily d
+                WHERE d.id = %s
+                  AND d.is_overridden = true
+                  AND d.override_source = 'calendar'
+                  AND d.check_in IS NULL AND d.check_out IS NULL
+                  AND d.is_confirmed = false
+                  AND d.status_reason IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM hr.attendance_reason_files f
+                      WHERE f.daily_id = d.id
+                  )
+                RETURNING d.id
+                """,
+                (row["id"],),
+            )
+            return "deleted" if c.fetchone() is not None else None
+
     def get_recalc_targets(self, before_date: date, limit: int = 200) -> list[dict]:
         """needs_recalc=true 이고 work_date < before_date 인 행. 오래된 날짜 순.
 

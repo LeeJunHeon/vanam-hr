@@ -1,10 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { createNotifications } from "@/lib/notify";
-import {
-  applyCorrectionToDaily,
-  loadShiftAndGrace,
-  shiftEndBoundary,
-} from "@/lib/attendance-correction";
+import { loadShiftAndGrace, shiftEndBoundary } from "@/lib/attendance-correction";
+import { applyApprovedRequestToDaily } from "@/lib/finalize-approval";
 import { computeLeaveImpact } from "@/lib/annual-leave";
 import { resolveApprovers, getApprovalCategoryId } from "@/lib/approval-resolver";
 import { createCalendarEvent } from "@/lib/calendar-event";
@@ -315,15 +312,19 @@ export async function createAttendanceRequest(
       },
     });
 
-    // 자동승인 + 정정(correction)이면 attendance_daily에 즉시 반영
-    // (일반 승인은 approvals에서 처리되지만, 자동승인은 여기서 처리해야 누락 안 됨)
-    if (isAutoApproved && category.type === "correction") {
-      await applyCorrectionToDaily(tx, {
+    // 자동승인이면 type 과 무관하게 결재자 승인과 같은 함수로 attendance_daily 에 반영
+    // (지난 날은 재계산 표시, 오늘·앞날은 기록, 정정은 정정 반영).
+    // 일반 승인은 결재 경로에서 처리되지만, 자동승인은 여기서 처리해야 누락 안 됨.
+    if (isAutoApproved) {
+      await applyApprovedRequestToDaily(tx, {
+        id: req.id,
         employeeId: employeeIdNum,
-        workDate: startD,
+        categoryId: categoryIdNum,
+        startDate: startD,
+        endDate: endD,
         correctedCheckIn: cciDate,
         correctedCheckOut: ccoDate,
-        requestId: req.id,
+        category: { type: category.type, name: category.name },
       });
     }
 

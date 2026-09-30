@@ -21,6 +21,11 @@ is_overridden=true 인 row는 건드리지 않음.
   같은 하루 계산(_process_employee_work_date)으로 다시 계산한 뒤 표시를 내린다.
 - 결과가 no_data 이고 표시용 빈 행이면 행을 지운다. 이 경로는 알림을 보내지 않는다.
 
+요청 흔적 행 정리:
+- 신청(정정 제외)이 없는 날이 no_data 로 끝나면, calendar 보정만 남은 빈 행(출퇴근 없음·미확정·
+  사유 없음)을 지운다(취소된 휴가·외근의 흔적). 매 사이클과 재계산 경로 모두.
+- 근태 정정 신청은 하루 계산에서 일정으로 치지 않는다(정정은 웹이 수동 보호 행으로 반영).
+
 수동 정정 행의 구분(category) 맞춤:
 - 수동 보호로 upsert 가 막힌 날에 휴가·출장 등(type leave·long_leave·work) 신청이 있으면
   category_id 만 대표 카테고리로 바꾼다. 시각·상태·보정 출처·메모는 그대로.
@@ -349,6 +354,8 @@ class Aggregator:
                     skip_overridden += 1
                 else:
                     skip_no_data += 1
+                if result == "no_data":
+                    self._cleanup_request_trace_row(emp, work_date)
 
             # 근무중 끊김 알림 — 오늘 work_date 에 대해서만 점검
             try:
@@ -410,6 +417,12 @@ class Aggregator:
                     overnight_extend_enabled=overnight_extend_enabled,
                     overnight_extend_max_hours=overnight_extend_max_hours,
                 )
+                if result == "no_data":
+                    self._cleanup_request_trace_row(
+                        {"id": t_emp_id, "employee_no": target.get("employee_no"),
+                         "name": target.get("name")},
+                        t_date,
+                    )
                 finished = self.db.finish_recalc(
                     t_emp_id, t_date, drop_if_empty=(result == "no_data")
                 )
@@ -564,7 +577,13 @@ class Aggregator:
         currently_present = (wifi_check_in is not None) and (wifi_check_out is None)
 
         # 2) 캘린더 자동 등록 보정 확인 (Phase 6-2B)
-        active_requests = self.db.get_active_requests(emp_id, work_date)
+        # 근태 정정(type 'correction')은 일정으로 치지 않는다 — 정정은 웹이 수동 보호 행으로 반영한다.
+        # (보호가 풀린 행에서 한쪽만 적힌 정정이 '종일 일정'처럼 처리돼 지각이 정상으로 바뀌고
+        #  구분에 '근태정정'이 찍히던 문제, 2026-07-29 사례)
+        active_requests = [
+            r for r in self.db.get_active_requests(emp_id, work_date)
+            if r.get("category_type") != "correction"
+        ]
 
         # 시프트 로깅에 쓰일 정보 (분기 둘 다에서 필요)
         shift_info = self.db.get_employee_shift(emp_id, work_date)
@@ -1036,6 +1055,33 @@ class Aggregator:
             return True
         return False
 
+    def _cleanup_request_trace_row(self, emp: dict, work_date) -> None:
+        """no_data 로 끝난 날의 '요청 흔적 행' 정리.
+
+        신청(정정 제외)이 하나도 없는 날에만 적용한다 — 신청이 있는 날의 no_data(시간형 일정이
+        아직 시작 전)는 웹이 미리 적어둔 행을 지키기 위해 건드리지 않는다(판정은 SQL 이 한다).
+        - 요청 흔적 행(calendar 보정 + 출퇴근 없음 + 미확정 + 사유 없음·첨부 없음) → 삭제 + info
+        - 출퇴근 시각이 있는 calendar 행인데 raw 도 신청도 없음 → 지우지 않고 warning
+        """
+        emp_id = emp["id"]
+        try:
+            outcome = self.db.cleanup_request_trace_row(emp_id, work_date)
+        except Exception as e:
+            self.logger.error(
+                f"  [흔적정리] 직원 {emp_id} work_date={work_date} 예외: {e}"
+            )
+            return
+        if outcome == "deleted":
+            self.logger.info(
+                f"  [흔적정리] 직원 {emp_id}({emp.get('employee_no')}/{emp.get('name')}) "
+                f"work_date={work_date} — 신청 없는 요청 흔적 행 삭제"
+            )
+        elif outcome == "has_times":
+            self.logger.warning(
+                f"  [흔적정리] 직원 {emp_id}({emp.get('employee_no')}/{emp.get('name')}) "
+                f"work_date={work_date} — 출퇴근 시각이 있는 calendar 행인데 raw·신청 없음, 유지"
+            )
+
     def _sync_manual_row_category(
         self, emp_id, emp_no, emp_name, work_date, requests, now,
     ) -> bool:
@@ -1130,8 +1176,13 @@ class Aggregator:
         4) 시프트 있음 + check_in 있음 (check_out 유무 무관):
            - 출근 시각 > 시프트 시작 + grace_in_minutes → late (퇴근 전에도 확정)
            - check_out 없음 + 지각 아님 → working (근무 중)
-           - check_out 있음 + 근무시간 < 시프트 총 - grace_out_minutes → early_leave
+           - check_out 있음 + 근무시간 < 시프트 총 - grace_out_minutes
+             + 퇴근 시각 < 시프트 종료 - grace_out_minutes → early_leave
+             (늦게 와서 시프트 종료 뒤 퇴근하면 지각만, 일찍 와서 일찍 가도 시간이 충분하면 정상)
            - 그 외 → normal
+
+        판정 규칙은 aggregator 와 웹(lib/attendance-correction.ts determineAutoStatus·
+        determineAttendanceFlags)이 같아야 한다 — 한쪽을 바꾸면 다른 쪽도.
         """
         from datetime import timedelta
 
@@ -1245,7 +1296,10 @@ class Aggregator:
         if required_minutes < 0:
             required_minutes = 0
 
-        is_early_leave = actual_minutes < required_minutes
+        # 조퇴는 시간이 모자라면서 시프트 종료(시작 + 시프트 길이) - grace_out 전에 나간 경우만.
+        shift_end_dt = shift_start_dt + timedelta(minutes=shift_minutes)
+        early_threshold = shift_end_dt - timedelta(minutes=grace_out_minutes)
+        is_early_leave = actual_minutes < required_minutes and check_out < early_threshold
         auto_status = "late" if is_late else ("early_leave" if is_early_leave else "normal")
         return auto_status, is_late, is_early_leave
 

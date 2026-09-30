@@ -8,6 +8,7 @@ import {
 import { createNotifications } from "@/lib/notify";
 import { createAttendanceRequest } from "@/lib/create-attendance-request";
 import { loadShiftAndGrace, shiftEndBoundary } from "@/lib/attendance-correction";
+import { revertCancelledRequestFromDaily } from "@/lib/finalize-approval";
 
 function parseDate(s: string | null | undefined): Date | null {
   if (!s || typeof s !== "string") return null;
@@ -317,8 +318,70 @@ export async function PUT(request: NextRequest) {
 
     // 취소 흐름
     if (isCancelAction) {
-      // 1) 캘린더 등록되어 있으면 삭제 시도 (멱등적, 실패해도 DB 취소는 진행)
+      // 출장에서 만든 근태 기록은 출장 화면에서만 바꾼다(참석 날짜와 근태가 어긋나지 않도록).
+      if (before.externalSource === "trip") {
+        return NextResponse.json(
+          {
+            error:
+              "출장 기록은 출장 및 외근 관리에서 날짜를 변경하거나 참석을 취소하세요.",
+          },
+          { status: 409 }
+        );
+      }
+
+      // 1) attendance_daily 원복 — lib/finalize-approval revertCancelledRequestFromDaily 한 곳에서.
+      //    결재 대기(pending)는 근태에 반영된 적이 없으므로 attendance_daily 를 건드리지 않는다.
+      const cat = await prisma.attendanceCategory.findUnique({
+        where: { id: before.categoryId },
+        select: { type: true, code: true },
+      });
+      const catType = cat?.type ?? null;
+      const wasApplied = before.status === "approved" || before.status === "auto_approved";
+
+      // 2) 원자적 트랜잭션 — status='cancelled' → 원복 → 결재 요청 알림 삭제
+      const updated = await prisma.$transaction(async (tx) => {
+        // 조회 이후 상태가 바뀌었으면(동시 승인·취소) 409
+        const upd = await tx.attendanceRequest.updateMany({
+          where: { id: idNum, status: before.status },
+          data: { status: "cancelled" },
+        });
+        if (upd.count === 0) return null;
+
+        let revertedDays = 0;
+        if (wasApplied) {
+          revertedDays = await revertCancelledRequestFromDaily(tx, {
+            id: before.id,
+            employeeId: before.employeeId,
+            startDate: before.startDate,
+            endDate: before.endDate,
+            correctedCheckIn: before.correctedCheckIn,
+            correctedCheckOut: before.correctedCheckOut,
+            categoryType: catType,
+          });
+        }
+
+        // 이 요청으로 생성된 결재 요청 알림 삭제 (결재자 종에 유령 알림 방지)
+        //    linkRefId = 요청 id, type = 'approval_request' 인 알림만 제거.
+        //    결재자가 여러 명이면 알림도 여러 개라 deleteMany. 매칭 없으면 0건(안전).
+        await tx.notification.deleteMany({
+          where: {
+            linkRefId: BigInt(idNum),
+            type: "approval_request",
+          },
+        });
+
+        return { id: idNum, status: "cancelled", revertedDays };
+      });
+      if (!updated) {
+        return NextResponse.json(
+          { error: "요청 상태가 바뀌었습니다. 새로고침 후 다시 시도하세요." },
+          { status: 409 }
+        );
+      }
+
+      // 3) 캘린더 등록되어 있으면 삭제 시도 (멱등적, 실패해도 DB 취소는 유지)
       //    외부 API 호출은 트랜잭션 밖에서 — 트랜잭션 안에 두면 롤백/재시도 시 일정 중복 위험.
+      //    취소가 확정된 뒤에 지운다(동시 처리로 409 가 나면 일정은 그대로 남는다).
       if (
         before.externalSource === "hr" &&
         before.externalEventId &&
@@ -340,143 +403,15 @@ export async function PUT(request: NextRequest) {
           }
         } catch (e) {
           console.error(
-            `[cancel] 캘린더 삭제 실패 (DB 취소는 진행):`,
+            `[cancel] 캘린더 삭제 실패 (DB 취소는 유지):`,
             e
           );
         }
       }
 
-      // 2) attendance_daily 원복 — 카테고리 type별 분기
-      //    승인 시 만들었던 attendance_daily 보정 행을 is_overridden=false로 풀어,
-      //    다음 aggregator 사이클(60초 이내)이 WiFi/시프트 기준으로 재계산하게 한다.
-      //    행을 DELETE하지 않음(이력/연속성 보존). 행이 없으면 skip.
-      const cat = await prisma.attendanceCategory.findUnique({
-        where: { id: before.categoryId },
-        select: { type: true, code: true },
-      });
-      const catType = cat?.type ?? null;
-
-      const dayMs = 24 * 60 * 60 * 1000;
-      const revertDays: Date[] = [];
-      if (catType === "leave" || catType === "work") {
-        // startDate~endDate 각 일자 (UTC 자정 기준 — DB workDate가 date 컬럼이라 시각 비교 안 함)
-        const start = new Date(before.startDate);
-        const end = new Date(before.endDate);
-        for (let t = start.getTime(); t <= end.getTime(); t += dayMs) {
-          revertDays.push(new Date(t));
-        }
-      } else if (catType === "correction") {
-        // 정정은 단일 날짜
-        revertDays.push(new Date(before.startDate));
-      }
-
-      // 3) 원자적 트랜잭션 — 원복 + status='cancelled'
-      const updated = await prisma.$transaction(async (tx) => {
-        if (catType === "leave" || catType === "work") {
-          // 휴가/외근/출장/재택 취소:
-          //  - 각 날짜의 행을 개별 확인.
-          //  - WiFi 기록(checkIn/checkOut)이 둘 다 없으면 → 빈 행이므로 삭제
-          //    (휴무일/미래날짜는 aggregator가 손대지 않아, 안 지우면 잘못된 auto_status가 남음)
-          //  - 하나라도 있으면 → categoryId 등 보정 흔적만 풀고
-          //    autoStatus/workMinutes를 null로 비워 aggregator가 WiFi/시프트로 재계산하게 함.
-          for (const wd of revertDays) {
-            const existing = await tx.attendanceDaily.findUnique({
-              where: {
-                employeeId_workDate: {
-                  employeeId: before.employeeId,
-                  workDate: wd,
-                },
-              },
-            });
-            if (!existing) continue;
-
-            // 수동 정정(manual)으로 보호된 행은 건드리지 않는다(이 취소와 무관한 보정).
-            // (정상 흐름에선 leave/work 보정행의 override_source는 'manual'이지만,
-            //  이 취소는 그 보정을 만든 당사자이므로 푸는 게 맞다. 단 checkIn/out 유무로 분기.)
-            const hasWifi =
-              existing.checkIn !== null || existing.checkOut !== null;
-
-            if (!hasWifi) {
-              // WiFi 기록 없음 + 일정 취소 → 빈 행 → 삭제
-              await tx.attendanceDaily.delete({
-                where: { id: existing.id },
-              });
-            } else {
-              // WiFi 기록 있음 → 보정만 풀고 aggregator 재계산에 위임
-              await tx.attendanceDaily.update({
-                where: { id: existing.id },
-                data: {
-                  categoryId: null,
-                  isOverridden: false,
-                  note: null,
-                  overrideSource: null,
-                  autoStatus: null,   // aggregator 재계산 트리거
-                  isLate: null,       // 낡은 플래그 제거 — aggregator가 재판정
-                  isEarlyLeave: null,
-                  workMinutes: null,  // aggregator 재계산 트리거
-                  // checkIn/checkOut은 유지 (WiFi 원본)
-                },
-              });
-            }
-          }
-        } else if (catType === "correction") {
-          // 정정: 이 정정이 실제로 바꾼 쪽만 원본(백업)으로 복원하고,
-          //       건드리지 않은 쪽은 현재값(실제 WiFi 값 등)을 그대로 보존한다.
-          //       어느 쪽을 바꿨는지는 요청의 correctedCheckIn/Out(null 여부)로 판정.
-          //       workMinutes는 null로 두고 aggregator에 재계산 위임.
-          const inCorrected = before.correctedCheckIn !== null;
-          const outCorrected = before.correctedCheckOut !== null;
-          for (const wd of revertDays) {
-            const existing = await tx.attendanceDaily.findUnique({
-              where: {
-                employeeId_workDate: {
-                  employeeId: before.employeeId,
-                  workDate: wd,
-                },
-              },
-            });
-            if (!existing) continue;
-            await tx.attendanceDaily.update({
-              where: { id: existing.id },
-              data: {
-                // 출근: 이 정정이 고쳤으면 원본 백업으로 복원, 아니면 현재값 유지
-                checkIn: inCorrected ? existing.originalCheckIn : existing.checkIn,
-                // 퇴근: 이 정정이 고쳤으면 원본 백업으로 복원, 아니면 현재값 유지
-                checkOut: outCorrected ? existing.originalCheckOut : existing.checkOut,
-                originalCheckIn: null,
-                originalCheckOut: null,
-                workMinutes: null, // aggregator 재계산 트리거
-                isOverridden: false,
-                // Phase 6-2L+: 정정 흔적 제거
-                note: null,
-                overrideSource: null,
-              },
-            });
-          }
-        }
-
-        // 4) attendance_requests 상태만 cancelled로 (이력 보존, 삭제 X)
-        const cancelledReq = await tx.attendanceRequest.update({
-          where: { id: idNum },
-          data: { status: "cancelled" },
-        });
-
-        // 5) 이 요청으로 생성된 결재 요청 알림 삭제 (결재자 종에 유령 알림 방지)
-        //    linkRefId = 요청 id, type = 'approval_request' 인 알림만 제거.
-        //    결재자가 여러 명이면 알림도 여러 개라 deleteMany. 매칭 없으면 0건(안전).
-        await tx.notification.deleteMany({
-          where: {
-            linkRefId: BigInt(idNum),
-            type: "approval_request",
-          },
-        });
-
-        return cancelledReq;
-      });
-
       console.log(
         `[cancel] 결재 #${idNum} 취소 완료 — type=${catType}, ` +
-          `원복 일수=${revertDays.length}`
+          `이전 상태=${before.status}, 원복 일수=${updated.revertedDays}`
       );
 
       // 승인(approved) 상태에서 취소한 경우, 승인한 결재자에게 "취소됨" 알림.

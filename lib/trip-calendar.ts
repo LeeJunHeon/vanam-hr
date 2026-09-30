@@ -21,6 +21,7 @@ import type { Prisma } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { isConfirmedParticipant } from "@/lib/trip-helpers";
 import { markAttendanceRecalc } from "@/lib/attendance-recalc";
+import { kstTodayMidnightUtc } from "@/lib/kst-date";
 
 // ── Field Trip 캘린더 / 카테고리 룩업(짧은 캐시) ──
 let _cachedBusinessTripCategoryId: number | null | undefined = undefined;
@@ -160,19 +161,8 @@ function combineDateAndTime(attendDate: Date, time: Date): Date {
   const d = attendDate.getUTCDate();
   return new Date(Date.UTC(y, m, d, hh - 9, mm, 0));
 }
-// KST 오늘 00:00 을 UTC 자정 Date 로 (날짜 컬럼 비교용). "지난 날짜" = 이보다 이전.
-export function kstTodayMidnightUtc(): Date {
-  const nowMs = Date.now();
-  const kstNow = new Date(nowMs + 9 * 60 * 60 * 1000);
-  return new Date(
-    Date.UTC(
-      kstNow.getUTCFullYear(),
-      kstNow.getUTCMonth(),
-      kstNow.getUTCDate(),
-      0, 0, 0, 0
-    )
-  );
-}
+// KST 오늘 00:00 (UTC 자정 Date). 정의는 lib/kst-date.ts — 기존 import 경로 유지용 re-export.
+export { kstTodayMidnightUtc };
 
 // 종일 vs 시간지정 start/end 빌더
 function buildStartEnd(

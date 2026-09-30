@@ -1,6 +1,11 @@
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/app/generated/prisma/client";
-import { resolveShiftPoint } from "@/lib/shift-schedule";
+import { resolveShiftPoint, isWorkPoint } from "@/lib/shift-schedule";
+import {
+  isResearchMeetingDay,
+  loadResearchMeetingPolicy,
+} from "@/lib/researchMeeting";
+import { hasLiveAllDayLeaveWork } from "@/lib/attendance-live-requests";
 
 // 분 단위 절삭 — 화면 표시(HH:MM)와 동일 기준으로 판정/계산
 // (aggregator의 _floor_minute와 동일 정책. setSeconds는 초/밀리초만 조작하므로 TZ 무관)
@@ -14,6 +19,9 @@ function floorMinute(d: Date | null): Date | null {
 // 정정/결재용 auto_status 재계산 (approvals/route.ts의 동일 로직을 이동).
 // 시프트 시각(HH:MM)과 grace로 normal/late/early_leave/absent/null 판정.
 // 공휴일은 지각/조퇴 판정 없음(aggregator와 동일 정책).
+// 판정 규칙은 aggregator(_determine_auto_status)와 웹이 같아야 한다 — 한쪽을 바꾸면 다른 쪽도.
+// 조퇴 = (근무시간 < 필요시간) AND (퇴근 < 시프트 종료 − grace_out).
+//   늦게 와서 시프트 종료 뒤에 퇴근하면 지각만, 일찍 와서 일찍 가도 시간이 충분하면 정상.
 export function determineAutoStatus(
   checkIn: Date | null,
   checkOut: Date | null,
@@ -50,18 +58,35 @@ export function determineAutoStatus(
   shiftStart.setHours(shH, shM, 0, 0);
   const lateThreshold = new Date(shiftStart.getTime() + graceIn * 60 * 1000);
   if (checkIn > lateThreshold) return "late";
+  if (isEarlyLeaveBy(checkIn, checkOut, shiftStart, shiftMinutes, graceOut)) {
+    return "early_leave";
+  }
+  return "normal";
+}
+
+// 조퇴 판정 — determineAutoStatus·determineAttendanceFlags 공용.
+// 시프트 종료 = 시프트 시작 + 시프트 길이(자정 넘김 +24h 포함).
+function isEarlyLeaveBy(
+  checkIn: Date,
+  checkOut: Date,
+  shiftStart: Date,
+  shiftMinutes: number,
+  graceOut: number
+): boolean {
   const actualMinutes = Math.floor(
     (checkOut.getTime() - checkIn.getTime()) / (60 * 1000)
   );
   const requiredMinutes = shiftMinutes - graceOut;
-  if (actualMinutes < requiredMinutes) return "early_leave";
-  return "normal";
+  const shiftEnd = new Date(shiftStart.getTime() + shiftMinutes * 60 * 1000);
+  const earlyThreshold = new Date(shiftEnd.getTime() - graceOut * 60 * 1000);
+  return actualMinutes < requiredMinutes && checkOut < earlyThreshold;
 }
 
 // 정정 승인 시 is_late / is_early_leave 플래그 판정.
 // aggregator/aggregator.py _determine_auto_status 와 같은 임계값 식을 쓴다
 // (floorMinute, shiftMinutes<=0 이면 +24h, lateThreshold, requiredMinutes) —
 // 같은 입력에서 determineAutoStatus 의 결과와 모순되지 않아야 하기 때문이다.
+// 판정 규칙은 aggregator 와 웹이 같아야 한다 — 한쪽을 바꾸면 다른 쪽도 (조퇴 규칙은 isEarlyLeaveBy).
 // null 은 "판정 불가/모름", false 는 "판정했고 해당 없음"을 뜻한다.
 // 주의: 점심 공제(lunch_deduct_enabled)는 aggregator 에만 있음
 //       — 정책 활성화 시 양쪽 동기화 필요.
@@ -93,11 +118,10 @@ export function determineAttendanceFlags(
   const isLate = checkIn > lateThreshold;
   // 퇴근 전에는 조퇴를 판정할 수 없다
   if (!checkOut) return { isLate, isEarlyLeave: null };
-  const actualMinutes = Math.floor(
-    (checkOut.getTime() - checkIn.getTime()) / (60 * 1000)
-  );
-  const requiredMinutes = shiftMinutes - graceOut;
-  return { isLate, isEarlyLeave: actualMinutes < requiredMinutes };
+  return {
+    isLate,
+    isEarlyLeave: isEarlyLeaveBy(checkIn, checkOut, shiftStart, shiftMinutes, graceOut),
+  };
 }
 
 // 그 날 시프트 종료 시각의 Date. 자정을 넘는 시프트(end <= start)는 다음날로 계산한다.
@@ -121,6 +145,8 @@ export function shiftEndBoundary(
 
 // 정정 날짜 기준 시프트(HH:MM) + grace 정책 로드.
 // tx 안/밖 어디서든 호출 가능하도록 prisma(또는 tx)를 인자로 받는다.
+// 연구미팅 대체는 aggregator get_employee_shift 와 같다: 참여 직원 + 미팅일 + 근무일 point 일 때만
+// 시작·종료를 정책 시간으로 바꾼다(휴무·미배정은 그대로).
 export async function loadShiftAndGrace(
   db: Prisma.TransactionClient | typeof prisma,
   employeeId: number,
@@ -161,6 +187,20 @@ export async function loadShiftAndGrace(
       shiftStartHHMM = point.start ?? null;
       shiftEndHHMM = point.end ?? null;
     }
+
+    if (isWorkPoint(point)) {
+      const emp = await db.employee.findUnique({
+        where: { id: employeeId },
+        select: { attendsResearchMeeting: true },
+      });
+      if (emp?.attendsResearchMeeting) {
+        const rm = await loadResearchMeetingPolicy(db);
+        if (rm && isResearchMeetingDay(workDateStr, rm)) {
+          shiftStartHHMM = rm.start;
+          shiftEndHHMM = rm.end;
+        }
+      }
+    }
   }
   let graceInMinutes = 10;
   let graceOutMinutes = 0;
@@ -175,6 +215,81 @@ export async function loadShiftAndGrace(
     }
   }
   return { shiftStartHHMM, shiftEndHHMM, graceInMinutes, graceOutMinutes };
+}
+
+// 정정된 시각으로 근무시간·상태·지각/조퇴 플래그를 계산한다 (정정 반영·정정 취소 공용).
+// - 그 날 살아 있는 "종일" 휴가·외근이 있으면 normal + 플래그 false (aggregator 의 종일 신청 규칙과 동일)
+// - 공휴일이면 지각/조퇴 판정 없이 단순 판정 (aggregator와 동일 정책)
+export async function computeCorrectedDaily(
+  tx: Prisma.TransactionClient,
+  employeeId: number,
+  workDate: Date,
+  checkIn: Date | null,
+  checkOut: Date | null,
+  logRef: string = ""
+): Promise<{
+  workMinutes: number | null;
+  autoStatus: string | null;
+  isLate: boolean | null;
+  isEarlyLeave: boolean | null;
+}> {
+  checkIn = floorMinute(checkIn);
+  checkOut = floorMinute(checkOut);
+
+  let workMinutes: number | null = null;
+  if (checkIn && checkOut) {
+    const diffMinutes = Math.floor(
+      (checkOut.getTime() - checkIn.getTime()) / (60 * 1000)
+    );
+    if (diffMinutes < 0) {
+      // 출근 > 퇴근인 정정 (2026-07-24 사례). 음수를 저장하면 화면·월간합계가
+      // 오염되므로 null로 두고 로그만 남긴다. 시각 자체는 요청대로 저장한다.
+      console.error(
+        `[applyCorrectionToDaily] 음수 근무시간 차단 — ` +
+          `employeeId=${employeeId}, workDate=${workDate.toISOString()}, ` +
+          `checkIn=${checkIn.toISOString()}, checkOut=${checkOut.toISOString()}, ` +
+          `diff=${diffMinutes}분, ${logRef}`
+      );
+    } else {
+      workMinutes = diffMinutes;
+    }
+  }
+
+  if (await hasLiveAllDayLeaveWork(tx, employeeId, workDate)) {
+    return { workMinutes, autoStatus: "normal", isLate: false, isEarlyLeave: false };
+  }
+
+  // 시프트/정책은 tx로 로드 (같은 트랜잭션 일관성)
+  const { shiftStartHHMM, shiftEndHHMM, graceInMinutes, graceOutMinutes } =
+    await loadShiftAndGrace(tx, employeeId, workDate);
+
+  // 공휴일이면 지각/조퇴 판정 없이 단순 판정 (aggregator와 동일 정책)
+  const holidayRow = await tx.holiday.findUnique({
+    where: { holidayDate: workDate },
+  });
+
+  const autoStatus = determineAutoStatus(
+    checkIn,
+    checkOut,
+    shiftStartHHMM,
+    shiftEndHHMM,
+    graceInMinutes,
+    graceOutMinutes,
+    !!holidayRow
+  );
+
+  // aggregator 의 백필은 "반대쪽 시각이 비어 있다가 채워질 때"만 돌아서, 퇴근이 찍힌 뒤
+  // 정정하면 플래그가 NULL 로 남았다. 여기서 auto_status 와 같은 기준으로 함께 채운다.
+  const flags = determineAttendanceFlags(
+    checkIn,
+    checkOut,
+    shiftStartHHMM,
+    shiftEndHHMM,
+    graceInMinutes,
+    graceOutMinutes,
+    !!holidayRow
+  );
+  return { workMinutes, autoStatus, ...flags };
 }
 
 // 정정(correction)을 attendance_daily에 반영하는 공통 함수.
@@ -195,10 +310,6 @@ export async function applyCorrectionToDaily(
   const { employeeId, workDate, correctedCheckIn, correctedCheckOut, requestId } =
     params;
 
-  // 시프트/정책은 tx로 로드 (같은 트랜잭션 일관성)
-  const { shiftStartHHMM, shiftEndHHMM, graceInMinutes, graceOutMinutes } =
-    await loadShiftAndGrace(tx, employeeId, workDate);
-
   const existing = await tx.attendanceDaily.findUnique({
     where: { employeeId_workDate: { employeeId, workDate } },
   });
@@ -206,52 +317,17 @@ export async function applyCorrectionToDaily(
   const newCheckIn = floorMinute(correctedCheckIn ?? existing?.checkIn ?? null);
   const newCheckOut = floorMinute(correctedCheckOut ?? existing?.checkOut ?? null);
 
-  let newWorkMinutes: number | null = null;
-  if (newCheckIn && newCheckOut) {
-    const diffMinutes = Math.floor(
-      (newCheckOut.getTime() - newCheckIn.getTime()) / (60 * 1000)
-    );
-    if (diffMinutes < 0) {
-      // 출근 > 퇴근인 정정 (2026-07-24 사례). 음수를 저장하면 화면·월간합계가
-      // 오염되므로 null로 두고 로그만 남긴다. 시각 자체는 요청대로 저장한다.
-      console.error(
-        `[applyCorrectionToDaily] 음수 근무시간 차단 — ` +
-          `employeeId=${employeeId}, workDate=${workDate.toISOString()}, ` +
-          `checkIn=${newCheckIn.toISOString()}, checkOut=${newCheckOut.toISOString()}, ` +
-          `diff=${diffMinutes}분, requestId=${requestId}`
-      );
-      newWorkMinutes = null;
-    } else {
-      newWorkMinutes = diffMinutes;
-    }
-  }
-
-  // 공휴일이면 지각/조퇴 판정 없이 단순 판정 (aggregator와 동일 정책)
-  const holidayRow = await tx.holiday.findUnique({
-    where: { holidayDate: workDate },
-  });
-
-  const newAutoStatus = determineAutoStatus(
+  const derived = await computeCorrectedDaily(
+    tx,
+    employeeId,
+    workDate,
     newCheckIn,
     newCheckOut,
-    shiftStartHHMM,
-    shiftEndHHMM,
-    graceInMinutes,
-    graceOutMinutes,
-    !!holidayRow
+    `requestId=${requestId}`
   );
-
-  // aggregator 의 백필은 "반대쪽 시각이 비어 있다가 채워질 때"만 돌아서, 퇴근이 찍힌 뒤
-  // 정정하면 플래그가 NULL 로 남았다. 여기서 auto_status 와 같은 기준으로 함께 채운다.
-  const newFlags = determineAttendanceFlags(
-    newCheckIn,
-    newCheckOut,
-    shiftStartHHMM,
-    shiftEndHHMM,
-    graceInMinutes,
-    graceOutMinutes,
-    !!holidayRow
-  );
+  const newWorkMinutes = derived.workMinutes;
+  const newAutoStatus = derived.autoStatus;
+  const newFlags = { isLate: derived.isLate, isEarlyLeave: derived.isEarlyLeave };
 
   // 실제로 정정한 항목만 original에 백업한다.
   // - 출근 정정(correctedCheckIn 있음) + 아직 originalCheckIn 백업 전 → 출근 원본 백업
