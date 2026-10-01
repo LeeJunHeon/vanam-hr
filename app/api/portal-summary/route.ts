@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
 import { progressLabel } from "@/lib/attendanceLabels";
 import { loadWorkDayChecker } from "@/lib/annual-leave";
-import { computeProgressStatus } from "@/lib/realtime-presence";
+import { computeProgressStatus, loadCurrentPresence } from "@/lib/realtime-presence";
 import { summarizeDays } from "@/lib/attendance-summary";
 import { loadTodayWorkDate } from "@/lib/kst-date";
 import { Prisma } from "@/app/generated/prisma/client";
@@ -44,10 +44,8 @@ export async function GET() {
     const graceMinutes = (await loadAttendancePolicy(prisma)).debounceMinutes;
     const { date: todayWorkDate, ymd: todayYmd, cutoffHour } = await loadTodayWorkDate(prisma);
 
-    // ── 본인 오늘(근무일) 최신 presence_raw + attendance_daily + 대표 신청 1건 ──
+    // ── 본인 오늘(근무일) attendance_daily + 대표 신청 1건 (연결 상태는 아래 공용 함수) ──
     type DetailRow = {
-      latest_status: string | null;
-      latest_checked_at: Date | null;
       today_check_out: Date | null;
       today_category_id: number | null;
       today_category_code: string | null;
@@ -60,18 +58,6 @@ export async function GET() {
     const detailRows = await prisma.$queryRaw<DetailRow[]>`
       WITH today_kst AS (
         SELECT ${todayYmd}::date AS d
-      ),
-      latest_raw AS (
-        SELECT status AS latest_status, checked_at AS latest_checked_at
-        FROM hr.presence_raw
-        WHERE employee_id = ${empId}
-          AND CASE
-            WHEN EXTRACT(HOUR FROM (checked_at AT TIME ZONE 'Asia/Seoul')) < ${cutoffHour}
-            THEN ((checked_at AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '1 day')::date
-            ELSE (checked_at AT TIME ZONE 'Asia/Seoul')::date
-          END = (SELECT d FROM today_kst)
-        ORDER BY checked_at DESC
-        LIMIT 1
       ),
       today_daily AS (
         SELECT
@@ -113,8 +99,6 @@ export async function GET() {
         LIMIT 1
       )
       SELECT
-        l.latest_status,
-        l.latest_checked_at,
         d.check_out AS today_check_out,
         d.category_id AS today_category_id,
         d.category_code AS today_category_code,
@@ -123,15 +107,17 @@ export async function GET() {
         r.corrected_check_in AS today_corrected_in,
         r.corrected_check_out AS today_corrected_out
       FROM (SELECT 1) one
-      LEFT JOIN latest_raw l ON true
       LEFT JOIN today_daily d ON true
       LEFT JOIN today_request r ON true
     `;
 
     const row = detailRows[0];
+    // 지금 연결 상태 — lib/realtime-presence 공용 판정(실시간 현황과 같음). 오늘 기록이 없어도
+    // 마지막 기록이 online 이면(근무일 경계를 넘어 연결된 채) 연결 중으로 본다.
+    const presence = (await loadCurrentPresence(prisma, [empId], todayWorkDate, cutoffHour)).get(empId);
     const progressStatus = computeProgressStatus({
-      latestStatus: row?.latest_status ?? null,
-      latestCheckedAt: row?.latest_checked_at ?? null,
+      latestStatus: presence?.status ?? null,
+      latestCheckedAt: presence?.checkedAt ?? null,
       todayCheckOut: row?.today_check_out ?? null,
       todayIsOverridden: row?.today_is_overridden ?? false,
       todayCategoryId: row?.today_category_id ?? null,

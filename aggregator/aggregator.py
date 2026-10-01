@@ -60,6 +60,19 @@ work_date 귀속 (야간 근무자 정책):
 - aggregator는 매 사이클마다 어제+오늘 두 work_date 모두 처리하여
   04:00~05:00 사이 grace 60분 도달 시점도 정확히 잡힌다.
 
+근무일 경계(cutoff)를 넘긴 연결 (day_rules.boundary_session):
+- 경계 B(다음 근무일 시작 시각)에 연결된 채 넘어간 세션은 연장 시간 M 안에서 끝을 찾는다.
+  끝 = 뒤로 grace 이상 재연결이 없는 offline.
+  · M 안에 끝나면 → 전날 퇴근 = 끝난 시각 C. B~C 기록은 전날 몫이고 다음 날 출근으로 세지 않는다.
+  · M 이 지나도록 끝나지 않으면 → 경계에서 나눈다: 전날 퇴근 = B, 다음 날 출근 = B(이월 출근).
+  · 그 사이는 판단 대기: 전날 퇴근은 비워 두고, 다음 날은 그 기록을 아직 쓰지 않는다.
+- M = overnight_extend_max_hours(기본 6, 0~12 로 자름). overnight_extend_enabled 를 끄면 연장 0시간
+  (경계에서 바로 나눔).
+- 하루 종일 연결 변화가 없는 날은 행을 만들지 않는다. 이월 출근 날은 그날 몫 기록이 처음 생길 때
+  출근 B 로 행이 생긴다(회사에 둔 폰 때문에 주말에 24시간 행이 생기지 않게).
+- 그 날 기록이 전부 전날 세션 몫이 되어 no_data 이면 예전 계산이 남긴 자동 행을 지운다.
+- 알려진 한계: 폰을 회사에 두고 가면 밤샘처럼 보인다(데이터로 구별 못 함 — 근태 정정으로 고친다).
+
 sync 단순 루프. asyncio 의존성 없음.
 """
 
@@ -77,12 +90,14 @@ from db import Database
 from logger import setup_logger
 from day_rules import (
     LEAVE_WORK_TYPES,
+    boundary_session,
     build_judge_ctx,
     day_alert_context,
     eval_keys,
     floor_minute,
     judge_day,
     judge_shift,
+    overnight_max_hours,
     shift_bounds,
 )
 
@@ -98,39 +113,6 @@ MANUAL_ROW_CATEGORY_TYPES = LEAVE_WORK_TYPES
 
 # 분 단위 절삭 — day_rules.floor_minute (화면 표시 HH:MM 과 같은 기준)
 _floor_minute = floor_minute
-
-
-def _extend_overnight_session(
-    raw_records: list[dict],
-    tail_records: list[dict],
-    grace_minutes: int,
-) -> list[dict]:
-    """cutoff를 넘겨 이어진 야간 세션의 꼬리를 raw_records에 이어붙인다.
-
-    work_date 창의 마지막 record가 online이면 그 세션은 창 안에서 끝나지 않은 것이다.
-    tail_records(창 밖 기록)에서 '세션을 실제로 닫는 offline'까지만 이어붙이고 자른다.
-    세션을 닫는 offline = 그 뒤로 grace_minutes 이상 재연결이 없는 offline.
-    그 이후 기록은 다음 work_date의 출근이므로 절대 포함하지 않는다.
-    """
-    if not raw_records or not tail_records:
-        return raw_records
-    if raw_records[-1]["status"] != "online":
-        return raw_records
-
-    merged = list(raw_records)
-    for i, rec in enumerate(tail_records):
-        merged.append(rec)
-        if rec["status"] != "offline":
-            continue
-        nxt = tail_records[i + 1] if i + 1 < len(tail_records) else None
-        if nxt is None:
-            # 더 이상 기록 없음 → grace 경과 판정은 compute_check_in_out이 수행
-            break
-        gap = (nxt["checked_at"] - rec["checked_at"]).total_seconds()
-        if gap >= grace_minutes * 60:
-            # 세션 종료 확정 → 여기서 자른다 (이후는 다음 날 출근)
-            break
-    return merged
 
 
 class Aggregator:
@@ -278,15 +260,17 @@ class Aggregator:
         except (ValueError, TypeError):
             timed_event_margin_hours = 0.0
 
-        # 야간 세션 cutoff 넘김 처리 (기본 OFF — 켜기 전까지 기존 동작 100% 유지)
+        # 야간 세션 cutoff 넘김 처리 — 끄면 연장 0시간(경계에서 바로 나눔)
+        # 근무일 경계를 넘긴 연결: 연장 시간 M (끄면 0 — 경계에서 바로 나눔, 켜면 최대 12시간)
         overnight_raw = self.db.get_policy("overnight_extend_enabled")
         overnight_extend_enabled = str(overnight_raw).strip().lower() == "true"
-        try:
-            overnight_extend_max_hours = int(
-                self.db.get_policy("overnight_extend_max_hours") or 6
+        _max_raw = self.db.get_policy("overnight_extend_max_hours")
+        overnight_extend_max_hours, _clamped = overnight_max_hours(overnight_raw, _max_raw)
+        if _clamped:
+            self.logger.warning(
+                f"overnight_extend_max_hours={_max_raw!r} 가 0~12 를 벗어나 "
+                f"{overnight_extend_max_hours} 시간으로 자름"
             )
-        except (TypeError, ValueError):
-            overnight_extend_max_hours = 6
 
         # 근무 시작 전 'WiFi 연결 확인' 알림 (기본 OFF면 기능 전체 no-op)
         prestart_raw = self.db.get_policy("prestart_alert_enabled")
@@ -492,7 +476,32 @@ class Aggregator:
             f"recalc {recalc_count}) ==="
         )
 
-    def _process_employee_work_date(
+    def _process_employee_work_date(self, emp: dict, work_date, *args, **kwargs) -> str:
+        """단일 직원 + 단일 work_date 처리 (_process_employee_work_date_core) + 남은 자동 행 정리.
+
+        이 work_date 창에 기록은 있는데 전부 전날 세션 몫이 되어(경계 closed 의 C 이하 또는 판단 대기)
+        결과가 no_data 이면, 예전 계산이 남긴 자동 행(정정·캘린더 아님, 사람 흔적 없음)을 지운다.
+        창에 기록이 0건인 날은 지우지 않는다(보관기간 정리로 raw 가 없을 수 있다).
+        """
+        self._excluded_all_prev = False
+        result = self._process_employee_work_date_core(emp, work_date, *args, **kwargs)
+        if result == "no_data" and self._excluded_all_prev:
+            try:
+                deleted = self.db.delete_auto_daily_row(emp["id"], work_date)
+            except Exception as e:
+                self.logger.error(
+                    f"  [overnight] 직원 {emp['id']} work_date={work_date} 남은 자동 행 삭제 실패: {e}"
+                )
+                deleted = None
+            if deleted is not None:
+                self.logger.info(
+                    f"  [overnight] 직원 {emp['id']}({emp.get('employee_no')}/{emp.get('name')}) "
+                    f"work_date={work_date} — 남은 자동 행 삭제 "
+                    f"(check_in={deleted[0]}, check_out={deleted[1]}; 기록이 전부 전날 세션 몫)"
+                )
+        return result
+
+    def _process_employee_work_date_core(
         self,
         emp: dict,
         work_date,
@@ -540,34 +549,81 @@ class Aggregator:
 
         # 1) presence_raw 기반 check_in/out (없으면 둘 다 None)
         raw = self.db.get_presence_raw_by_work_date(emp_id, work_date, cutoff_hour)
+        window_had_records = bool(raw)
 
-        # 1-a) 야간 세션이 cutoff를 넘겨 이어진 경우 창을 세션 종료까지 연장 (정책 ON일 때만)
-        if overnight_extend_enabled and raw and raw[-1]["status"] == "online":
-            try:
-                tail = self.db.get_presence_raw_after_work_date(
-                    emp_id, work_date, cutoff_hour, overnight_extend_max_hours
-                )
-            except Exception as e:
-                self.logger.error(
-                    f"  [overnight] get_presence_raw_after_work_date 실패 "
-                    f"(emp={emp_id}, work_date={work_date}): {e}"
-                )
-                tail = []
-            if tail:
-                _before = len(raw)
-                raw = _extend_overnight_session(raw, tail, grace_minutes)
-                if len(raw) > _before:
+        # 1-a) 근무일 경계(cutoff)를 넘긴 연결 — day_rules.boundary_session
+        #   work_date 창 [S, E): S = work_date 의 cutoff 시각(KST), E = S + 1일. M = 연장 시간.
+        #   시작 쪽: S 직전 마지막 기록이 online(전날에서 이어진 연결)이면
+        #     closed(C) → 이 날 기록에서 C 이하 제외(전날 세션 몫) / open → 이월 출근(출근 = S) /
+        #     pending → 이 날 기록을 이번 계산에 쓰지 않음
+        #   끝 쪽: 이 날 몫 기록의 마지막이 online 이면
+        #     closed(C) → E~C 기록을 이어 붙임(퇴근 = C) / open → 퇴근 = E / pending → 퇴근 비움
+        from datetime import time as _time_b
+        S = datetime.combine(work_date, _time_b(hour=cutoff_hour), tzinfo=KST)
+        E = S + timedelta(days=1)
+        M = overnight_extend_max_hours
+        span = timedelta(hours=M, minutes=grace_minutes)
+        label = f"직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date}"
+        carried_in = False   # 이월 출근 (출근 = S)
+        split_out = False    # 경계에서 나눔 (퇴근 = E)
+        self._excluded_all_prev = False
+
+        try:
+            before_s = self.db.get_last_presence_status(emp_id, before=S)
+        except Exception as e:
+            self.logger.debug(f"  [overnight] get_last_presence_status 실패 ({label}): {e}")
+            before_s = None
+        if before_s and before_s["status"] == "online":
+            kind, closed_at = boundary_session(raw, S, M, grace_minutes, now)
+            if kind == "closed":
+                kept = [r for r in raw if r["checked_at"] > closed_at]
+                if len(kept) != len(raw):
                     self.logger.info(
-                        f"  [overnight] 직원 {emp_id}({emp_no}/{emp_name}) "
-                        f"work_date={work_date} — cutoff 넘김 세션 연장 "
-                        f"+{len(raw) - _before}건, "
-                        f"마지막={raw[-1]['status']}@{raw[-1]['checked_at']}"
+                        f"  [overnight] {label} — 전날 세션 몫 {len(raw) - len(kept)}건 제외 "
+                        f"(전날 퇴근 {closed_at.astimezone(KST):%m/%d %H:%M})"
+                    )
+                raw = kept
+            elif kind == "open":
+                if raw:
+                    carried_in = True
+                    self.logger.info(
+                        f"  [overnight] {label} — 이월 출근 {S:%H:%M}(이 날 기록 {len(raw)}건)"
+                    )
+                # 이 날 몫 기록이 0건이면 연결 기록이 없는 날과 같게 (출퇴근 없음)
+            else:
+                if raw:
+                    self.logger.info(
+                        f"  [overnight] {label} — 판단 대기(전날 세션), 이 날 기록 {len(raw)}건 보류"
+                    )
+                raw = []
+        self._excluded_all_prev = window_had_records and not raw
+
+        if raw and raw[-1]["status"] == "online":
+            tail = []
+            if now >= E:
+                try:
+                    tail = self.db.get_presence_raw_between(emp_id, E, E + span)
+                except Exception as e:
+                    self.logger.error(f"  [overnight] get_presence_raw_between 실패 ({label}): {e}")
+                    tail = None
+            if tail is not None:
+                kind, closed_at = boundary_session(tail, E, M, grace_minutes, now)
+                if kind == "closed":
+                    raw = raw + [r for r in tail if r["checked_at"] <= closed_at]
+                elif kind == "open":
+                    split_out = True
+                    self.logger.info(
+                        f"  [overnight] {label} — 끝 경계 open → 퇴근 {E:%m/%d %H:%M}"
                     )
 
         if raw:
             check_in, check_out = self.compute_check_in_out(raw, grace_minutes, now)
         else:
             check_in, check_out = None, None
+        if carried_in:
+            check_in = S
+        if split_out:
+            check_out = E
 
         # 1-b) 이 창에 출근(online)이 하나도 없으면 남은 offline은 전일 세션의 꼬리다.
         #      퇴근으로 굳히면 '출근 없이 퇴근만 있는' 유령 행이 생기므로 보류한다.
@@ -1391,6 +1447,7 @@ class Aggregator:
           - 현재 시각(KST)이 [기준 출근 - alert_minutes, 기준 출근) 구간 안
             (기준 출근 = 유효 근무 구간 시작 — 오전반차면 반차 끝, day_rules.day_alert_context)
           - 오늘 attendance_daily.check_in 이 아직 없음 (이미 출근했으면 불필요).
+          - 지금 연결 중이 아님(마지막 기록이 online 이면 경계를 넘어 연결된 채 출근 시각을 맞은 것).
             presence_raw 대신 check_in을 쓰는 이유: presence_raw에는 offline도 들어가서
             stale ARP 엔트리가 정리된 흔적(예: 08:14 offline)만으로도 '기록 있음'이 되어
             실제 미출근자의 알림이 누락된다.
@@ -1414,6 +1471,7 @@ class Aggregator:
         skip_parse = 0        # 시작시각 파싱 실패
         skip_window = 0       # 발송 창 밖
         skip_checked_in = 0   # 이미 출근
+        skip_connected = 0    # 지금 연결 중 (근무일 경계를 넘어 연결된 채 출근 시각을 맞음)
         skip_allday = 0       # 종일 휴가/출장
         skip_dup = 0          # 오늘 이미 발송
         sent = 0
@@ -1452,6 +1510,13 @@ class Aggregator:
                     skip_checked_in += 1
                     continue
 
+                # 4-1) 지금 연결 중(마지막 기록이 online)이면 보내지 않는다.
+                #      경계(04:00)를 넘어 연결된 채로 출근 시각을 맞는 경우 — 출근 기록이 아직 없을 뿐이다.
+                _last = self.db.get_last_presence_status(emp_id)
+                if _last and _last["status"] == "online":
+                    skip_connected += 1
+                    continue
+
                 # 5) 알림 없는 날(종일 휴가·근무, 시프트 전체를 덮는 휴가) 제외
                 if ctx["no_alert_today"]:
                     skip_allday += 1
@@ -1476,10 +1541,10 @@ class Aggregator:
                 continue
 
         # 창 밖은 거의 모든 사이클에서 전원 해당이라 로그 조건에서 제외(매분 로그 방지).
-        if sent or skip_checked_in or skip_allday or skip_dup or skip_parse:
+        if sent or skip_checked_in or skip_connected or skip_allday or skip_dup or skip_parse:
             self.logger.info(
                 f"  [prestart] 검토 {considered}명 → 발송 {sent}건 "
-                f"(스킵: 창밖 {skip_window}, 이미출근 {skip_checked_in}, "
+                f"(스킵: 창밖 {skip_window}, 이미출근 {skip_checked_in}, 연결중 {skip_connected}, "
                 f"종일 {skip_allday}, 중복 {skip_dup}, 파싱실패 {skip_parse}, "
                 f"시프트없음 {skip_no_shift})"
             )

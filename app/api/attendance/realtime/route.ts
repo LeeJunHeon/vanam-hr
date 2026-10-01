@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import {
   computeRealtimeStatus,
   computeProgressStatus,
+  loadCurrentPresence,
 } from "@/lib/realtime-presence";
 import {
   requireSession,
@@ -141,32 +142,18 @@ export async function GET(request: NextRequest) {
       today_corrected_out: Date | null;
     };
 
-    const latestRows = await prisma.$queryRaw<LatestRow[]>`
+    // 지금 연결 상태 — lib/realtime-presence 공용 판정. 오늘 기록이 없어도 마지막 기록이 online 이면
+    // (근무일 경계를 넘어 연결된 채) 연결 중으로 본다.
+    const presence = await loadCurrentPresence(
+      prisma,
+      employeeIds,
+      kstWorkDateMidnightUtc(cutoffHour),
+      cutoffHour
+    );
+
+    const dailyRows = await prisma.$queryRaw<Omit<LatestRow, "latest_status" | "latest_checked_at" | "latest_location">[]>`
       WITH today_kst AS (
         SELECT ${todayWorkYmd}::date AS d
-      ),
-      today_raw AS (
-        SELECT
-          employee_id,
-          checked_at,
-          status,
-          location
-        FROM hr.presence_raw
-        WHERE employee_id = ANY(${employeeIds}::int[])
-          AND CASE
-            WHEN EXTRACT(HOUR FROM (checked_at AT TIME ZONE 'Asia/Seoul')) < ${cutoffHour}
-            THEN ((checked_at AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '1 day')::date
-            ELSE (checked_at AT TIME ZONE 'Asia/Seoul')::date
-          END = (SELECT d FROM today_kst)
-      ),
-      latest_per_emp AS (
-        SELECT DISTINCT ON (employee_id)
-          employee_id,
-          status AS latest_status,
-          checked_at AS latest_checked_at,
-          location AS latest_location
-        FROM today_raw
-        ORDER BY employee_id, checked_at DESC
       ),
       today_daily AS (
         SELECT
@@ -224,9 +211,6 @@ export async function GET(request: NextRequest) {
       )
       SELECT
         e.id AS employee_id,
-        l.latest_status,
-        l.latest_checked_at,
-        l.latest_location,
         d.check_in AS today_check_in,
         d.check_out AS today_check_out,
         d.work_minutes AS today_work_minutes,
@@ -243,10 +227,19 @@ export async function GET(request: NextRequest) {
         r.corrected_check_in AS today_corrected_in,
         r.corrected_check_out AS today_corrected_out
       FROM (SELECT UNNEST(${employeeIds}::int[]) AS id) e
-      LEFT JOIN latest_per_emp l ON l.employee_id = e.id
       LEFT JOIN today_daily d ON d.employee_id = e.id
       LEFT JOIN today_request r ON r.employee_id = e.id
     `;
+
+    const latestRows: LatestRow[] = dailyRows.map((d) => {
+      const pr = presence.get(d.employee_id);
+      return {
+        ...d,
+        latest_status: pr?.status ?? null,
+        latest_checked_at: pr?.checkedAt ?? null,
+        latest_location: pr?.location ?? null,
+      };
+    });
 
     // 직원 정보 맵
     const empMap = new Map(employees.map((e) => [e.id, e]));

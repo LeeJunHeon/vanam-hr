@@ -7,7 +7,108 @@
 //   - offline 이지만 grace(debounce_minutes) 이내      → working  (잠시 자리비움)
 //   - offline 이고 grace 경과, 또는 기록 없음          → disconnected
 
+import type { Prisma } from "@/app/generated/prisma/client";
+import type { prisma } from "@/lib/prisma";
+
+type Db = Prisma.TransactionClient | typeof prisma;
+
 export type RealtimeStatus = "working" | "disconnected";
+
+// ── 지금 연결 상태 (근무일 경계를 넘어 연결된 채인 직원 포함) ─────────────────
+// 오늘 근무일 창 = [오늘 work_date + cutoff 시각(KST), +1일). aggregator 의 work_date 창과 같다.
+export function workDayWindow(workDate: Date, cutoffHour: number): { start: Date; end: Date } {
+  const start = new Date(
+    Date.UTC(workDate.getUTCFullYear(), workDate.getUTCMonth(), workDate.getUTCDate(), cutoffHour) -
+      9 * 60 * 60 * 1000
+  );
+  return { start, end: new Date(start.getTime() + 24 * 60 * 60 * 1000) };
+}
+
+export interface CurrentPresence {
+  status: string;
+  checkedAt: Date;
+  location: string | null;
+  // 오늘 창 시작 전 기록인데 online — 근무일 경계(04:00)를 넘어 연결된 채인 상태
+  carriedOver: boolean;
+}
+
+/**
+ * 직원별 "지금 연결 상태" — 가장 최근 presence_raw 1건 (idx_presence_raw_emp_time).
+ * - 그 기록이 오늘 근무일 창 시작 이후면 그대로 쓴다.
+ * - 창 시작 전 기록이면 online 일 때만 쓴다(carriedOver = true). offline 이면 오늘 기록 없음(맵에 없음).
+ * todayWorkDate: 오늘 근무일(UTC 자정 date, lib/kst-date kstWorkDateMidnightUtc).
+ */
+export async function loadCurrentPresence(
+  db: Db,
+  employeeIds: number[],
+  todayWorkDate: Date,
+  cutoffHour: number
+): Promise<Map<number, CurrentPresence>> {
+  const out = new Map<number, CurrentPresence>();
+  if (employeeIds.length === 0) return out;
+  const { start } = workDayWindow(todayWorkDate, cutoffHour);
+  const rows = await db.$queryRaw<
+    { employee_id: number; status: string; checked_at: Date; location: string | null }[]
+  >`
+    SELECT e.id AS employee_id, p.status, p.checked_at, p.location
+    FROM UNNEST(${employeeIds}::int[]) AS e(id)
+    JOIN LATERAL (
+      SELECT status, checked_at, location
+      FROM hr.presence_raw
+      WHERE employee_id = e.id
+      ORDER BY checked_at DESC, id DESC
+      LIMIT 1
+    ) p ON true
+  `;
+  for (const r of rows) {
+    if (r.checked_at >= start) {
+      out.set(r.employee_id, { status: r.status, checkedAt: r.checked_at, location: r.location, carriedOver: false });
+    } else if (r.status === "online") {
+      out.set(r.employee_id, { status: r.status, checkedAt: r.checked_at, location: r.location, carriedOver: true });
+    }
+  }
+  return out;
+}
+
+/**
+ * 본인 오늘 연결 요약 — 대시보드 "오늘 나의 연결 상태"·포털 챗 "내 재실 상태" 공용.
+ * currentStatus = loadCurrentPresence, 나머지는 오늘 근무일 창 기준.
+ * lastOnlineAt = 오늘 창의 마지막 online (없고 이월 연결이면 그 기록 시각).
+ */
+export async function loadTodayPresenceSummary(
+  db: Db,
+  employeeId: number,
+  todayWorkDate: Date,
+  cutoffHour: number
+): Promise<{
+  currentStatus: string | null;
+  lastOnlineAt: Date | null;
+  lastOfflineAt: Date | null;
+  todayRawCount: number;
+}> {
+  const { start, end } = workDayWindow(todayWorkDate, cutoffHour);
+  const [current, agg] = await Promise.all([
+    loadCurrentPresence(db, [employeeId], todayWorkDate, cutoffHour),
+    db.$queryRaw<{ last_online_at: Date | null; last_offline_at: Date | null; cnt: bigint }[]>`
+      SELECT
+        MAX(checked_at) FILTER (WHERE status = 'online') AS last_online_at,
+        MAX(checked_at) FILTER (WHERE status = 'offline') AS last_offline_at,
+        COUNT(*)::bigint AS cnt
+      FROM hr.presence_raw
+      WHERE employee_id = ${employeeId}
+        AND checked_at >= ${start}
+        AND checked_at < ${end}
+    `,
+  ]);
+  const cur = current.get(employeeId) ?? null;
+  const row = agg[0];
+  return {
+    currentStatus: cur?.status ?? null,
+    lastOnlineAt: row?.last_online_at ?? (cur?.carriedOver ? cur.checkedAt : null),
+    lastOfflineAt: row?.last_offline_at ?? null,
+    todayRawCount: row ? Number(row.cnt) : 0,
+  };
+}
 
 export function computeRealtimeStatus(p: {
   latestStatus: string | null;

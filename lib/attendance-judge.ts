@@ -390,7 +390,8 @@ export function judgeDay(checkIn: Date | null, checkOut: Date | null, ctx: Judge
       lunchStart: p.lunchStart,
       lunchEnd: p.lunchEnd,
       tripMinutes,
-      marginHours: p.timedEventMarginHours,
+      // 여유시간은 그날 시간형 근무가 있을 때만 (출장 시간 + 앞뒤 이동 여유) — day_rules.judge_day 와 같게
+      marginHours: ctx.inRangeWork.length > 0 ? p.timedEventMarginHours : 0,
       isHoliday: ctx.isHoliday,
       refWindow: w,
     });

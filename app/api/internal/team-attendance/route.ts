@@ -6,6 +6,8 @@ import { canViewAllEmployees } from "@/lib/auth-helpers";
 import { isLeaveCategoryType, isWorkCategoryType } from "@/lib/category-kind";
 import { rowEvalKeys } from "@/lib/attendance-summary";
 import { loadTodayWorkDate } from "@/lib/kst-date";
+import { computeRealtimeStatus, loadCurrentPresence } from "@/lib/realtime-presence";
+import { loadAttendancePolicy } from "@/lib/attendance-policy";
 
 export const dynamic = "force-dynamic";
 
@@ -42,15 +44,16 @@ export async function GET(request: NextRequest) {
   const KST = 9 * 60 * 60 * 1000;
   const dateParam = new URL(request.url).searchParams.get("date");
   let y: number, m: number, dd: number;
+  const { date: todayWorkDate, cutoffHour } = await loadTodayWorkDate(prisma);
   if (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
     const p = dateParam.split("-");
     y = Number(p[0]); m = Number(p[1]) - 1; dd = Number(p[2]);
   } else {
-    const { date } = await loadTodayWorkDate(prisma);
-    y = date.getUTCFullYear(); m = date.getUTCMonth(); dd = date.getUTCDate();
+    y = todayWorkDate.getUTCFullYear(); m = todayWorkDate.getUTCMonth(); dd = todayWorkDate.getUTCDate();
   }
   const start = new Date(Date.UTC(y, m, dd));
   const end = new Date(Date.UTC(y, m, dd + 1));
+  const isToday = start.getTime() === todayWorkDate.getTime();
 
   const empWhere: any = { isActive: true, isHrOnly: false };
   if (scope === "department") empWhere.departmentId = deptId;
@@ -76,6 +79,20 @@ export async function GET(request: NextRequest) {
   });
   const dailyMap = new Map<number, (typeof dailies)[number]>();
   for (const d of dailies) dailyMap.set(d.employeeId, d);
+
+  // 오늘 근무일이면 지금 연결 상태도 본다 — 근무일 경계를 넘어 연결된 채라 아직 출근 행이 없는 사람을
+  // 미출근으로 세지 않기 위해(lib/realtime-presence 공용 판정, 실시간 현황과 같음).
+  const presence = isToday
+    ? await loadCurrentPresence(prisma, empIds, todayWorkDate, cutoffHour)
+    : new Map();
+  const graceMs = isToday ? (await loadAttendancePolicy(prisma)).debounceMinutes * 60 * 1000 : 0;
+  const nowMs = Date.now();
+  const connectedNow = (empId: number) => {
+    const pr = presence.get(empId);
+    return !!pr && computeRealtimeStatus({
+      latestStatus: pr.status, latestCheckedAt: pr.checkedAt, graceMs, now: nowMs,
+    }) === "working";
+  };
 
   const hm = (dt: Date | null) =>
     dt ? new Date(dt.getTime() + KST).toISOString().slice(11, 16) : null;
@@ -116,6 +133,11 @@ export async function GET(request: NextRequest) {
         earlyLeave++;
         earlyLeaveList.push({ name: e.name, checkOut: hm(d.checkOut) });
       }
+      continue;
+    }
+    if (isToday && connectedNow(e.id)) {
+      // 휴가·근무 구분·결근·출근 시각은 없지만 지금 연결 중 → 출근으로 센다(지각·조퇴 목록은 행 기준)
+      present++;
       continue;
     }
     pending++;

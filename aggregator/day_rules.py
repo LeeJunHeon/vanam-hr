@@ -514,10 +514,75 @@ def judge_day(check_in: Optional[datetime], check_out: Optional[datetime], ctx: 
             check_in, check_out, shift, ctx["grace_in"], ctx["grace_out"],
             lunch_deduct_enabled=ctx["lunch_deduct_enabled"],
             lunch_start_str=ctx["lunch_start"], lunch_end_str=ctx["lunch_end"],
-            trip_minutes=trip_minutes, margin_hours=ctx["margin_hours"],
+            # 여유시간은 그날 시간형 근무가 있을 때만 (출장 시간 + 앞뒤 이동 여유) — 웹 judgeDay 와 같게
+            trip_minutes=trip_minutes, margin_hours=ctx["margin_hours"] if work else 0.0,
             is_holiday=ctx["is_holiday"], ref_window=win,
         )
         return _r(st, l, e, "judged")
     if check_in is not None:
         return _r("working", None, None, "working")
     return _r("normal", False, False, "no_checkin")
+
+
+# ── 근무일 경계(cutoff)를 넘긴 연결 ─────────────────────────────────────────
+
+OVERNIGHT_MAX_HOURS_DEFAULT = 6
+OVERNIGHT_MAX_HOURS_LIMIT = 12
+
+
+def overnight_max_hours(enabled, raw_value) -> tuple:
+    """경계를 넘긴 세션을 기다리는 연장 시간 M(시간). 반환: (M, 범위를 벗어나 잘랐는가).
+
+    - 정책(overnight_extend_enabled)이 꺼져 있으면 0 — 경계에서 바로 나눈다.
+    - 켜져 있으면 overnight_extend_max_hours (없거나 파싱 실패 시 6).
+    - 0~12 시간으로 자른다(판단 대기가 다음 근무일까지 이어지지 않게). 잘랐으면 호출자가 경고 로그.
+    """
+    if str(enabled).strip().lower() != "true":
+        return 0, False
+    try:
+        m = int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        return OVERNIGHT_MAX_HOURS_DEFAULT, False
+    if m < 0:
+        return 0, True
+    if m > OVERNIGHT_MAX_HOURS_LIMIT:
+        return OVERNIGHT_MAX_HOURS_LIMIT, True
+    return m, False
+
+
+def boundary_session(records: list, boundary: datetime, max_hours: int, grace_minutes: int, now: datetime) -> tuple:
+    """근무일 경계 B 에 열려 있던(연결된 채 넘어온) 세션이 어떻게 끝났는지.
+
+    records: B 이후 presence 기록(checked_at 오름차순, 직원 단위). [B, B + M + grace) 면 충분하다.
+    반환:
+      ("closed", C) — 연장 시간 M 안에 끝남. 전날 퇴근 = C, B~C 기록은 전날 몫(다음 날 출근으로 세지 않음)
+      ("open", None) — M 이 지나도록 끝나지 않음. 경계에서 나눈다: 전날 퇴근 = B, 다음 날 출근 = B(이월 출근)
+      ("pending", None) — 아직 판단할 수 없음. 전날 퇴근은 비워 두고, 다음 날은 그 기록을 아직 쓰지 않는다
+    끝 = 뒤로 grace 이상 재연결이 없는 offline. [B, B + M) 안의 offline 을 차례로 보고, 다음 기록이
+    grace 안이면 잠깐 끊김이므로 계속 본다. 다음 기록이 없으면 now − offline ≥ grace 일 때 끝.
+    M = 0 이면 경계를 지나는 순간 open.
+
+    알려진 한계: 폰을 회사에 두고 가면 연결이 이어져 밤샘처럼 보인다(데이터로 구별할 수 없음 —
+    근태 정정으로 고친다).
+    """
+    limit = boundary + timedelta(hours=max_hours)
+    grace = timedelta(minutes=grace_minutes)
+    for i, rec in enumerate(records):
+        t = rec["checked_at"]
+        if t < boundary:
+            continue
+        if t >= limit:
+            break
+        if rec["status"] != "offline":
+            continue
+        nxt = next((r for r in records[i + 1:] if r["checked_at"] > t), None)
+        if nxt is None:
+            if now - t >= grace:
+                return "closed", t
+            return "pending", None
+        if nxt["checked_at"] - t >= grace:
+            return "closed", t
+        # grace 안 재연결 — 잠깐 끊김, 계속 본다
+    if now >= limit:
+        return "open", None
+    return "pending", None

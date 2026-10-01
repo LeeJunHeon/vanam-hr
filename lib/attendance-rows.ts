@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import {
   computeRealtimeStatus,
   computeProgressStatus,
+  loadCurrentPresence,
   type RealtimeStatus,
   type ProgressStatus,
 } from "@/lib/realtime-presence";
@@ -297,45 +298,23 @@ export async function assembleAttendanceRows(params: {
     const graceMinutes = pol.debounceMinutes;
     const cutoffHour = pol.cutoffHour;
     // 오늘 근무일 (lib/kst-date — aggregator work_date_for 와 같은 규칙)
-    const todayWorkYmd = kstWorkDateMidnightUtc(cutoffHour).toISOString().slice(0, 10);
-
-    type LatestRow = {
-      employee_id: number;
-      latest_status: string | null;
-      latest_checked_at: Date | null;
-      latest_location: string | null;
-      today_ymd: string;
-    };
-    const latest = await prisma.$queryRaw<LatestRow[]>`
-      WITH today_kst AS (
-        SELECT ${todayWorkYmd}::date AS d
-      ),
-      today_raw AS (
-        SELECT employee_id, checked_at, status, location
-        FROM hr.presence_raw
-        WHERE employee_id = ANY(${employeeIds}::int[])
-          AND CASE
-            WHEN EXTRACT(HOUR FROM (checked_at AT TIME ZONE 'Asia/Seoul')) < ${cutoffHour}
-            THEN ((checked_at AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '1 day')::date
-            ELSE (checked_at AT TIME ZONE 'Asia/Seoul')::date
-          END = (SELECT d FROM today_kst)
-      )
-      SELECT DISTINCT ON (employee_id)
-        employee_id,
-        status AS latest_status,
-        checked_at AS latest_checked_at,
-        location AS latest_location,
-        to_char((SELECT d FROM today_kst), 'YYYY-MM-DD') AS today_ymd
-      FROM today_raw
-      ORDER BY employee_id, checked_at DESC
-    `;
+    const todayWorkDate = kstWorkDateMidnightUtc(cutoffHour);
+    todayYmdCutoff = todayWorkDate.toISOString().slice(0, 10);
+    // 지금 연결 상태 — lib/realtime-presence 공용 판정(realtime API 와 같음). 오늘 기록이 없어도
+    // 마지막 기록이 online 이면(근무일 경계를 넘어 연결된 채) 연결 중으로 본다.
+    const presence = await loadCurrentPresence(prisma, employeeIds, todayWorkDate, cutoffHour);
+    const latest = Array.from(presence.entries()).map(([employeeId, p]) => ({
+      employee_id: employeeId,
+      latest_status: p.status as string | null,
+      latest_checked_at: p.checkedAt as Date | null,
+      latest_location: p.location,
+    }));
 
     realtimeNowMs = Date.now();
     realtimeGraceMs = graceMinutes * 60 * 1000;
     const nowMs = realtimeNowMs;
     const graceMs = realtimeGraceMs;
     for (const r of latest) {
-      todayYmdCutoff = r.today_ymd;
       realtimeMap.set(r.employee_id, {
         status: computeRealtimeStatus({
           latestStatus: r.latest_status,
