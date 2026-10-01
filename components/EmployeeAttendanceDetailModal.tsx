@@ -135,11 +135,12 @@ function renderProgress(row: DetailRow) {
     }
     // notStartedYet === true → 여기서 return 안 하고 아래 공용 판정으로 흐른다.
   }
-  // 출근/퇴근 존재 + 오늘 여부로만 판정 (완료/근무중/미퇴근/미출근)
+  // 출근/퇴근 존재 + 오늘 여부 (+ 출근이 없을 때 평가) 로 판정 (완료/근무중/미퇴근/미출근)
   const label = settledProgressLabel({
     hasCheckIn: !!row.checkIn,
     hasCheckOut: !!row.checkOut,
     isToday: row.workDate === todayYmd(),
+    autoStatus: row.autoStatus,
   });
   const style = SETTLED_PROGRESS_STYLE[label];
   const labelEl = (

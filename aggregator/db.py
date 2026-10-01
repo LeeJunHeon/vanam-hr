@@ -108,61 +108,6 @@ class Database:
             )
             return [dict(r) for r in c.fetchall()]
 
-    def get_presence_raw_between(
-        self,
-        employee_id: int,
-        start: datetime,
-        end: datetime,
-    ) -> list[dict]:
-        """[start, end) 의 presence_raw (직원 단위 — 기기 합침). checked_at, id 오름차순.
-
-        근무일 경계를 넘긴 세션 판정(day_rules.boundary_session)용 — [경계, 경계 + M + grace) 를 읽는다.
-        반환: [{checked_at: datetime, status: 'online'|'offline'}, ...]
-        """
-        self._ensure_connected()
-        with self.conn.cursor(cursor_factory=RealDictCursor) as c:
-            c.execute(
-                """
-                SELECT checked_at, status
-                FROM hr.presence_raw
-                WHERE employee_id = %s
-                  AND checked_at >= %s
-                  AND checked_at < %s
-                ORDER BY checked_at ASC, id ASC
-                """,
-                (employee_id, start, end),
-            )
-            return [dict(r) for r in c.fetchall()]
-
-    def delete_auto_daily_row(self, employee_id: int, work_date: date):
-        """예전 계산이 남긴 자동 행 삭제 — 그 날 기록이 전부 전날 세션 몫이 된 경우.
-
-        조건: is_overridden=false, category_id NULL, 출퇴근 중 하나 이상 있음, 미확정,
-        note·status_reason NULL, 사유 첨부 없음. 정정·캘린더 행은 건드리지 않는다.
-        반환: 삭제한 (check_in, check_out) 또는 None.
-        """
-        self._ensure_connected()
-        with self.conn.cursor() as c:
-            c.execute(
-                """
-                DELETE FROM hr.attendance_daily d
-                WHERE d.employee_id = %s AND d.work_date = %s
-                  AND d.is_overridden = false
-                  AND d.category_id IS NULL
-                  AND (d.check_in IS NOT NULL OR d.check_out IS NOT NULL)
-                  AND d.is_confirmed = false
-                  AND d.note IS NULL
-                  AND d.status_reason IS NULL
-                  AND NOT EXISTS (
-                      SELECT 1 FROM hr.attendance_reason_files f WHERE f.daily_id = d.id
-                  )
-                RETURNING d.check_in, d.check_out
-                """,
-                (employee_id, work_date),
-            )
-            row = c.fetchone()
-            return (row[0], row[1]) if row else None
-
     def get_work_date_kst(self, cutoff_hour: int) -> date:
         """현재 시각의 work_date 반환 (cutoff_hour 이전이면 전일로 귀속).
 

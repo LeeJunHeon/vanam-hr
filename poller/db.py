@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional
 
 import psycopg2
-from psycopg2.extras import RealDictCursor, execute_values
+from psycopg2.extras import RealDictCursor
 
 
 class Database:
@@ -188,43 +188,3 @@ class Database:
                 """,
                 (device_id,),
             )
-
-    def insert_icc_observe(self, rows: list[tuple]) -> int:
-        """hr.icc_hq_observe 배치 INSERT. 적재 행 수 반환.
-
-        rows 각 원소 순서:
-        (cycle_id, device_id, employee_id, mac_address, in_snmp, in_icc,
-         conn_type, bss, rssi, duration_sec, ip_address, host_name, down_bytes, up_bytes)
-        관측 전용 테이블이라 실패해도 호출자가 삼킨다.
-        """
-        if not rows:
-            return 0
-        self._ensure_connected()
-        with self.conn.cursor() as c:
-            execute_values(
-                c,
-                """
-                INSERT INTO hr.icc_hq_observe
-                    (cycle_id, device_id, employee_id, mac_address, in_snmp, in_icc,
-                     conn_type, bss, rssi, duration_sec, ip_address, host_name,
-                     down_bytes, up_bytes)
-                VALUES %s
-                """,
-                rows,
-            )
-        return len(rows)
-
-    def cleanup_icc_observe(self, retain_days: int) -> int:
-        """hr.icc_hq_observe 에서 retain_days 보다 오래된 행 삭제. 삭제 행 수 반환.
-
-        관측 전용 테이블이라 실패해도 호출자가 삼킨다.
-        삭제 대상이 없으면 0을 반환하고 즉시 끝난다.
-        """
-        self._ensure_connected()
-        with self.conn.cursor() as c:
-            c.execute(
-                "DELETE FROM hr.icc_hq_observe "
-                "WHERE observed_at < now() - make_interval(days => %s)",
-                (retain_days,),
-            )
-            return c.rowcount or 0

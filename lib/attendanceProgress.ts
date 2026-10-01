@@ -2,11 +2,12 @@ import type { CSSProperties } from "react";
 import type { ProgressStatus } from "@/lib/realtime-presence";
 
 // 확정(과거/오늘) 근태 행의 "진행" 라벨 공용 판정.
-// 출근/퇴근 존재 여부 + 오늘 여부로만 결정한다 (auto_status 저장값은 바꾸지 않음).
-//   - 출근O + 퇴근O        → "완료"
-//   - 출근O + 퇴근X + 오늘  → "근무중"
-//   - 출근O + 퇴근X + 과거  → "미퇴근"
-//   - 출근X               → "미출근"
+// 출근/퇴근 존재 여부 + 오늘 여부(+ 출근이 없을 때 평가)로 결정한다 (auto_status 저장값은 바꾸지 않음).
+//   - 출근O + 퇴근O              → "완료"
+//   - 출근O + 퇴근X + 오늘        → "근무중"
+//   - 출근O + 퇴근X + 과거        → "미퇴근"
+//   - 출근X + 평가 정상(normal)   → "완료"  (수동 정상 처리·종일 휴가 등 출퇴근 없이 정상인 날)
+//   - 출근X + 그 밖               → "미출근"
 
 export type SettledProgress = "완료" | "근무중" | "미퇴근" | "미출근";
 
@@ -14,8 +15,9 @@ export function settledProgressLabel(p: {
   hasCheckIn: boolean;
   hasCheckOut: boolean;
   isToday: boolean;
+  autoStatus?: string | null;
 }): SettledProgress {
-  if (!p.hasCheckIn) return "미출근";
+  if (!p.hasCheckIn) return p.autoStatus === "normal" ? "완료" : "미출근";
   if (p.hasCheckOut) return "완료";
   // 출근O + 퇴근X
   return p.isToday ? "근무중" : "미퇴근";

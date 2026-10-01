@@ -48,7 +48,7 @@ class Poller:
             password=self.config.icc_password,
             site_id=self.config.icc_site_id,
         )
-        # 본사 ICC 관측 전용 (판정 무관, ICC_HQ_SITE_ID=0이면 None)
+        # 본사 ICC 판정용 (ICC 우선 + SNMP 폴백, ICC_HQ_SITE_ID=0이면 None — SNMP 단독)
         self.icc_hq: IccClient | None = None
         if self.config.icc_hq_site_id > 0:
             self.icc_hq = IccClient(
@@ -57,10 +57,6 @@ class Poller:
                 password=self.config.icc_password,
                 site_id=self.config.icc_hq_site_id,
             )
-        # 관측은 폴링(60초)보다 성긴 주기로 적재한다. 0.0 = 첫 사이클에 바로 1회 수행.
-        self._icc_hq_last_observe: float = 0.0
-        # 관측 데이터 정리를 수행한 날짜(KST 'YYYY-MM-DD'). 날짜가 바뀌면 하루 1회 실행.
-        self._icc_hq_last_cleanup_date: str | None = None
         self.notifier = Notifier(
             webhook_url=self.config.notifier_webhook_url,
             logger=self.logger,
@@ -209,8 +205,7 @@ class Poller:
     def _call_icc_hq_presence(self) -> set[str] | None:
         """본사 ICC(site_id=ICC_HQ_SITE_ID) 판정용 호출. 성공 시 MAC set 반환, 실패 시 None.
 
-        _observe_icc_hq() 와는 별개 경로다 — 그쪽은 6분 간격 관측 전용이고,
-        이 메서드는 매 사이클(60초) 판정에 쓰인다. self.icc_hq(IccClient)만 공유한다.
+        매 사이클(60초) 판정에 쓰인다.
 
         상태 전환 시 (ok→fail, fail→ok) 알림 발송. self.icc_hq 가 None
         (ICC_HQ_SITE_ID=0)이면 항상 None 반환 — 호출부에서 이를 "판정 비활성"으로 처리한다.
@@ -258,104 +253,6 @@ class Poller:
                 )
             return None
 
-    def _observe_icc_hq(self, snmp_macs: set[str] | None, devices: list[dict]) -> None:
-        """본사 ICC(site_id=ICC_HQ_SITE_ID) 관측 → hr.icc_hq_observe 적재.
-
-        판정에 전혀 관여하지 않는다. 실패는 warning 1줄만 남기고 삼킨다.
-        SNMP 결과와 나란히 기록해 두 소스의 차이를 사후 분석하기 위한 것.
-
-        ICC_HQ_OBSERVE_INTERVAL_SEC(기본 300초) 간격으로만 적재한다.
-        매 폴링 사이클(60초)마다 넣으면 하루 28,000행이 쌓여 DB가 과도하게 커진다.
-        """
-        if self.icc_hq is None:
-            return
-        # 적재 간격 게이트. 두 소스의 끊김 시차가 6~11분 단위라 5분 해상도로 충분하다.
-        now_ts = time.time()
-        if now_ts - self._icc_hq_last_observe < self.config.icc_hq_observe_interval_sec:
-            return
-        # try 밖에서 먼저 갱신한다. ICC 장애 시 매 사이클 재시도하지 않도록.
-        self._icc_hq_last_observe = now_ts
-        self._cleanup_icc_observe()
-        try:
-            t0 = time.time()
-            stations = self.icc_hq.get_stations()
-            call_time = time.time() - t0
-
-            # MAC(소문자 12자리) → station dict
-            by_mac: dict[str, dict] = {}
-            for s in stations:
-                m = (s.get("mac") or "").replace(":", "").replace("-", "").lower()
-                if len(m) == 12:
-                    by_mac[m] = s
-
-            snmp_set = snmp_macs if snmp_macs is not None else set()
-            cycle_id = int(t0)
-            rows: list[tuple] = []
-            matched = 0
-
-            for d in devices:
-                mac = (d.get("mac_address") or "").replace(":", "").replace("-", "").lower()
-                if not mac:
-                    continue
-                st = by_mac.get(mac)
-                in_icc = st is not None
-                if in_icc:
-                    matched += 1
-                conn = (st or {}).get("connection") or {}
-                wl = conn.get("wireless") or {}
-                wd = conn.get("wired") or {}
-                info = (st or {}).get("info") or {}
-                rows.append((
-                    cycle_id,
-                    d["id"],
-                    d["employee_id"],
-                    mac,
-                    mac in snmp_set,
-                    in_icc,
-                    conn.get("type"),
-                    wl.get("bss"),
-                    wl.get("rssi"),
-                    wl.get("duration"),
-                    info.get("ip") or None,
-                    (info.get("name") or None) if info.get("name") else None,
-                    wl.get("down_bytes", wd.get("down_bytes")),
-                    wl.get("up_bytes", wd.get("up_bytes")),
-                ))
-
-            inserted = 0
-            if not self.config.dry_run:
-                inserted = self.db.insert_icc_observe(rows)
-
-            self.logger.info(
-                f"  [3c] 본사 ICC 관측: {call_time:.3f}s "
-                f"(응답 {len(stations)}건, 등록기기 매칭 {matched}/{len(rows)}, 적재 {inserted}행)"
-            )
-        except Exception as e:
-            self.logger.warning(f"  [3c] 본사 ICC 관측 실패 (무시): {e}")
-
-    def _cleanup_icc_observe(self) -> None:
-        """관측 데이터 보존 기간 정리. KST 날짜 기준 하루 1회만 수행.
-
-        관측 테이블을 만드는 쪽이 치우도록 폴러에 둔다(aggregator 무관).
-        실패해도 warning 1줄만 남기고 관측·판정은 그대로 진행한다.
-        """
-        today = datetime.now().strftime("%Y-%m-%d")
-        if self._icc_hq_last_cleanup_date == today:
-            return
-        # 실패해도 오늘은 재시도하지 않는다(매 관측마다 DELETE 시도하는 것 방지).
-        self._icc_hq_last_cleanup_date = today
-        if self.config.dry_run:
-            return
-        try:
-            deleted = self.db.cleanup_icc_observe(self.config.icc_hq_observe_retain_days)
-            if deleted > 0:
-                self.logger.info(
-                    f"  [3c] 관측 데이터 정리: {deleted}행 삭제 "
-                    f"({self.config.icc_hq_observe_retain_days}일 이전)"
-                )
-        except Exception as e:
-            self.logger.warning(f"  [3c] 관측 데이터 정리 실패 (무시): {e}")
-
     def run_once(self):
         """폴링 1회 실행: SNMP + ICC → OR 연산 → presence_raw 적재."""
         cycle_start = time.time()
@@ -389,9 +286,6 @@ class Poller:
         icc_macs = self._call_icc()
         # [3d] 본사 ICC 판정 호출 (ICC_HQ_SITE_ID=0 이면 항상 None → 아래서 SNMP 그대로 사용)
         icc_hq_macs = self._call_icc_hq_presence()
-
-        # [3c] 본사 ICC 관측 (판정 무관, 기록 전용 — 실패해도 사이클 진행)
-        self._observe_icc_hq(snmp_macs, devices)
 
         # 본사(SNMP, ICC_HQ)와 공덕(ICC) 모두 실패했을 때만 SKIP (false offline 방지).
         # ICC_HQ_SITE_ID=0(비활성)이면 icc_hq_macs는 항상 None이므로, 이 조건은
@@ -569,9 +463,7 @@ class Poller:
         self.logger.info(
             f"DRY_RUN={self.config.dry_run}, LOG_LEVEL={self.config.log_level}, "
             f"ICC_URL={self.config.icc_url}, SITE_ID={self.config.icc_site_id}, "
-            f"ICC_HQ_SITE_ID={self.config.icc_hq_site_id}"
-            f"({self.config.icc_hq_observe_interval_sec}s 간격, "
-            f"{self.config.icc_hq_observe_retain_days}일 보존), "
+            f"ICC_HQ_SITE_ID={self.config.icc_hq_site_id}, "
             f"본사판정={'ICC우선/SNMP폴백' if self.config.icc_hq_site_id > 0 else 'SNMP단독'}, "
             f"NOTIFIER={'활성' if self.config.notifier_webhook_url else '비활성'} "
             f"(timeout={self.config.notifier_timeout}s, "

@@ -96,6 +96,7 @@ function evalCell(row: AttendanceRow, todayYmd: string): string {
         hasCheckIn: true,
         hasCheckOut: false,
         isToday: row.workDate === todayYmd,
+        autoStatus: row.autoStatus,
       });
       return `${evalText} · ${prog}`;
     }
@@ -106,6 +107,7 @@ function evalCell(row: AttendanceRow, todayYmd: string): string {
     hasCheckIn: !!row.checkIn,
     hasCheckOut: !!row.checkOut,
     isToday: row.workDate === todayYmd,
+    autoStatus: row.autoStatus,
   });
 }
 
