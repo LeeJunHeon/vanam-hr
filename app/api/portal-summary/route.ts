@@ -6,6 +6,9 @@ import { loadWorkDayChecker } from "@/lib/annual-leave";
 import { computeProgressStatus } from "@/lib/realtime-presence";
 import { summarizeDays } from "@/lib/attendance-summary";
 import { loadTodayWorkDate } from "@/lib/kst-date";
+import { Prisma } from "@/app/generated/prisma/client";
+import { LIVE_REQUEST_STATUSES } from "@/lib/attendance-live-requests";
+import { loadAttendancePolicy } from "@/lib/attendance-policy";
 
 export const dynamic = "force-dynamic";
 
@@ -37,12 +40,8 @@ export async function GET() {
     if (!Number.isInteger(employeeId)) return emptyResponse();
     const empId = employeeId as number;
 
-    // grace 분 (debounce_minutes, 기본 60) — realtime 라우트와 동일
-    const policy = await prisma.policySetting.findUnique({
-      where: { key: "debounce_minutes" },
-    });
-    const graceMinutes =
-      policy && /^\d+$/.test(policy.value) ? parseInt(policy.value, 10) : 60;
+    // grace 분 (debounce_minutes, 기본 60) — lib/attendance-policy (realtime 라우트와 동일)
+    const graceMinutes = (await loadAttendancePolicy(prisma)).debounceMinutes;
     const { date: todayWorkDate, ymd: todayYmd, cutoffHour } = await loadTodayWorkDate(prisma);
 
     // ── 본인 오늘(근무일) 최신 presence_raw + attendance_daily + 대표 신청 1건 ──
@@ -93,7 +92,7 @@ export async function GET() {
         FROM hr.attendance_requests rq
         JOIN hr.attendance_categories rc ON rc.id = rq.category_id
         WHERE rq.employee_id = ${empId}
-          AND rq.status IN ('approved', 'auto_approved', 'auto_delegated')
+          AND rq.status IN (${Prisma.join(LIVE_REQUEST_STATUSES)})
           AND rq.start_date <= (SELECT d FROM today_kst)
           AND rq.end_date >= (SELECT d FROM today_kst)
           AND rc.type <> 'correction'

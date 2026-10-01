@@ -14,6 +14,7 @@ import {
 } from "@/lib/trip-calendar";
 import { resolveTripParticipantApprovers } from "@/lib/approval-resolver";
 import { createNotifications } from "@/lib/notify";
+import { LIVE_REQUEST_STATUSES } from "@/lib/attendance-live-requests";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: 참석자 수락/거절/날짜수정 + 제거.
 // PATCH /api/trip-participants/[pid]
@@ -373,7 +374,7 @@ export async function DELETE(
         employeeId: participant.employeeId,
         externalSource: "trip",
         externalEventId: { startsWith: `trip-${participant.tripEvent.id}-${pid}-` },
-        status: { in: ["approved", "auto_approved", "auto_delegated"] },
+        status: { in: LIVE_REQUEST_STATUSES },
         startDate: { lt: today },
       },
       select: { id: true },

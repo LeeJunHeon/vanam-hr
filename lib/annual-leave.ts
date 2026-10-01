@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/app/generated/prisma/client";
 import { resolveShiftPoint, isWorkPoint } from "@/lib/shift-schedule";
+import { LIVE_REQUEST_STATUSES } from "@/lib/attendance-live-requests";
 
 export interface AnnualLeavePolicyValues {
   baseDays: number;
@@ -49,7 +50,7 @@ export function countBusinessDays(start: Date, end: Date, holidays: Set<string>)
 function usedLeaveRequestWhere(employeeId: number): Prisma.AttendanceRequestWhereInput {
   return {
     employeeId,
-    status: { in: ["approved", "auto_approved", "auto_delegated"] },
+    status: { in: LIVE_REQUEST_STATUSES },
     category: { annualLeaveDeduct: { gt: 0 } },
     requestType: { not: "calendar_auto" },
   };

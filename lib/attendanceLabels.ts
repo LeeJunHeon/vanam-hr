@@ -1,3 +1,4 @@
+// 평가 키(evalKeys)는 aggregator/day_rules.py eval_keys 와 같아야 한다 — 규칙을 바꾸면 npm run parity.
 // 시간대 표시(정정 시각/외근 시간대) 라벨.
 // 근태정정(CORRECTION)이면 "근태정정", 그 외는 카테고리명(없으면 "일정").
 export function correctedRangeLabel(

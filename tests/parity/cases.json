@@ -1,0 +1,114 @@
+{
+  "_comment": "웹(TS)과 aggregator·syncer(Python)가 같은 결과를 내야 하는 규칙 케이스. npm run parity 로 두 언어 결과를 비교한다. 시각은 ISO(+09:00 = KST). expect 가 있으면 그 값과도 비교한다.",
+
+  "eval_keys": [
+    { "auto": "late", "late": true, "early": true, "has_out": true, "expect": ["late", "early_leave"] },
+    { "auto": "late", "late": null, "early": null, "has_out": true, "expect": ["late"] },
+    { "auto": "normal", "late": false, "early": false, "has_out": true, "expect": ["normal"] },
+    { "auto": "absent", "late": false, "early": false, "has_out": false, "expect": ["absent"] },
+    { "auto": "working", "late": false, "early": null, "has_out": false, "expect": [] },
+    { "auto": "working", "late": true, "early": null, "has_out": false, "expect": ["late"] },
+    { "auto": null, "late": null, "early": null, "has_out": true, "expect": ["normal"] },
+    { "auto": null, "late": null, "early": null, "has_out": false, "expect": [] },
+    { "auto": "early_leave", "late": null, "early": null, "has_out": true, "expect": ["early_leave"] }
+  ],
+
+  "all_day": [
+    { "ci": null, "co": null, "expect": true },
+    { "ci": "2026-09-29T09:00:00+09:00", "co": null, "expect": true },
+    { "ci": "2026-09-29T09:00:00+09:00", "co": "2026-09-29T13:00:00+09:00", "expect": false },
+    { "ci": "2026-09-29T09:00:00+09:00", "co": "2026-10-01T18:00:00+09:00", "expect": true },
+    { "ci": "2026-09-29T23:30:00+09:00", "co": "2026-09-30T00:30:00+09:00", "expect": true },
+    { "ci": "2026-09-28T16:00:00Z", "co": "2026-09-28T17:00:00Z", "expect": false }
+  ],
+
+  "window": [
+    { "name": "오전반차", "shift": ["2026-09-29T09:00:00+09:00", "2026-09-29T18:00:00+09:00"],
+      "leaves": [["2026-09-29T09:00:00+09:00", "2026-09-29T13:00:00+09:00"]],
+      "expect": { "ref_in": "2026-09-29T13:00:00+09:00", "ref_out": "2026-09-29T18:00:00+09:00", "full_cover": false, "window_minutes": 300, "middle_minutes": 0 } },
+    { "name": "오후반차", "shift": ["2026-09-29T09:00:00+09:00", "2026-09-29T18:00:00+09:00"],
+      "leaves": [["2026-09-29T13:00:00+09:00", "2026-09-29T18:00:00+09:00"]],
+      "expect": { "ref_in": "2026-09-29T09:00:00+09:00", "ref_out": "2026-09-29T13:00:00+09:00", "full_cover": false, "window_minutes": 240, "middle_minutes": 0 } },
+    { "name": "가운데", "shift": ["2026-09-29T09:00:00+09:00", "2026-09-29T18:00:00+09:00"],
+      "leaves": [["2026-09-29T11:00:00+09:00", "2026-09-29T12:00:00+09:00"]],
+      "expect": { "ref_in": "2026-09-29T09:00:00+09:00", "ref_out": "2026-09-29T18:00:00+09:00", "full_cover": false, "window_minutes": 540, "middle_minutes": 60 } },
+    { "name": "전체", "shift": ["2026-09-29T09:00:00+09:00", "2026-09-29T18:00:00+09:00"],
+      "leaves": [["2026-09-29T09:00:00+09:00", "2026-09-29T18:00:00+09:00"]],
+      "expect": { "full_cover": true } },
+    { "name": "이어지는 휴가", "shift": ["2026-09-29T09:00:00+09:00", "2026-09-29T18:00:00+09:00"],
+      "leaves": [["2026-09-29T11:00:00+09:00", "2026-09-29T14:00:00+09:00"], ["2026-09-29T08:30:00+09:00", "2026-09-29T11:00:00+09:00"]],
+      "expect": { "ref_in": "2026-09-29T14:00:00+09:00", "ref_out": "2026-09-29T18:00:00+09:00", "full_cover": false, "window_minutes": 240, "middle_minutes": 0 } }
+  ],
+
+  "judge_day": [
+    { "name": "신청 없음 정상", "check_in": "2026-09-29T08:55:00+09:00", "check_out": "2026-09-29T18:05:00+09:00", "expect": ["normal", false, false] },
+    { "name": "신청 없음 지각", "check_in": "2026-09-29T09:11:00+09:00", "check_out": "2026-09-29T18:30:00+09:00", "expect": ["late", true, false] },
+    { "name": "신청 없음 지각 경계(09:10)", "check_in": "2026-09-29T09:10:00+09:00", "check_out": "2026-09-29T18:30:00+09:00", "expect": ["normal", false, false] },
+    { "name": "신청 없음 조퇴", "check_in": "2026-09-29T09:00:00+09:00", "check_out": "2026-09-29T17:00:00+09:00", "expect": ["early_leave", false, true] },
+    { "name": "신청 없음 일찍 와서 일찍 감", "check_in": "2026-09-29T07:30:00+09:00", "check_out": "2026-09-29T17:00:00+09:00", "expect": ["normal", false, false] },
+    { "name": "신청 없음 지각·조퇴", "check_in": "2026-09-29T09:30:00+09:00", "check_out": "2026-09-29T17:30:00+09:00", "expect": ["late", true, true] },
+    { "name": "신청 없음 퇴근 전(지각)", "check_in": "2026-09-29T09:30:00+09:00", "check_out": null, "expect": ["late", true, null] },
+    { "name": "신청 없음 퇴근 전(정시)", "check_in": "2026-09-29T09:00:00+09:00", "check_out": null, "expect": ["working", false, null] },
+    { "name": "신청 없음 둘 다 없음", "check_in": null, "check_out": null, "expect": ["absent", null, null] },
+    { "name": "신청 없음 퇴근만", "check_in": null, "check_out": "2026-09-29T18:00:00+09:00", "expect": [null, null, null] },
+    { "name": "점심 공제 켬 — 17:30 퇴근", "policy": { "lunch_deduct_enabled": true }, "check_in": "2026-09-29T09:00:00+09:00", "check_out": "2026-09-29T17:30:00+09:00" },
+    { "name": "점심 공제 켬 — 17:00 퇴근", "policy": { "lunch_deduct_enabled": true }, "check_in": "2026-09-29T09:00:00+09:00", "check_out": "2026-09-29T17:00:00+09:00" },
+    { "name": "grace_out 30", "policy": { "grace_out_minutes": 30 }, "check_in": "2026-09-29T09:00:00+09:00", "check_out": "2026-09-29T17:35:00+09:00", "expect": ["normal", false, false] },
+    { "name": "공휴일 출근", "holiday": true, "check_in": "2026-09-29T11:00:00+09:00", "check_out": "2026-09-29T12:00:00+09:00", "expect": ["normal", false, false] },
+    { "name": "시프트 없음 출근만", "shift": null, "check_in": "2026-09-29T11:00:00+09:00", "check_out": null, "expect": ["working", false, false] },
+    { "name": "휴무 둘 다 없음", "shift": { "start": null, "end": null, "type": "off" }, "check_in": null, "check_out": null, "expect": ["absent", false, false] },
+    { "name": "야간 시프트", "shift": { "start": "22:00", "end": "06:00", "type": "night" }, "check_in": "2026-09-29T21:55:00+09:00", "check_out": "2026-09-30T05:00:00+09:00", "expect": ["early_leave", false, true] },
+
+    { "name": "종일 휴가", "requests": [{ "type": "leave", "ci": null, "co": null }], "check_in": null, "check_out": null, "expect": ["normal", false, false] },
+    { "name": "종일 휴가 + 출근", "requests": [{ "type": "leave", "ci": null, "co": null }], "check_in": "2026-09-29T09:30:00+09:00", "check_out": "2026-09-29T12:00:00+09:00", "expect": ["normal", false, false] },
+    { "name": "다일 출장 → 종일", "requests": [{ "type": "work", "ci": "2026-09-28T09:00:00+09:00", "co": "2026-10-01T18:00:00+09:00" }], "check_in": null, "check_out": null, "expect": ["normal", false, false] },
+    { "name": "정정 신청만은 일정 아님", "requests": [{ "type": "correction", "ci": null, "co": "2026-09-29T18:00:00+09:00" }], "check_in": "2026-09-29T09:30:00+09:00", "check_out": "2026-09-29T18:00:00+09:00", "expect": ["late", true, false] },
+
+    { "name": "오전반차 정상", "requests": [{ "type": "leave", "ci": "2026-09-29T09:00:00+09:00", "co": "2026-09-29T13:00:00+09:00" }], "check_in": "2026-09-29T12:55:00+09:00", "check_out": "2026-09-29T18:05:00+09:00", "expect": ["normal", false, false] },
+    { "name": "오전반차 지각(퇴근 전)", "requests": [{ "type": "leave", "ci": "2026-09-29T09:00:00+09:00", "co": "2026-09-29T13:00:00+09:00" }], "check_in": "2026-09-29T13:11:00+09:00", "check_out": null, "expect": ["late", true, null] },
+    { "name": "오전반차 조퇴", "requests": [{ "type": "leave", "ci": "2026-09-29T09:00:00+09:00", "co": "2026-09-29T13:00:00+09:00" }], "check_in": "2026-09-29T13:00:00+09:00", "check_out": "2026-09-29T17:00:00+09:00", "expect": ["early_leave", false, true] },
+    { "name": "오전반차 출근 없음", "requests": [{ "type": "leave", "ci": "2026-09-29T09:00:00+09:00", "co": "2026-09-29T13:00:00+09:00" }], "check_in": null, "check_out": null, "expect": ["normal", false, false] },
+    { "name": "오후반차 정상", "requests": [{ "type": "leave", "ci": "2026-09-29T13:00:00+09:00", "co": "2026-09-29T18:00:00+09:00" }], "check_in": "2026-09-29T09:00:00+09:00", "check_out": "2026-09-29T13:00:00+09:00", "expect": ["normal", false, false] },
+    { "name": "오후반차 조퇴", "requests": [{ "type": "leave", "ci": "2026-09-29T13:00:00+09:00", "co": "2026-09-29T18:00:00+09:00" }], "check_in": "2026-09-29T09:00:00+09:00", "check_out": "2026-09-29T12:00:00+09:00", "expect": ["early_leave", false, true] },
+    { "name": "오후반차 지각", "requests": [{ "type": "leave", "ci": "2026-09-29T13:00:00+09:00", "co": "2026-09-29T18:00:00+09:00" }], "check_in": "2026-09-29T09:20:00+09:00", "check_out": "2026-09-29T13:00:00+09:00", "expect": ["late", true, false] },
+    { "name": "가운데 휴가 정상", "requests": [{ "type": "leave", "ci": "2026-09-29T11:00:00+09:00", "co": "2026-09-29T12:00:00+09:00" }], "check_in": "2026-09-29T09:00:00+09:00", "check_out": "2026-09-29T18:00:00+09:00", "expect": ["normal", false, false] },
+    { "name": "가운데 휴가 + 점심 공제", "policy": { "lunch_deduct_enabled": true }, "requests": [{ "type": "leave", "ci": "2026-09-29T15:00:00+09:00", "co": "2026-09-29T16:00:00+09:00" }], "check_in": "2026-09-29T09:00:00+09:00", "check_out": "2026-09-29T17:00:00+09:00" },
+    { "name": "전체 덮는 휴가", "requests": [{ "type": "leave", "ci": "2026-09-29T09:00:00+09:00", "co": "2026-09-29T18:00:00+09:00" }], "check_in": "2026-09-29T09:00:00+09:00", "check_out": "2026-09-29T18:00:00+09:00", "expect": ["normal", false, false] },
+    { "name": "반차 + 공휴일", "holiday": true, "requests": [{ "type": "leave", "ci": "2026-09-29T09:00:00+09:00", "co": "2026-09-29T13:00:00+09:00" }], "check_in": "2026-09-29T14:00:00+09:00", "check_out": "2026-09-29T16:00:00+09:00", "expect": ["normal", false, false] },
+
+    { "name": "외근 종료 후 조퇴", "requests": [{ "type": "work", "ci": "2026-09-29T14:00:00+09:00", "co": "2026-09-29T16:00:00+09:00" }], "check_in": "2026-09-29T09:00:00+09:00", "check_out": "2026-09-29T16:00:00+09:00", "expect": ["early_leave", false, true] },
+    { "name": "외근 여유시간 1시간", "policy": { "timed_event_margin_hours": 1 }, "requests": [{ "type": "work", "ci": "2026-09-29T14:00:00+09:00", "co": "2026-09-29T16:00:00+09:00" }], "check_in": "2026-09-29T09:00:00+09:00", "check_out": "2026-09-29T16:00:00+09:00", "expect": ["normal", false, false] },
+    { "name": "외근 여유시간 0.25시간 조퇴", "policy": { "timed_event_margin_hours": 0.25 }, "requests": [{ "type": "work", "ci": "2026-09-29T14:00:00+09:00", "co": "2026-09-29T16:00:00+09:00" }], "check_in": "2026-09-29T09:00:00+09:00", "check_out": "2026-09-29T14:00:00+09:00", "expect": ["early_leave", false, true] },
+    { "name": "외근 exempt 켬", "policy": { "timed_trip_exempt": true }, "requests": [{ "type": "work", "ci": "2026-09-29T14:00:00+09:00", "co": "2026-09-29T16:00:00+09:00" }], "check_in": "2026-09-29T09:30:00+09:00", "check_out": "2026-09-29T14:00:00+09:00", "expect": ["normal", false, false] },
+    { "name": "외근 exempt 끔", "requests": [{ "type": "work", "ci": "2026-09-29T14:00:00+09:00", "co": "2026-09-29T16:00:00+09:00" }], "check_in": "2026-09-29T09:30:00+09:00", "check_out": "2026-09-29T16:00:00+09:00", "expect": ["late", true, true] },
+    { "name": "외근 진행 중", "now": "2026-09-29T15:00:00+09:00", "requests": [{ "type": "work", "ci": "2026-09-29T14:00:00+09:00", "co": "2026-09-29T16:00:00+09:00" }], "check_in": "2026-09-29T09:00:00+09:00", "check_out": "2026-09-29T13:50:00+09:00", "expect": ["working", null, null] },
+    { "name": "외근 있고 퇴근 전", "now": "2026-09-29T17:00:00+09:00", "requests": [{ "type": "work", "ci": "2026-09-29T14:00:00+09:00", "co": "2026-09-29T16:00:00+09:00" }], "check_in": "2026-09-29T09:30:00+09:00", "check_out": null, "expect": ["working", null, null] },
+    { "name": "외근 있고 출근 없음", "requests": [{ "type": "work", "ci": "2026-09-29T14:00:00+09:00", "co": "2026-09-29T16:00:00+09:00" }], "check_in": null, "check_out": null, "expect": ["normal", false, false] },
+    { "name": "다른 날 시간형은 이 날 일정 아님", "requests": [{ "type": "work", "ci": "2026-09-30T14:00:00+09:00", "co": "2026-09-30T16:00:00+09:00" }], "check_in": "2026-09-29T09:00:00+09:00", "check_out": "2026-09-29T17:00:00+09:00", "expect": ["early_leave", false, true] },
+    { "name": "반차 + 외근 + 점심 + 여유시간", "policy": { "lunch_deduct_enabled": true, "timed_event_margin_hours": 0.5 }, "requests": [{ "type": "leave", "ci": "2026-09-29T09:00:00+09:00", "co": "2026-09-29T13:00:00+09:00" }, { "type": "work", "ci": "2026-09-29T15:00:00+09:00", "co": "2026-09-29T16:00:00+09:00" }], "check_in": "2026-09-29T13:05:00+09:00", "check_out": "2026-09-29T16:30:00+09:00" }
+  ],
+
+  "shift_point": [
+    { "start_date": "2026-01-07", "cycle_days": 7, "work_date": "2026-09-29", "expect": 1 },
+    { "start_date": "2026-01-05", "cycle_days": 7, "work_date": "2026-01-11", "expect": 6 },
+    { "start_date": "2026-01-08", "cycle_days": 14, "work_date": "2026-01-19", "expect": 0 },
+    { "start_date": "2026-01-08", "cycle_days": 14, "work_date": "2026-01-26", "expect": 7 },
+    { "start_date": "2026-03-01", "cycle_days": 3, "work_date": "2026-03-10", "expect": 0 }
+  ],
+
+  "research_meeting": [
+    { "date": "2026-10-01", "weekday": 4, "interval": 2, "anchor": "2026-09-17", "expect": true },
+    { "date": "2026-09-24", "weekday": 4, "interval": 2, "anchor": "2026-09-17", "expect": false },
+    { "date": "2026-09-03", "weekday": 4, "interval": 2, "anchor": "2026-09-17", "expect": true },
+    { "date": "2026-10-02", "weekday": 4, "interval": 1, "anchor": "2026-09-17", "expect": false },
+    { "date": "2026-10-01", "weekday": 4, "interval": 0, "anchor": "2026-09-17", "expect": false }
+  ],
+
+  "work_date": [
+    { "now": "2026-10-01T03:59:00+09:00", "cutoff": 4, "expect": "2026-09-30" },
+    { "now": "2026-10-01T04:00:00+09:00", "cutoff": 4, "expect": "2026-10-01" },
+    { "now": "2026-09-30T18:59:59Z", "cutoff": 4, "expect": "2026-09-30" },
+    { "now": "2026-09-30T19:00:00Z", "cutoff": 4, "expect": "2026-10-01" },
+    { "now": "2026-10-01T00:30:00+09:00", "cutoff": 0, "expect": "2026-10-01" }
+  ]
+}

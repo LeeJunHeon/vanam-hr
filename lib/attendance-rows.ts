@@ -6,6 +6,9 @@ import {
   type ProgressStatus,
 } from "@/lib/realtime-presence";
 import { loadWorkDayChecker } from "@/lib/annual-leave";
+import { loadAttendancePolicy } from "@/lib/attendance-policy";
+import { kstWorkDateMidnightUtc } from "@/lib/kst-date";
+import { LIVE_REQUEST_STATUSES } from "@/lib/attendance-live-requests";
 
 // 근태 화면 공용 "행 조립" 모듈 (리팩터링 1단계).
 // overview API의 조립 로직을 그대로 이동한 것 — 동작 동일. (이후 단계에서 calendar/realtime도 이 모듈로 전환 예정)
@@ -159,7 +162,7 @@ export async function assembleAttendanceRows(params: {
       ? await prisma.attendanceRequest.findMany({
           where: {
             employeeId: { in: employeeIds },
-            status: { in: ["approved", "auto_approved", "auto_delegated"] },
+            status: { in: LIVE_REQUEST_STATUSES },
             startDate: { lte: new Date(endDate) },
             endDate: { gte: new Date(startDate) },
           },
@@ -289,15 +292,12 @@ export async function assembleAttendanceRows(params: {
   let realtimeNowMs = Date.now();
 
   if (employeeIds.length > 0) {
-    const policies = await prisma.policySetting.findMany({
-      where: { key: { in: ["debounce_minutes", "work_date_cutoff_hour"] } },
-      select: { key: true, value: true },
-    });
-    const pol = new Map(policies.map((p) => [p.key, p.value]));
-    const graceRaw = pol.get("debounce_minutes");
-    const graceMinutes = graceRaw && /^\d+$/.test(graceRaw) ? parseInt(graceRaw, 10) : 60;
-    const cutoffRaw = pol.get("work_date_cutoff_hour");
-    const cutoffHour = cutoffRaw && /^\d+$/.test(cutoffRaw) ? parseInt(cutoffRaw, 10) : 4;
+    // 정책 — lib/attendance-policy (debounce_minutes 60, work_date_cutoff_hour 4)
+    const pol = await loadAttendancePolicy(prisma);
+    const graceMinutes = pol.debounceMinutes;
+    const cutoffHour = pol.cutoffHour;
+    // 오늘 근무일 (lib/kst-date — aggregator work_date_for 와 같은 규칙)
+    const todayWorkYmd = kstWorkDateMidnightUtc(cutoffHour).toISOString().slice(0, 10);
 
     type LatestRow = {
       employee_id: number;
@@ -308,11 +308,7 @@ export async function assembleAttendanceRows(params: {
     };
     const latest = await prisma.$queryRaw<LatestRow[]>`
       WITH today_kst AS (
-        SELECT CASE
-          WHEN EXTRACT(HOUR FROM (NOW() AT TIME ZONE 'Asia/Seoul')) < ${cutoffHour}
-          THEN ((NOW() AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '1 day')::date
-          ELSE (NOW() AT TIME ZONE 'Asia/Seoul')::date
-        END AS d
+        SELECT ${todayWorkYmd}::date AS d
       ),
       today_raw AS (
         SELECT employee_id, checked_at, status, location

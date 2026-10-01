@@ -76,11 +76,13 @@ from config import load_config
 from db import Database
 from logger import setup_logger
 from day_rules import (
-    LEAVE_TYPES,
+    LEAVE_WORK_TYPES,
+    build_judge_ctx,
     day_alert_context,
-    effective_work_window,
     eval_keys,
-    leave_intervals,
+    floor_minute,
+    judge_day,
+    judge_shift,
     shift_bounds,
 )
 
@@ -91,12 +93,11 @@ KST = timezone(timedelta(hours=9))
 RECALC_BATCH_LIMIT = 200
 
 # 수동 정정 행에서 구분(category)을 맞출 신청 카테고리 type (근태 정정 'correction' 제외)
-MANUAL_ROW_CATEGORY_TYPES = ("leave", "long_leave", "work")
+MANUAL_ROW_CATEGORY_TYPES = LEAVE_WORK_TYPES
 
 
-def _floor_minute(dt: Optional[datetime]) -> Optional[datetime]:
-    """분 단위 절삭 — 화면 표시(HH:MM)와 동일 기준으로 판정/계산하기 위함."""
-    return dt.replace(second=0, microsecond=0) if dt is not None else None
+# 분 단위 절삭 — day_rules.floor_minute (화면 표시 HH:MM 과 같은 기준)
+_floor_minute = floor_minute
 
 
 def _extend_overnight_session(
@@ -599,75 +600,30 @@ class Aggregator:
 
         # 시프트 로깅에 쓰일 정보 (분기 둘 다에서 필요)
         shift_info = self.db.get_employee_shift(emp_id, work_date)
+
+        # 그날 판정 맥락 — (직원, work_date)마다 한 번. 메인 경로·자유면 동기화가 같은 ctx 로 judge_day 를 쓴다.
+        # (여러 날 시간형 → 종일, 이 work_date 창의 시간형만 휴가/근무로 나눔, 반차 유효 근무 구간)
+        judge_ctx = build_judge_ctx(
+            active_requests, shift_info, work_date, cutoff_hour,
+            holiday_name is not None, now,
+            grace_in_minutes=grace_in_minutes, grace_out_minutes=grace_out_minutes,
+            lunch_deduct_enabled=lunch_deduct_enabled,
+            lunch_start_str=lunch_start_str, lunch_end_str=lunch_end_str,
+            timed_trip_exempt=timed_trip_exempt,
+            timed_event_margin_hours=timed_event_margin_hours,
+        )
+        active_requests = judge_ctx["requests"]
         # 반차 등 시간형 휴가가 있는 날의 유효 근무 구간 (day_rules.effective_work_window)
-        leave_window = None
+        leave_window = judge_ctx["leave_window"]
 
         if active_requests:
-            # ── work_date의 실제 시간 범위 [day_start, day_end) 계산 (cutoff 기준) ──
-            # corrected_check_in/out이 이 범위 안에 있는 시간형 일정만 융합/판정에 사용한다.
-            # (날짜를 걸친 다른 날의 일정이 이 work_date로 새는 것 방지)
-            from datetime import datetime as _dt, time as _time, timedelta as _td
-            from zoneinfo import ZoneInfo
-            _KST = ZoneInfo("Asia/Seoul")
-            day_start = _dt.combine(work_date, _time(hour=cutoff_hour), tzinfo=_KST)
-            day_end = day_start + _td(days=1)
-
-            def _in_work_date(ts):
-                """timestamptz ts가 이 work_date 범위 [day_start, day_end)에 속하는가."""
-                if ts is None:
-                    return False
-                # ts를 KST로 변환해 비교 (tz-aware 보장)
-                ts_kst = ts.astimezone(_KST) if ts.tzinfo is not None else ts.replace(tzinfo=_KST)
-                return day_start <= ts_kst < day_end
-
-            # 다일(시작·종료 날짜가 다른) 시간형 일정은 '종일' 일정으로 간주한다.
-            # 예: 출장 6/24 09:00 ~ 6/26 17:00 → 6/24·6/25·6/26 모두 종일 출장으로 매일 기록.
-            # (그렇지 않으면 시작 시각이 있는 첫날만 기록되고 중간·마지막 날이 누락됨)
-            # 하루짜리 시간형(시작·종료 날짜 동일)은 변환되지 않아 기존 시간 판정을 유지한다.
-            _converted_reqs = []
-            for _r in active_requests:
-                _ci = _r["corrected_check_in"]
-                _co = _r["corrected_check_out"]
-                if (
-                    _ci is not None
-                    and _co is not None
-                    and _ci.astimezone(_KST).date() != _co.astimezone(_KST).date()
-                ):
-                    _r = {**_r, "corrected_check_in": None, "corrected_check_out": None}
-                _converted_reqs.append(_r)
-            active_requests = _converted_reqs
-
-            # 이 work_date 범위에 속하는 시간형 일정만 (융합·카테고리 공용)
-            in_range_timed = [
-                r for r in active_requests
-                if r["corrected_check_in"] is not None
-                and r["corrected_check_out"] is not None
-                and _in_work_date(r["corrected_check_in"])
-            ]
-            # 시간형 휴가(반차 등)와 시간형 근무(외근·출장·재택)를 나눈다.
-            # - 시간형 휴가: 출퇴근에 합치지 않고, 유효 근무 구간(기준 출퇴근·의무 시간)으로 판정한다.
-            # - 시간형 근무: 기존 그대로(출퇴근 합치기, timed_trip_exempt·margin 정책, 진행 중 보류).
-            in_range_leave = [
-                r for r in in_range_timed if r.get("category_type") in LEAVE_TYPES
-            ]
-            in_range_work = [
-                r for r in in_range_timed if r.get("category_type") not in LEAVE_TYPES
-            ]
-            if in_range_leave:
-                _bounds = shift_bounds(work_date, shift_info)
-                if _bounds is not None:
-                    leave_window = effective_work_window(
-                        _bounds[0], _bounds[1], leave_intervals(in_range_leave)
-                    )
+            in_range_timed = judge_ctx["in_range_timed"]
+            # 시간형 휴가(반차 등)는 출퇴근에 합치지 않고 유효 근무 구간으로 판정한다.
+            # 시간형 근무(외근·출장·재택)는 기존 그대로(출퇴근 합치기, exempt·margin 정책, 진행 중 보류).
+            in_range_work = judge_ctx["in_range_work"]
             # 이미 시작된 시간형 휴가 — WiFi 가 없어도 행을 만든다(화면이 반차 중임을 보여 주도록)
-            started_leave = [r for r in in_range_leave if r["corrected_check_in"] <= now]
-
-            # 시간형 일정(범위 내) vs 종일 일정 구분
-            # 종일: corrected 둘 중 하나라도 None (날짜 범위로만 판단, 경계 필터 제외)
-            has_allday = any(
-                r["corrected_check_in"] is None or r["corrected_check_out"] is None
-                for r in active_requests
-            )
+            started_leave = judge_ctx["started_leave"]
+            has_allday = judge_ctx["has_allday"]
 
             # 정책1: 이미 시작된 부분만 합산 (미래 시작 제외) + work_date 범위 내 시간형 근무만
             #        (시간형 휴가는 합치지 않는다 — 오전반차 뒤 늦게 와도 출근이 09:00 으로 잡히던 문제)
@@ -718,64 +674,15 @@ class Aggregator:
             is_overridden = True
             override_source = "calendar"
 
-            # 종일 휴가/출장이면 결근/조퇴 판정 면제(정상). (기존 동작)
-            # 정책1(timed_trip_exempt): 켜지면 시간형 출장/외근이 있는 날도 면제(normal).
-            # 정책3(margin): 정책1이 꺼졌을 때만, 출장 시간 + 앞뒤 마진만큼 의무시간 차감.
-            has_timed_trip = len(in_range_work) > 0
-            # 외근/출장이 "지금 진행 중"(시작 <= now < 종료)이면 아직 하루가 안 끝난 것.
-            # 점심 끊김 등을 미리 퇴근/조퇴로 확정하지 않도록 판정을 보류한다.
-            # 외근이 끝난 뒤 재연결이 없으면 다음 사이클에 위 융합으로 check_out=외근종료가
-            # 되어 _determine_auto_status가 시프트종료와 비교해 정상/조퇴를 확정한다.
-            has_ongoing_timed_trip = any(
-                r["corrected_check_in"] is not None
-                and r["corrected_check_out"] is not None
-                and r["corrected_check_in"] <= now < r["corrected_check_out"]
-                for r in in_range_work
-            )
-            if has_allday:
-                auto_status = "normal"
-                is_late_flag, is_early_flag = False, False
-            elif leave_window is not None and leave_window["full_cover"]:
-                # 시간형 휴가가 시프트 전체를 덮음 → 종일과 같게
-                auto_status = "normal"
-                is_late_flag, is_early_flag = False, False
-            elif timed_trip_exempt and has_timed_trip:
-                # 정책1 ON + 시간형 출장/외근 존재 → 판정 면제
-                auto_status = "normal"
-                is_late_flag, is_early_flag = False, False
-            elif has_ongoing_timed_trip:
+            # 판정 — day_rules.judge_day (종일 → 전체 덮는 휴가 → exempt → 외근 진행 중 → 구간/시프트 판정)
+            judged = judge_day(check_in, check_out, judge_ctx)
+            auto_status = judged["status"]
+            is_late_flag, is_early_flag = judged["is_late"], judged["is_early_leave"]
+            if judged["reason"] == "ongoing":
                 # 외근/출장 진행 중 → 퇴근/조퇴 확정 보류, '근무중(외근중)'으로 둔다.
                 # check_out도 비워 점심 끊김 시각이 퇴근으로 굳지 않게 한다.
                 check_out = None
-                auto_status = "working"
-                is_late_flag, is_early_flag = None, None  # 판정 보류
-            elif check_in is not None and (check_out is not None or leave_window is not None):
-                # 정책3용: 이 work_date 범위 내 시간형 근무 총 시간(분) 합산
-                # (반차 날은 퇴근 전에도 기준 출근으로 지각을 판정한다)
-                trip_minutes = 0
-                for r in in_range_work:
-                    ci = r["corrected_check_in"]
-                    co = r["corrected_check_out"]
-                    if ci is not None and co is not None and co > ci:
-                        trip_minutes += int((co - ci).total_seconds() // 60)
-                auto_status, is_late_flag, is_early_flag = self._determine_auto_status(
-                    check_in=check_in,
-                    check_out=check_out,
-                    shift_info=shift_info,
-                    grace_in_minutes=grace_in_minutes,
-                    grace_out_minutes=grace_out_minutes,
-                    lunch_deduct_enabled=lunch_deduct_enabled,
-                    lunch_start_str=lunch_start_str,
-                    lunch_end_str=lunch_end_str,
-                    trip_minutes=trip_minutes,
-                    margin_hours=timed_event_margin_hours,
-                    is_holiday=(holiday_name is not None),
-                    ref_window=leave_window,
-                )
-            elif check_in is not None:
-                auto_status = "working"
-                is_late_flag, is_early_flag = None, None  # 판정 보류
-            elif started_leave:
+            if judged["reason"] == "no_checkin" and started_leave:
                 # 시간형 휴가만 있고 출근 기록 없음:
                 #  - 진행 중인 오늘 → 평가 보류
                 #  - 마감된 지난 날 → 결근(구분은 휴가 그대로). 조건은 무기록 결근 행과 같다.
@@ -789,9 +696,6 @@ class Aggregator:
                     and not self._connected_all_day(emp_id, work_date, cutoff_hour)
                 ):
                     auto_status = "absent"
-            else:
-                auto_status = "normal"
-                is_late_flag, is_early_flag = False, False
         else:
             # 4) 캘린더 없음 + presence_raw 없음 → 원칙적으로 INSERT 의미 없음.
             if not raw or (check_in is None and check_out is None):
@@ -851,17 +755,9 @@ class Aggregator:
             category_id = None
             is_overridden = False
             override_source = None
-            auto_status, is_late_flag, is_early_flag = self._determine_auto_status(
-                check_in=check_in,
-                check_out=check_out,
-                shift_info=shift_info,
-                grace_in_minutes=grace_in_minutes,
-                grace_out_minutes=grace_out_minutes,
-                lunch_deduct_enabled=lunch_deduct_enabled,
-                lunch_start_str=lunch_start_str,
-                lunch_end_str=lunch_end_str,
-                is_holiday=(holiday_name is not None),
-            )
+            judged = judge_day(check_in, check_out, judge_ctx)
+            auto_status = judged["status"]
+            is_late_flag, is_early_flag = judged["is_late"], judged["is_early_leave"]
 
             # Phase 6-2L+ B-3: 공휴일이면 결근(absent) 면제 → daily 행 만들지 않음.
             # 출근기록이 있어 normal/working/late/early_leave가 나오면 평소대로 INSERT.
@@ -905,10 +801,7 @@ class Aggregator:
             backfilled = self._try_backfill_missing_side(
                 emp_id=emp_id, emp_no=emp_no, emp_name=emp_name, work_date=work_date,
                 computed_check_in=check_in, computed_check_out=check_out,
-                shift_info=shift_info,
-                grace_in_minutes=grace_in_minutes, grace_out_minutes=grace_out_minutes,
-                lunch_deduct_enabled=lunch_deduct_enabled,
-                lunch_start_str=lunch_start_str, lunch_end_str=lunch_end_str,
+                judge_ctx=judge_ctx,
             )
             # 정정(original_* 존재)으로 보호된 쪽을 덮어쓰려던 것은 정상 동작이므로
             # warning 대상에서 제외한다. 정정하지 않은 쪽인데 값이 못 들어가는 경우만 이상 신호.
@@ -981,12 +874,14 @@ class Aggregator:
     def _try_backfill_missing_side(
         self, emp_id, emp_no, emp_name, work_date,
         computed_check_in, computed_check_out,
-        shift_info, grace_in_minutes, grace_out_minutes,
-        lunch_deduct_enabled, lunch_start_str, lunch_end_str,
+        judge_ctx,
     ) -> bool:
         """manual 정정으로 잠긴 행에서 정정하지 않은 쪽('자유면')을 raw로 추적한다.
         정정된 쪽은 안 건드리고 병합값으로 auto_status/work_minutes 재계산.
         실제로 바꿨으면 True.
+
+        재판정은 메인 경로와 같은 judge_day(같은 ctx — 반차 구간·종일 휴가·시간형 근무 정책 포함).
+        시간형 근무 진행 중(판정 보류)이면 그 사이클은 동기화를 건너뛰고 값을 유지한다.
 
         두 경로가 있다:
         1) 자유면 지속 동기화 — 반대편이 사람 정정으로 확정된 half-corrected 행이면,
@@ -1036,11 +931,11 @@ class Aggregator:
             if new_free == current_free:
                 return False  # 변화 없음 — 무의미한 updated_at 갱신 금지
 
-            sync_status, sync_is_late, sync_is_early = self._determine_auto_status(
-                check_in=final_in, check_out=final_out, shift_info=shift_info,
-                grace_in_minutes=grace_in_minutes, grace_out_minutes=grace_out_minutes,
-                lunch_deduct_enabled=lunch_deduct_enabled,
-                lunch_start_str=lunch_start_str, lunch_end_str=lunch_end_str,
+            sync_j = judge_day(final_in, final_out, judge_ctx)
+            if sync_j["reason"] == "ongoing":
+                return False  # 시간형 근무 진행 중 — 이번 사이클은 값 유지
+            sync_status, sync_is_late, sync_is_early = (
+                sync_j["status"], sync_j["is_late"], sync_j["is_early_leave"]
             )
             sync_work_minutes = None
             if final_in is not None and final_out is not None:
@@ -1085,11 +980,11 @@ class Aggregator:
         final_in = _floor_minute(final_in)
         final_out = _floor_minute(final_out)
 
-        new_auto_status, new_is_late, new_is_early = self._determine_auto_status(
-            check_in=final_in, check_out=final_out, shift_info=shift_info,
-            grace_in_minutes=grace_in_minutes, grace_out_minutes=grace_out_minutes,
-            lunch_deduct_enabled=lunch_deduct_enabled,
-            lunch_start_str=lunch_start_str, lunch_end_str=lunch_end_str,
+        bf_j = judge_day(final_in, final_out, judge_ctx)
+        if bf_j["reason"] == "ongoing":
+            return False  # 시간형 근무 진행 중 — 이번 사이클은 값 유지
+        new_auto_status, new_is_late, new_is_early = (
+            bf_j["status"], bf_j["is_late"], bf_j["is_early_leave"]
         )
         new_work_minutes = None
         if final_in is not None and final_out is not None:
@@ -1235,182 +1130,12 @@ class Aggregator:
             return allday[0]["category_id"]
         return requests[0]["category_id"]
 
-    def _determine_auto_status(
-        self,
-        check_in: Optional[datetime],
-        check_out: Optional[datetime],
-        shift_info: Optional[dict],
-        grace_in_minutes: int,
-        grace_out_minutes: int,
-        lunch_deduct_enabled: bool = False,
-        lunch_start_str: str = "12:00",
-        lunch_end_str: str = "13:00",
-        trip_minutes: int = 0,
-        margin_hours: float = 0.0,
-        is_holiday: bool = False,
-        ref_window: Optional[dict] = None,
-    ) -> tuple[Optional[str], Optional[bool], Optional[bool]]:
-        """
-        정책 A 기반 auto_status 판정.
-
-        반환: (auto_status, is_late, is_early_leave)
-          - auto_status: 기존과 100% 동일한 판정 문자열(또는 None).
-          - is_late / is_early_leave: 그림자 기록용 독립 플래그.
-            · False = 해당 없음으로 확정 (판정 면제일 포함)
-            · True  = 해당함
-            · None  = 미판정 (아직 퇴근 전 / 파싱 실패 / 결근 등 판정 불가)
-          플래그는 auto_status 산출에 영향을 주지 않는다(순수 부가 정보).
-
-        규칙:
-        1) 시프트 정보 없거나 휴무이거나 공휴일(is_holiday):
-           - check_in + check_out 둘 다 → normal
-           - check_in만 → working (근무 중)
-           - 둘 다 NULL → absent
-           (공휴일이면 시프트가 있어도 규칙 1로 판정: 지각/조퇴 판정 없음)
-        2) 시프트 있음 + 둘 다 NULL → absent
-        3) 시프트 있음 + check_out만 → None (판정 보류, 이론상 거의 없음)
-        4) 시프트 있음 + check_in 있음 (check_out 유무 무관):
-           - 출근 시각 > 시프트 시작 + grace_in_minutes → late (퇴근 전에도 확정)
-           - check_out 없음 + 지각 아님 → working (근무 중)
-           - check_out 있음 + 근무시간 < 시프트 총 - grace_out_minutes
-             + 퇴근 시각 < 시프트 종료 - grace_out_minutes → early_leave
-             (늦게 와서 시프트 종료 뒤 퇴근하면 지각만, 일찍 와서 일찍 가도 시간이 충분하면 정상)
-           - 그 외 → normal
-
-        판정 규칙은 aggregator 와 웹(lib/attendance-correction.ts determineAutoStatus·
-        determineAttendanceFlags)이 같아야 한다 — 한쪽을 바꾸면 다른 쪽도.
-
-        ref_window(반차 등 시간형 휴가가 있는 날, day_rules.effective_work_window):
-          지각 = 출근 > 기준 출근 + grace_in
-          조퇴 = 퇴근 < 기준 퇴근 − grace_out 이면서 근무시간 < 의무 근무시간
-          의무 근무시간 = 유효 구간 길이 − 가운데 휴가 겹침 − grace_out (점심 차감 정책이 켜져 있으면
-          유효 구간 안의 점심만큼 더 뺀다). ref_window 가 없으면 아래 기존 계산 그대로.
-        """
-        from datetime import timedelta
-
-        # 방어적 분 절삭 — 백필 병합 등 어떤 호출자가 초 포함 값을 넘겨도 판정 기준 일관
-        check_in = _floor_minute(check_in)
-        check_out = _floor_minute(check_out)
-
-        # 시프트 없거나 휴무이거나 공휴일 → 단순 판정
-        if (
-            shift_info is None
-            or shift_info.get("type") == "off"
-            or not shift_info.get("start")
-            or not shift_info.get("end")
-            or is_holiday
-        ):
-            # 지각·조퇴 개념 자체가 면제된 날 → 플래그는 False로 확정
-            if check_in is not None and check_out is not None:
-                return "normal", False, False
-            elif check_in is not None and check_out is None:
-                return "working", False, False  # 시프트 없을 때도 출근만 있으면 근무 중
-            elif check_in is None and check_out is None:
-                return "absent", False, False
-            else:
-                return None, False, False
-
-        # 시프트 있음 + 둘 다 NULL → absent
-        if check_in is None and check_out is None:
-            return "absent", None, None
-
-        # 시프트 있음 + check_out만 (이론상 거의 없음) → None (판정 보류)
-        if check_in is None and check_out is not None:
-            return None, None, None
-
-        # 여기 도달 = check_in은 반드시 있음 (check_out은 있을 수도/없을 수도)
-
-        if ref_window is not None:
-            return self._determine_with_window(
-                check_in, check_out, ref_window, grace_in_minutes, grace_out_minutes,
-                lunch_deduct_enabled, lunch_start_str, lunch_end_str,
-                trip_minutes, margin_hours,
-            )
-
-        # 시프트 시작/종료 시각 파싱 ("HH:MM")
-        shift_start_str = shift_info["start"]
-        shift_end_str = shift_info["end"]
-        try:
-            sh_h, sh_m = map(int, shift_start_str.split(":"))
-            eh_h, eh_m = map(int, shift_end_str.split(":"))
-        except (ValueError, AttributeError):
-            # 시프트 시각 파싱 실패 → 출근만이면 근무 중, 둘 다면 정상
-            return ("working" if check_out is None else "normal"), None, None
-
-        # 시프트 총 근무시간 (분), 자정 넘김 처리 (예: 22:00~06:00)
-        shift_minutes = (eh_h * 60 + eh_m) - (sh_h * 60 + sh_m)
-        if shift_minutes <= 0:
-            shift_minutes += 24 * 60
-
-        # 시프트 시작 시각을 check_in 날짜 기준 datetime으로 변환
-        shift_start_dt = check_in.replace(
-            hour=sh_h, minute=sh_m, second=0, microsecond=0
-        )
-        late_threshold = shift_start_dt + timedelta(minutes=grace_in_minutes)
-
-        # 1) 출근 지각 체크 — 출근 시각만으로 확정 (퇴근 전에도 지각 판정)
-        is_late = check_in > late_threshold
-
-        # 2) 아직 퇴근 전(check_out 없음): 지각이면 late, 아니면 working(근무 중)
-        #    조퇴는 퇴근 전엔 판정 불가 → None
-        if check_out is None:
-            return ("late" if is_late else "working"), is_late, None
-
-        # 3) 퇴근까지 있음: 지각 우선 → 조퇴 → 정상
-        #    (auto_status 우선순위는 그대로. 다만 is_early_leave 플래그를 남기기 위해
-        #     지각이어도 아래 근무시간 계산을 끝까지 수행한다.)
-        actual_minutes = int((check_out - check_in).total_seconds() / 60)
-
-        # 정책2: 점심 차감 — check_in~check_out과 점심시간이 겹치는 만큼 근무시간에서 제외.
-        #        (켜졌을 때만; 시프트도 점심 포함이라 양쪽 일관성 위해 required에서도 동일 차감)
-        lunch_overlap = 0
-        if lunch_deduct_enabled:
-            try:
-                ls_h, ls_m = map(int, str(lunch_start_str).split(":"))
-                le_h, le_m = map(int, str(lunch_end_str).split(":"))
-                lunch_start_dt = check_in.replace(hour=ls_h, minute=ls_m, second=0, microsecond=0)
-                lunch_end_dt = check_in.replace(hour=le_h, minute=le_m, second=0, microsecond=0)
-                # 실제 근무 구간(check_in~check_out)과 점심 구간의 교집합(분)
-                ov_start = max(check_in, lunch_start_dt)
-                ov_end = min(check_out, lunch_end_dt)
-                if ov_end > ov_start:
-                    lunch_overlap = int((ov_end - ov_start).total_seconds() // 60)
-            except (ValueError, AttributeError):
-                lunch_overlap = 0
-        actual_minutes -= lunch_overlap
-
-        # required: 시프트 총시간 - grace_out
-        required_minutes = shift_minutes - grace_out_minutes
-
-        # 정책2: 점심 차감 시 시프트(의무)에서도 점심만큼 차감 (양쪽 동일 기준)
-        if lunch_deduct_enabled:
-            # 시프트 전체에 점심이 포함된다고 보고 점심 길이만큼 의무 축소
-            try:
-                ls_h, ls_m = map(int, str(lunch_start_str).split(":"))
-                le_h, le_m = map(int, str(lunch_end_str).split(":"))
-                lunch_len = (le_h * 60 + le_m) - (ls_h * 60 + ls_m)
-                if lunch_len > 0:
-                    required_minutes -= lunch_len
-            except (ValueError, AttributeError):
-                pass
-
-        # 정책3: 앞뒤 마진(margin_hours)이 설정됐을 때만, 출장 시간 + 앞뒤 마진만큼
-        #        의무시간 차감. margin_hours=0(기본 OFF)이면 출장이 있어도 차감하지 않아
-        #        기존 판정과 100% 동일하게 동작한다.
-        if margin_hours > 0:
-            margin_minutes = int(margin_hours * 60)
-            required_minutes -= (trip_minutes + 2 * margin_minutes)
-
-        # 음수 방지
-        if required_minutes < 0:
-            required_minutes = 0
-
-        # 조퇴는 시간이 모자라면서 시프트 종료(시작 + 시프트 길이) - grace_out 전에 나간 경우만.
-        shift_end_dt = shift_start_dt + timedelta(minutes=shift_minutes)
-        early_threshold = shift_end_dt - timedelta(minutes=grace_out_minutes)
-        is_early_leave = actual_minutes < required_minutes and check_out < early_threshold
-        auto_status = "late" if is_late else ("early_leave" if is_early_leave else "normal")
-        return auto_status, is_late, is_early_leave
+    def _determine_auto_status(self, check_in, check_out, shift_info, grace_in_minutes,
+                               grace_out_minutes, **kwargs):
+        """시프트·반차 구간 판정 — day_rules.judge_shift 로 옮김(호환용 래퍼).
+        하루 판정은 judge_day 를 쓸 것."""
+        return judge_shift(check_in, check_out, shift_info, grace_in_minutes,
+                           grace_out_minutes, **kwargs)
 
     def _alert_context(self, emp_id, today, shift, now: datetime) -> dict:
         """알림 공용 판단 (day_rules.day_alert_context) — 출근 전·출근 미감지·근무 중 끊김이 같이 쓴다.
@@ -1429,47 +1154,6 @@ class Aggregator:
             self.logger.debug(f"  [absent] get_last_presence_status 실패 (emp={emp_id}): {e}")
             return False
         return bool(last and last["status"] == "online")
-
-    def _determine_with_window(
-        self, check_in, check_out, win, grace_in_minutes, grace_out_minutes,
-        lunch_deduct_enabled, lunch_start_str, lunch_end_str, trip_minutes, margin_hours,
-    ):
-        """유효 근무 구간 기준 판정 (반차 등). _determine_auto_status 참고.
-        웹 lib/attendance-correction.ts 의 window 경로와 같은 규칙 — 한쪽을 바꾸면 다른 쪽도."""
-        ref_in, ref_out = win["ref_in"], win["ref_out"]
-        is_late = check_in > ref_in + timedelta(minutes=grace_in_minutes)
-        if check_out is None:
-            return ("late" if is_late else "working"), is_late, None
-
-        def _lunch_bounds(base):
-            ls_h, ls_m = map(int, str(lunch_start_str).split(":"))
-            le_h, le_m = map(int, str(lunch_end_str).split(":"))
-            b = base.astimezone(KST)
-            return (b.replace(hour=ls_h, minute=ls_m, second=0, microsecond=0),
-                    b.replace(hour=le_h, minute=le_m, second=0, microsecond=0))
-
-        def _overlap(a_s, a_e, b_s, b_e):
-            s_, e_ = max(a_s, b_s), min(a_e, b_e)
-            return int((e_ - s_).total_seconds() // 60) if e_ > s_ else 0
-
-        actual_minutes = int((check_out - check_in).total_seconds() / 60)
-        required_minutes = win["window_minutes"] - win["middle_minutes"] - grace_out_minutes
-        if lunch_deduct_enabled:
-            try:
-                l_s, l_e = _lunch_bounds(check_in)
-                actual_minutes -= _overlap(check_in, check_out, l_s, l_e)
-                w_s, w_e = _lunch_bounds(ref_in)
-                required_minutes -= _overlap(ref_in, ref_out, w_s, w_e)
-            except (ValueError, AttributeError):
-                pass
-        if margin_hours > 0:
-            required_minutes -= (trip_minutes + 2 * int(margin_hours * 60))
-        if required_minutes < 0:
-            required_minutes = 0
-        early_threshold = ref_out - timedelta(minutes=grace_out_minutes)
-        is_early_leave = actual_minutes < required_minutes and check_out < early_threshold
-        auto_status = "late" if is_late else ("early_leave" if is_early_leave else "normal")
-        return auto_status, is_late, is_early_leave
 
     def _check_attendance_alerts(self, today, now: datetime, holiday_name=None) -> None:
         """직전 근무일이 비정상인 직원에게 '근태 확인 요청' 메일 발송.

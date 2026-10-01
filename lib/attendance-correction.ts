@@ -1,3 +1,4 @@
+// 근태 정정 반영·정정 계산. 판정은 lib/attendance-judge(aggregator/day_rules.py 와 같은 규칙) — 규칙을 바꾸면 npm run parity.
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/app/generated/prisma/client";
 import { resolveShiftPoint, isWorkPoint } from "@/lib/shift-schedule";
@@ -5,10 +6,18 @@ import {
   isResearchMeetingDay,
   loadResearchMeetingPolicy,
 } from "@/lib/researchMeeting";
+import { findLiveLeaveWorkRequests } from "@/lib/attendance-live-requests";
+import { loadAttendancePolicy } from "@/lib/attendance-policy";
 import {
-  findLiveTimedLeaves,
-  hasLiveAllDayLeaveWork,
-} from "@/lib/attendance-live-requests";
+  buildJudgeCtx,
+  judgeDay,
+  judgeShift,
+  type EffectiveWorkWindow,
+} from "@/lib/attendance-judge";
+
+// 정정 계산 — 판정은 lib/attendance-judge(aggregator/day_rules.py 와 같은 규칙)로 한다.
+// 규칙을 바꾸면 npm run parity.
+export { effectiveWorkWindow, shiftBoundsKst, type EffectiveWorkWindow } from "@/lib/attendance-judge";
 
 // 분 단위 절삭 — 화면 표시(HH:MM)와 동일 기준으로 판정/계산
 // (aggregator의 _floor_minute와 동일 정책. setSeconds는 초/밀리초만 조작하므로 TZ 무관)
@@ -19,110 +28,10 @@ function floorMinute(d: Date | null): Date | null {
   return c;
 }
 
-// ── 유효 근무 구간 (반차 등 시간형 휴가가 있는 날) ─────────────────────────
-// aggregator/day_rules.py effective_work_window 와 같은 규칙 — 한쪽을 바꾸면 다른 쪽도.
-// - 휴가가 시프트 시작을 덮으면(휴가 시작 <= 기준 출근 < 휴가 끝): 기준 출근 = 휴가 끝(이어지는 휴가까지)
-// - 휴가가 시프트 종료를 덮으면(휴가 시작 < 기준 퇴근 <= 휴가 끝): 기준 퇴근 = 휴가 시작
-// - 가운데 휴가: 기준 출퇴근 그대로, 의무 근무시간에서 겹치는 만큼 뺀다(middleMinutes)
-// - 휴가가 시프트 전체를 덮으면 fullCover (종일과 같게 — 정상, 플래그 false)
-export interface EffectiveWorkWindow {
-  refIn: Date;
-  refOut: Date;
-  fullCover: boolean;
-  windowMinutes: number;
-  middleMinutes: number;
-}
-
-export function effectiveWorkWindow(
-  shiftStart: Date,
-  shiftEnd: Date,
-  leaves: { start: Date; end: Date }[]
-): EffectiveWorkWindow {
-  let refIn = shiftStart.getTime();
-  let refOut = shiftEnd.getTime();
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const l of leaves) {
-      if (l.start.getTime() <= refIn && refIn < l.end.getTime()) {
-        refIn = l.end.getTime();
-        changed = true;
-      }
-    }
-  }
-  changed = true;
-  while (changed) {
-    changed = false;
-    for (const l of leaves) {
-      if (l.start.getTime() < refOut && refOut <= l.end.getTime()) {
-        refOut = l.start.getTime();
-        changed = true;
-      }
-    }
-  }
-  if (refIn >= refOut) {
-    return { refIn: new Date(refIn), refOut: new Date(refOut), fullCover: true, windowMinutes: 0, middleMinutes: 0 };
-  }
-  let middle = 0;
-  for (const l of leaves) {
-    const s = Math.max(l.start.getTime(), refIn);
-    const e = Math.min(l.end.getTime(), refOut);
-    if (e > s) middle += Math.floor((e - s) / 60000);
-  }
-  return {
-    refIn: new Date(refIn),
-    refOut: new Date(refOut),
-    fullCover: false,
-    windowMinutes: Math.floor((refOut - refIn) / 60000),
-    middleMinutes: middle,
-  };
-}
-
-// 근무일(UTC 자정 date) + 시프트 HH:MM → KST 기준 [시작, 종료]. 종료 <= 시작이면 +1일.
-// aggregator/day_rules.py shift_bounds 와 같다.
-export function shiftBoundsKst(
-  workDate: Date,
-  startHHMM: string | null,
-  endHHMM: string | null
-): { start: Date; end: Date } | null {
-  if (!startHHMM || !endHHMM) return null;
-  const [shH, shM] = startHHMM.split(":").map(Number);
-  const [ehH, ehM] = endHHMM.split(":").map(Number);
-  if ([shH, shM, ehH, ehM].some(isNaN)) return null;
-  const y = workDate.getUTCFullYear();
-  const m = workDate.getUTCMonth();
-  const d = workDate.getUTCDate();
-  const start = new Date(Date.UTC(y, m, d, shH - 9, shM));
-  const end = new Date(Date.UTC(y, m, d, ehH - 9, ehM));
-  if (end <= start) end.setUTCDate(end.getUTCDate() + 1);
-  return { start, end };
-}
-
-// 유효 근무 구간 기준 지각·조퇴 (window 가 있을 때). aggregator _determine_with_window 와 같다.
-//   지각 = 출근 > 기준 출근 + grace_in
-//   조퇴 = 퇴근 < 기준 퇴근 − grace_out 이면서 근무시간 < (유효 구간 − 가운데 휴가 − grace_out)
-function windowFlags(
-  checkIn: Date,
-  checkOut: Date | null,
-  w: EffectiveWorkWindow,
-  graceIn: number,
-  graceOut: number
-): { isLate: boolean; isEarlyLeave: boolean | null } {
-  const isLate = checkIn.getTime() > w.refIn.getTime() + graceIn * 60000;
-  if (!checkOut) return { isLate, isEarlyLeave: null };
-  const actual = Math.floor((checkOut.getTime() - checkIn.getTime()) / 60000);
-  const required = Math.max(0, w.windowMinutes - w.middleMinutes - graceOut);
-  const isEarlyLeave =
-    actual < required && checkOut.getTime() < w.refOut.getTime() - graceOut * 60000;
-  return { isLate, isEarlyLeave };
-}
-
-// 정정/결재용 auto_status 재계산 (approvals/route.ts의 동일 로직을 이동).
-// 시프트 시각(HH:MM)과 grace로 normal/late/early_leave/absent/null 판정.
-// 공휴일은 지각/조퇴 판정 없음(aggregator와 동일 정책).
-// 판정 규칙은 aggregator(_determine_auto_status)와 웹이 같아야 한다 — 한쪽을 바꾸면 다른 쪽도.
+// 시프트·반차 구간 판정 (lib/attendance-judge judgeShift 래퍼 — 호환용).
+// 판정 규칙은 aggregator(day_rules.judge_shift)와 웹이 같아야 한다 — 한쪽을 바꾸면 다른 쪽도.
 // 조퇴 = (근무시간 < 필요시간) AND (퇴근 < 시프트 종료 − grace_out).
-//   늦게 와서 시프트 종료 뒤에 퇴근하면 지각만, 일찍 와서 일찍 가도 시간이 충분하면 정상.
+// 퇴근 전이면 지각이면 late, 아니면 working (aggregator 와 같게).
 export function determineAutoStatus(
   checkIn: Date | null,
   checkOut: Date | null,
@@ -131,73 +40,15 @@ export function determineAutoStatus(
   graceIn: number,
   graceOut: number,
   isHoliday: boolean = false,
-  // 반차 등 시간형 휴가가 있는 날의 유효 근무 구간 — 있으면 기준 출퇴근으로 판정
   window: EffectiveWorkWindow | null = null
 ): string | null {
-  checkIn = floorMinute(checkIn);
-  checkOut = floorMinute(checkOut);
-  // 공휴일 → 시프트가 있어도 단순 판정 (지각/조퇴 판정 없음)
-  // Python _determine_auto_status의 is_holiday 규칙 1과 동일
-  if (isHoliday) {
-    if (checkIn && checkOut) return "normal";
-    if (checkIn && !checkOut) return "working";
-    if (!checkIn && !checkOut) return "absent";
-    return null;
-  }
-  // 시프트 없음 → 단순 판정
-  if (!startHHMM || !endHHMM) {
-    if (checkIn && checkOut) return "normal";
-    if (!checkIn && !checkOut) return "absent";
-    return null;
-  }
-  if (!checkIn && !checkOut) return "absent";
-  if (!checkIn || !checkOut) return null;
-  if (window) {
-    if (window.fullCover) return "normal";
-    const f = windowFlags(checkIn, checkOut, window, graceIn, graceOut);
-    return f.isLate ? "late" : f.isEarlyLeave ? "early_leave" : "normal";
-  }
-  const [shH, shM] = startHHMM.split(":").map(Number);
-  const [ehH, ehM] = endHHMM.split(":").map(Number);
-  if ([shH, shM, ehH, ehM].some(isNaN)) return "normal";
-  let shiftMinutes = ehH * 60 + ehM - (shH * 60 + shM);
-  if (shiftMinutes <= 0) shiftMinutes += 24 * 60;
-  const shiftStart = new Date(checkIn);
-  shiftStart.setHours(shH, shM, 0, 0);
-  const lateThreshold = new Date(shiftStart.getTime() + graceIn * 60 * 1000);
-  if (checkIn > lateThreshold) return "late";
-  if (isEarlyLeaveBy(checkIn, checkOut, shiftStart, shiftMinutes, graceOut)) {
-    return "early_leave";
-  }
-  return "normal";
+  return judgeShift(checkIn, checkOut, { start: startHHMM, end: endHHMM }, graceIn, graceOut, {
+    isHoliday,
+    refWindow: window,
+  })[0];
 }
 
-// 조퇴 판정 — determineAutoStatus·determineAttendanceFlags 공용.
-// 시프트 종료 = 시프트 시작 + 시프트 길이(자정 넘김 +24h 포함).
-function isEarlyLeaveBy(
-  checkIn: Date,
-  checkOut: Date,
-  shiftStart: Date,
-  shiftMinutes: number,
-  graceOut: number
-): boolean {
-  const actualMinutes = Math.floor(
-    (checkOut.getTime() - checkIn.getTime()) / (60 * 1000)
-  );
-  const requiredMinutes = shiftMinutes - graceOut;
-  const shiftEnd = new Date(shiftStart.getTime() + shiftMinutes * 60 * 1000);
-  const earlyThreshold = new Date(shiftEnd.getTime() - graceOut * 60 * 1000);
-  return actualMinutes < requiredMinutes && checkOut < earlyThreshold;
-}
-
-// 정정 승인 시 is_late / is_early_leave 플래그 판정.
-// aggregator/aggregator.py _determine_auto_status 와 같은 임계값 식을 쓴다
-// (floorMinute, shiftMinutes<=0 이면 +24h, lateThreshold, requiredMinutes) —
-// 같은 입력에서 determineAutoStatus 의 결과와 모순되지 않아야 하기 때문이다.
-// 판정 규칙은 aggregator 와 웹이 같아야 한다 — 한쪽을 바꾸면 다른 쪽도 (조퇴 규칙은 isEarlyLeaveBy).
-// null 은 "판정 불가/모름", false 는 "판정했고 해당 없음"을 뜻한다.
-// 주의: 점심 공제(lunch_deduct_enabled)는 aggregator 에만 있음
-//       — 정책 활성화 시 양쪽 동기화 필요.
+// 지각·조퇴 플래그 (judgeShift 래퍼). null 은 "판정 불가/모름", false 는 "판정했고 해당 없음".
 export function determineAttendanceFlags(
   checkIn: Date | null,
   checkOut: Date | null,
@@ -206,34 +57,13 @@ export function determineAttendanceFlags(
   graceIn: number,
   graceOut: number,
   isHoliday: boolean = false,
-  // 반차 등 시간형 휴가가 있는 날의 유효 근무 구간 — 있으면 기준 출퇴근으로 판정
   window: EffectiveWorkWindow | null = null
 ): { isLate: boolean | null; isEarlyLeave: boolean | null } {
-  checkIn = floorMinute(checkIn);
-  checkOut = floorMinute(checkOut);
-  // 공휴일·시프트 없음 → 지각/조퇴 판정 면제가 확정된 상태
-  if (isHoliday || !startHHMM || !endHHMM) {
-    return { isLate: false, isEarlyLeave: false };
-  }
-  if (window?.fullCover) return { isLate: false, isEarlyLeave: false };
-  // 출근이 없으면(결근·퇴근만 있는 이상 상태) 판정 불가
-  if (!checkIn) return { isLate: null, isEarlyLeave: null };
-  if (window) return windowFlags(checkIn, checkOut, window, graceIn, graceOut);
-  const [shH, shM] = startHHMM.split(":").map(Number);
-  const [ehH, ehM] = endHHMM.split(":").map(Number);
-  if ([shH, shM, ehH, ehM].some(isNaN)) return { isLate: null, isEarlyLeave: null };
-  let shiftMinutes = ehH * 60 + ehM - (shH * 60 + shM);
-  if (shiftMinutes <= 0) shiftMinutes += 24 * 60;
-  const shiftStart = new Date(checkIn);
-  shiftStart.setHours(shH, shM, 0, 0);
-  const lateThreshold = new Date(shiftStart.getTime() + graceIn * 60 * 1000);
-  const isLate = checkIn > lateThreshold;
-  // 퇴근 전에는 조퇴를 판정할 수 없다
-  if (!checkOut) return { isLate, isEarlyLeave: null };
-  return {
-    isLate,
-    isEarlyLeave: isEarlyLeaveBy(checkIn, checkOut, shiftStart, shiftMinutes, graceOut),
-  };
+  const [, isLate, isEarlyLeave] = judgeShift(
+    checkIn, checkOut, { start: startHHMM, end: endHHMM }, graceIn, graceOut,
+    { isHoliday, refWindow: window }
+  );
+  return { isLate, isEarlyLeave };
 }
 
 // 그 날 시프트 종료 시각의 Date. 자정을 넘는 시프트(end <= start)는 다음날로 계산한다.
@@ -314,24 +144,13 @@ export async function loadShiftAndGrace(
       }
     }
   }
-  let graceInMinutes = 10;
-  let graceOutMinutes = 0;
-  const policies = await db.policySetting.findMany({
-    where: { key: { in: ["grace_in_minutes", "grace_out_minutes"] } },
-  });
-  for (const p of policies) {
-    const v = parseInt(p.value, 10);
-    if (!isNaN(v)) {
-      if (p.key === "grace_in_minutes") graceInMinutes = v;
-      if (p.key === "grace_out_minutes") graceOutMinutes = v;
-    }
-  }
+  // grace 정책 — lib/attendance-policy (aggregator 와 같은 키·기본값)
+  const { graceInMinutes, graceOutMinutes } = await loadAttendancePolicy(db);
   return { shiftStartHHMM, shiftEndHHMM, graceInMinutes, graceOutMinutes };
 }
 
 // 정정된 시각으로 근무시간·상태·지각/조퇴 플래그를 계산한다 (정정 반영·정정 취소 공용).
-// - 그 날 살아 있는 "종일" 휴가·외근이 있으면 normal + 플래그 false (aggregator 의 종일 신청 규칙과 동일)
-// - 공휴일이면 지각/조퇴 판정 없이 단순 판정 (aggregator와 동일 정책)
+// 판정은 lib/attendance-judge judgeDay — aggregator 의 judge_day 와 같은 결과.
 export async function computeCorrectedDaily(
   tx: Prisma.TransactionClient,
   employeeId: number,
@@ -367,54 +186,25 @@ export async function computeCorrectedDaily(
     }
   }
 
-  if (await hasLiveAllDayLeaveWork(tx, employeeId, workDate)) {
-    return { workMinutes, autoStatus: "normal", isLate: false, isEarlyLeave: false };
-  }
-
-  // 시프트/정책은 tx로 로드 (같은 트랜잭션 일관성)
-  const { shiftStartHHMM, shiftEndHHMM, graceInMinutes, graceOutMinutes } =
-    await loadShiftAndGrace(tx, employeeId, workDate);
-
-  // 공휴일이면 지각/조퇴 판정 없이 단순 판정 (aggregator와 동일 정책)
+  // 판정 — aggregator 와 같은 judgeDay (종일·반차 구간·시간형 근무 exempt/여유시간/진행 중 보류·
+  // 공휴일·점심 공제). 정정한 시각은 사람이 넣은 값이므로 외근 시각과 합치지 않는다.
+  const policy = await loadAttendancePolicy(tx);
+  const { shiftStartHHMM, shiftEndHHMM } = await loadShiftAndGrace(tx, employeeId, workDate);
   const holidayRow = await tx.holiday.findUnique({
     where: { holidayDate: workDate },
   });
-
-  // 반차 등 시간형 휴가가 있으면 유효 근무 구간으로 판정 (aggregator 와 같은 규칙)
-  let window: EffectiveWorkWindow | null = null;
-  const bounds = shiftBoundsKst(workDate, shiftStartHHMM, shiftEndHHMM);
-  if (bounds) {
-    const leaves = await findLiveTimedLeaves(tx, employeeId, workDate);
-    if (leaves.length > 0) window = effectiveWorkWindow(bounds.start, bounds.end, leaves);
-  }
-  if (!holidayRow && window?.fullCover) {
-    return { workMinutes, autoStatus: "normal", isLate: false, isEarlyLeave: false };
-  }
-
-  const autoStatus = determineAutoStatus(
-    checkIn,
-    checkOut,
-    shiftStartHHMM,
-    shiftEndHHMM,
-    graceInMinutes,
-    graceOutMinutes,
+  const requests = await findLiveLeaveWorkRequests(tx, employeeId, workDate);
+  const ctx = buildJudgeCtx(
+    requests,
+    shiftStartHHMM && shiftEndHHMM ? { start: shiftStartHHMM, end: shiftEndHHMM } : null,
+    workDate,
+    policy.cutoffHour,
     !!holidayRow,
-    window
+    new Date(),
+    policy
   );
-
-  // aggregator 의 백필은 "반대쪽 시각이 비어 있다가 채워질 때"만 돌아서, 퇴근이 찍힌 뒤
-  // 정정하면 플래그가 NULL 로 남았다. 여기서 auto_status 와 같은 기준으로 함께 채운다.
-  const flags = determineAttendanceFlags(
-    checkIn,
-    checkOut,
-    shiftStartHHMM,
-    shiftEndHHMM,
-    graceInMinutes,
-    graceOutMinutes,
-    !!holidayRow,
-    window
-  );
-  return { workMinutes, autoStatus, ...flags };
+  const j = judgeDay(checkIn, checkOut, ctx);
+  return { workMinutes, autoStatus: j.status, isLate: j.isLate, isEarlyLeave: j.isEarlyLeave };
 }
 
 // 정정(correction)을 attendance_daily에 반영하는 공통 함수.

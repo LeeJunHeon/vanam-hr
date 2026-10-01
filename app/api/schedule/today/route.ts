@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
-import { todayYmd } from "@/lib/dateUtils";
+import { kstTodayYmd } from "@/lib/kst-date";
+import { LIVE_REQUEST_STATUSES } from "@/lib/attendance-live-requests";
 
 // GET /api/schedule/today
 //
@@ -37,13 +38,13 @@ export async function GET() {
       );
     }
 
-    // 오늘 KST 기준 (lib/dateUtils — 컨테이너 TZ=Asia/Seoul 설정 활용)
-    const todayStr = todayYmd();
+    // 오늘 KST 기준 (lib/kst-date)
+    const todayStr = kstTodayYmd();
     const today = new Date(todayStr);
 
     const requests = await prisma.attendanceRequest.findMany({
       where: {
-        status: { in: ["approved", "auto_approved", "auto_delegated"] },
+        status: { in: LIVE_REQUEST_STATUSES },
         startDate: { lte: today },
         endDate: { gte: today },
         // 근태 정정은 일정이 아니다 (aggregator 와 같게)

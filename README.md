@@ -50,6 +50,13 @@ VanaM ERP의 인사·근태 관리 모듈입니다.
 
 작업 환경 셋업, 배포 절차는 별도 문서 참고.
 
+## 규칙 검사 (parity)
+
+근태 판정·종류 목록·날짜 규칙은 웹(TS, `lib/`)과 aggregator·calendar-syncer(Python)에 같은 내용이 두 번 있다.
+두 쪽이 어긋나지 않도록 같은 케이스 파일(`tests/parity/cases.json`)을 양쪽 실행기로 돌려 비교한다.
+규칙 파일(`aggregator/day_rules.py`, `calendar-syncer/calendar_sync.py`, `lib/attendance-judge.ts` 등)을 바꾸면
+`npm run parity` 를 돌리고, 새 규칙이면 케이스도 추가한다. (Python 은 `python3`/`python`, 또는 `PYTHON` 환경변수)
+
 ## License
 
 Proprietary. © VanaM Inc.

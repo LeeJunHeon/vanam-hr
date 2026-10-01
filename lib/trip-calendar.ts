@@ -22,6 +22,7 @@ import { prisma } from "@/lib/prisma";
 import { isConfirmedParticipant } from "@/lib/trip-helpers";
 import { markAttendanceRecalc } from "@/lib/attendance-recalc";
 import { kstTodayMidnightUtc } from "@/lib/kst-date";
+import { LIVE_REQUEST_STATUSES } from "@/lib/attendance-live-requests";
 
 // ── Field Trip 캘린더 / 카테고리 룩업(짧은 캐시) ──
 let _cachedBusinessTripCategoryId: number | null | undefined = undefined;
@@ -235,7 +236,7 @@ function groupConsecutiveForAttendance(
 }
 
 // 출장 근태로 "살아있는" 상태 — 이 기간이 덮는 날짜가 "기록된 날짜"다.
-const LIVE_TRIP_REQUEST_STATUSES = ["approved", "auto_approved", "auto_delegated"];
+const LIVE_TRIP_REQUEST_STATUSES = LIVE_REQUEST_STATUSES;
 
 // 참석자의 출장 근태 키 접두어: trip-{출장id}-{참석자id}-{묶음 시작일}
 function tripRequestKeyPrefix(tripEventId: number, participantId: number): string {

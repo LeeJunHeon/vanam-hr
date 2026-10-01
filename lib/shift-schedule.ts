@@ -1,6 +1,7 @@
 // 시프트 스케줄에서 특정 날짜의 포인트를 찾는다.
 // aggregator(Python) get_employee_shift 와 동일 규칙: 배정 시작일이 속한 주의 월요일을 기준점으로
 // (경과일 % cycle_days) 번째 dayIndex 를 찾는다. 이 규칙은 여기 한 곳에만 둔다.
+// aggregator/day_rules.py resolve_shift_point 와 같아야 한다 — 규칙을 바꾸면 npm run parity.
 export type ShiftPoint = {
   dayIndex?: number;
   type?: string;

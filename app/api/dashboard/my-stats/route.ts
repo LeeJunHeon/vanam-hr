@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { kstTodayMidnightUtc } from "@/lib/kst-date";
 import { requireSession } from "@/lib/auth-helpers";
 import { computeMyStats } from "@/lib/my-stats";
 
@@ -40,12 +41,11 @@ export async function GET(request: NextRequest) {
     let rangeStart: Date;
     let rangeEnd: Date;
 
-    // KST 기준 "오늘"을 구하기 위한 보정 (서버가 UTC여도 한국 날짜를 쓰도록)
-    const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
-    const nowKst = new Date(now.getTime() + KST_OFFSET_MS);
-    const kstY = nowKst.getUTCFullYear();
-    const kstM = nowKst.getUTCMonth();
-    const kstD = nowKst.getUTCDate();
+    // KST 기준 "오늘" (lib/kst-date — 서버가 UTC여도 한국 날짜)
+    const kstToday = kstTodayMidnightUtc();
+    const kstY = kstToday.getUTCFullYear();
+    const kstM = kstToday.getUTCMonth();
+    const kstD = kstToday.getUTCDate();
 
     if (period === "day") {
       let y = kstY, m = kstM, dd = kstD;

@@ -11,9 +11,13 @@ syncer.py 의 sync_events 가 이 모듈의 함수를 부른다. DB 접근은 db
 syncer 가 바꾸는 신청 행은 external_source='google_calendar' 만이다. 출장(trip)·HR 신청은 건드리지 않는다.
 """
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Optional
 
+KST = timezone(timedelta(hours=9))
+
+# 규칙을 바꾸면 npm run parity — 아래 상수는 웹(lib/attendance-live-requests.ts, lib/category-kind.ts)·
+# aggregator(day_rules.py)와 같아야 한다.
 # 살아 있는 신청 상태 — lib/attendance-live-requests.ts LIVE_REQUEST_STATUSES 와 같다.
 LIVE_STATUSES = ("approved", "auto_approved", "auto_delegated")
 # 근태에 반영하는 구분 type — lib/attendance-live-requests.ts LEAVE_WORK_CATEGORY_TYPES 와 같다.
@@ -65,7 +69,7 @@ def parse_event_times(event: dict, parsed: dict):
     """일정 날짜·시각 → (start_date, end_date, corrected_check_in, corrected_check_out).
 
     종일: end.date 는 Google API exclusive(다음날) → -1일. 시각은 None.
-    시간 지정: start/end.dateTime(TZ 포함) — 날짜는 그 시각의 달력 날짜.
+    시간 지정: start/end.dateTime(TZ 포함) — 날짜는 그 시각의 KST 달력 날짜.
     실패하면 예외.
     """
     end_raw = event.get("end") or {}
@@ -83,7 +87,8 @@ def parse_event_times(event: dict, parsed: dict):
         raise ValueError("start/end.dateTime 없음")
     ci = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
     co = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
-    return ci.date(), co.date(), ci, co
+    # 날짜는 KST 로 바꾼 뒤 잡는다 — 구글이 UTC 로 주면 새벽 일정이 하루 앞 날짜로 잡히던 문제
+    return ci.astimezone(KST).date(), co.astimezone(KST).date(), ci, co
 
 
 def _as_date(v) -> Optional[date]:

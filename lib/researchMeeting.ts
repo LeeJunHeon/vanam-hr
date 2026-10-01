@@ -1,4 +1,5 @@
-// 연구미팅 판정 단일 소스 — aggregator(db.py)의 판정과 반드시 동일해야 한다.
+// 연구미팅 판정 단일 소스 — aggregator(day_rules.py is_research_meeting_day)의 판정과 반드시 동일해야 한다.
+// 규칙을 바꾸면 npm run parity.
 // 우선순위: 휴가/신청 > 시프트 휴무(off) > 연구미팅 > 일반 패턴.
 // 이 모듈은 "달력상 미팅일인지"만 판정한다. off/미배정 제외는 호출자 책임.
 export interface ResearchMeetingPolicy {

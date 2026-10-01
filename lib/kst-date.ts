@@ -1,4 +1,5 @@
 // KST 날짜 공용 유틸. trip-calendar 와 attendance-recalc 가 같이 쓴다
+// 규칙을 바꾸면 npm run parity — 오늘 근무일은 aggregator/day_rules.py work_date_for 와 같아야 한다.
 // (trip-calendar 가 attendance-recalc 를 import 하므로 둘 중 한쪽에 두면 순환 import 가 된다).
 
 // 오늘 근무일 — work_date_cutoff_hour(기본 4) 이전이면 전날. realtime·attendance-rows·aggregator 의
@@ -28,6 +29,11 @@ export async function loadTodayWorkDate(db: {
   const cutoffHour = parseCutoffHour(row?.value);
   const date = kstWorkDateMidnightUtc(cutoffHour);
   return { date, ymd: date.toISOString().slice(0, 10), cutoffHour };
+}
+
+// KST 오늘(달력 날짜) "YYYY-MM-DD"
+export function kstTodayYmd(): string {
+  return kstTodayMidnightUtc().toISOString().slice(0, 10);
 }
 
 // KST 오늘 00:00 을 UTC 자정 Date 로 (날짜 컬럼 비교용). "지난 날짜" = 이보다 이전.

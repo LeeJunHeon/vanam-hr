@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { computeLeaveDaysInPeriod } from "@/lib/annual-leave";
+import { LIVE_REQUEST_STATUSES } from "@/lib/attendance-live-requests";
 
 // 개인 대시보드(dashboard/my-stats)·챗(internal/my-stats) 공용 본인 통계.
 // - attended  : 기간 내 출근 시각이 있는 날
@@ -21,7 +22,7 @@ export async function computeMyStats(
     prisma.attendanceRequest.count({
       where: {
         employeeId,
-        status: { in: ["approved", "auto_approved", "auto_delegated"] },
+        status: { in: LIVE_REQUEST_STATUSES },
         requestType: { not: "calendar_auto" },
         requestedAt: { gte: start, lt: endExclusive },
       },

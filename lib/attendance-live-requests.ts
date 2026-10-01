@@ -1,16 +1,18 @@
 import type { Prisma } from "@/app/generated/prisma/client";
-import { prisma } from "@/lib/prisma";
+import type { prisma } from "@/lib/prisma";
+import { LEAVE_CATEGORY_TYPES, WORK_CATEGORY_TYPES } from "@/lib/category-kind";
 
 // 근태 반영(승인·취소·정정)에서 같이 쓰는 "살아 있는 신청" 조회·판정.
 // aggregator(get_active_requests, 종일 판정)와 같은 기준이어야 한다 — 한쪽을 바꾸면 다른 쪽도.
+// 규칙을 바꾸면 npm run parity (aggregator/day_rules.py LIVE_STATUSES, calendar_sync.py 와 비교).
 
 type Db = Prisma.TransactionClient | typeof prisma;
 
-// 살아 있는 신청 상태
-export const LIVE_REQUEST_STATUSES = ["approved", "auto_approved", "auto_delegated"];
+// 살아 있는 신청 상태 — 웹에서 이 목록은 여기 하나만 둔다.
+export const LIVE_REQUEST_STATUSES: string[] = ["approved", "auto_approved", "auto_delegated"];
 
 // 휴가·외근 카테고리 type (근태 정정 'correction' 제외)
-export const LEAVE_WORK_CATEGORY_TYPES = ["leave", "long_leave", "work"];
+export const LEAVE_WORK_CATEGORY_TYPES: string[] = [...LEAVE_CATEGORY_TYPES, ...WORK_CATEGORY_TYPES];
 
 export function isLeaveWorkCategoryType(type: string | null | undefined): boolean {
   return !!type && LEAVE_WORK_CATEGORY_TYPES.includes(type);
@@ -23,18 +25,8 @@ export function isProtectedManualRow(
   return !!row && row.isOverridden && (row.overrideSource ?? "") !== "calendar";
 }
 
-function kstYmd(d: Date): string {
-  return new Date(d.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
-
-// 종일 판정 — aggregator 와 동일: 시각 한쪽이라도 없거나, 두 시각의 KST 날짜가 다르면(다일 시간형) 종일.
-export function isAllDayRequest(
-  correctedCheckIn: Date | null,
-  correctedCheckOut: Date | null
-): boolean {
-  if (!correctedCheckIn || !correctedCheckOut) return true;
-  return kstYmd(correctedCheckIn) !== kstYmd(correctedCheckOut);
-}
+// 종일 판정 — lib/attendance-judge (aggregator day_rules.is_all_day_request 와 같다)
+export { isAllDayRequest } from "@/lib/attendance-judge";
 
 export interface LiveLeaveWorkRequest {
   id: number;
@@ -77,31 +69,4 @@ export async function findLiveLeaveWorkRequests(
     correctedCheckIn: r.correctedCheckIn,
     correctedCheckOut: r.correctedCheckOut,
   }));
-}
-
-// 그 날 살아 있는 "시간형 휴가"(반차 등) — type leave·long_leave 이면서 KST 같은 날 시각 둘 다.
-// aggregator 의 in_range_leave 와 같은 기준.
-export async function findLiveTimedLeaves(
-  db: Db,
-  employeeId: number,
-  workDate: Date
-): Promise<{ start: Date; end: Date }[]> {
-  const reqs = await findLiveLeaveWorkRequests(db, employeeId, workDate);
-  return reqs
-    .filter(
-      (r) =>
-        (r.categoryType === "leave" || r.categoryType === "long_leave") &&
-        !isAllDayRequest(r.correctedCheckIn, r.correctedCheckOut)
-    )
-    .map((r) => ({ start: r.correctedCheckIn!, end: r.correctedCheckOut! }));
-}
-
-// 그 날 살아 있는 "종일" 휴가·외근이 있는가.
-export async function hasLiveAllDayLeaveWork(
-  db: Db,
-  employeeId: number,
-  workDate: Date
-): Promise<boolean> {
-  const reqs = await findLiveLeaveWorkRequests(db, employeeId, workDate);
-  return reqs.some((r) => isAllDayRequest(r.correctedCheckIn, r.correctedCheckOut));
 }

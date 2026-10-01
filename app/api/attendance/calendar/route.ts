@@ -5,6 +5,7 @@ import {
 } from "@/lib/auth-helpers";
 import { prisma } from "@/lib/prisma";
 import { assembleAttendanceRows } from "@/lib/attendance-rows";
+import { LIVE_REQUEST_STATUSES } from "@/lib/attendance-live-requests";
 
 // GET /api/attendance/calendar?yearMonth=2026-06[&employeeId=123]
 //
@@ -165,7 +166,7 @@ export async function GET(request: NextRequest) {
       where: {
         employeeId: { in: empIds },
         // auto_delegated(자동위임 승인)도 승인 상태 — overview/realtime과 동일 3종으로 통일
-        status: { in: ["approved", "auto_approved", "auto_delegated"] },
+        status: { in: LIVE_REQUEST_STATUSES },
         startDate: { lte: monthEnd },
         endDate: { gte: monthStart },
       },

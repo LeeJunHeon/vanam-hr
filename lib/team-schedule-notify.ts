@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { createNotifications } from "@/lib/notify";
 import { isLeaveCategoryType } from "@/lib/category-kind";
+import { LIVE_REQUEST_STATUSES } from "@/lib/attendance-live-requests";
 
 // ─────────────────────────────────────────────────────────────
 // 팀 일정 알림 — 근태 신청이 승인 확정되면 같은 부서 동료에게 알린다.
@@ -127,7 +128,7 @@ export async function notifyTeamOfApprovedRequest(
     });
     if (!req) return 0;
     if (req.teamNotifiedAt) return 0; // 이미 발송됨 (중복 방지)
-    if (!["approved", "auto_approved", "auto_delegated"].includes(req.status)) return 0;
+    if (!LIVE_REQUEST_STATUSES.includes(req.status)) return 0;
     if (!req.employee?.departmentId) return 0; // 부서 없으면 알릴 동료가 없다
 
     const targetCats = await resolveTargetCategoryIds(settings.categoryCodes);

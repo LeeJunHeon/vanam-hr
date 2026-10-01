@@ -444,7 +444,8 @@ model AttendanceRequest {
   // 출장보고서 (단건 출장/외근 신청 경로)
   tripReport TripReport?
 
-  @@unique([externalSource, externalEventId], map: "uk_request_external")
+  // 실제 DB 인덱스와 같게 세 컬럼 (같은 구글 일정이라도 직원마다 1행)
+  @@unique([externalSource, externalEventId, employeeId], map: "uk_request_external")
   @@index([employeeId, startDate], map: "idx_requests_employee")
   @@index([primaryApproverId, status], map: "idx_requests_primary_approver")
   @@index([deputyApproverId, status], map: "idx_requests_deputy_approver")

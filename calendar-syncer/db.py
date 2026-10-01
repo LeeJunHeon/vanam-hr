@@ -14,6 +14,8 @@ from typing import Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+from calendar_sync import LEAVE_WORK_TYPES, LIVE_STATUSES
+
 
 class Database:
     def __init__(self, host: str, port: int, dbname: str, user: str, password: str):
@@ -226,12 +228,13 @@ class Database:
                 WHERE employee_id = %s
                   AND category_id = %s
                   AND request_type <> 'calendar_auto'
-                  AND status IN ('approved', 'auto_approved', 'auto_delegated', 'pending')
+                  AND status = ANY(%s)
                   AND start_date <= %s::date
                   AND end_date   >= %s::date
                 LIMIT 1
                 """,
-                (employee_id, category_id, end_date, start_date),
+                # 살아 있는 상태 + 결재 대기(pending) — HR 신청이 결재 중이어도 겹침으로 본다
+                (employee_id, category_id, list(LIVE_STATUSES) + ["pending"], end_date, start_date),
             )
             return c.fetchone() is not None
 
@@ -306,12 +309,12 @@ class Database:
                        category_id, status, corrected_check_in, corrected_check_out
                 FROM hr.attendance_requests
                 WHERE external_source = 'google_calendar'
-                  AND status IN ('approved', 'auto_approved', 'auto_delegated')
+                  AND status = ANY(%s)
                   AND start_date <= %s
                   AND end_date >= %s
                 ORDER BY id
                 """,
-                (today, today),
+                (list(LIVE_STATUSES), today, today),
             )
             return [dict(r) for r in c.fetchall()]
 
@@ -385,13 +388,14 @@ class Database:
                 FROM hr.attendance_requests r
                 JOIN hr.attendance_categories cat ON cat.id = r.category_id
                 WHERE r.employee_id = %s
-                  AND r.status IN ('approved', 'auto_approved', 'auto_delegated')
+                  AND r.status = ANY(%s)
                   AND r.start_date <= %s AND r.end_date >= %s
-                  AND cat.type IN ('leave', 'long_leave', 'work')
+                  AND cat.type = ANY(%s)
                   AND (%s::int IS NULL OR r.id <> %s::int)
                 ORDER BY r.id
                 """,
-                (employee_id, work_date, work_date, exclude_request_id, exclude_request_id),
+                (employee_id, list(LIVE_STATUSES), work_date, work_date, list(LEAVE_WORK_TYPES),
+                 exclude_request_id, exclude_request_id),
             )
             return [dict(r) for r in c.fetchall()]
 

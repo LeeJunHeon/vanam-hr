@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
-import { todayYmd } from "@/lib/dateUtils";
+import { kstTodayYmd } from "@/lib/kst-date";
 import {
   loadResearchMeetingPolicy,
   nextResearchMeetingDay,
@@ -52,8 +52,8 @@ export async function GET() {
     }
     const empId = employeeId as number;
 
-    // 오늘 KST 기준 (lib/dateUtils — 컨테이너 TZ=Asia/Seoul 설정 활용)
-    const today = new Date(todayYmd() + "T00:00:00.000Z");
+    // 오늘 KST 기준 (lib/kst-date)
+    const today = new Date(kstTodayYmd() + "T00:00:00.000Z");
 
     const [currentEs, patterns, effective, me, rmPolicy] = await Promise.all([
       prisma.employeeShift.findFirst({
@@ -93,7 +93,7 @@ export async function GET() {
         ? {
             attends: true as const,
             policy: rmPolicy,
-            nextDate: nextResearchMeetingDay(todayYmd(), rmPolicy),
+            nextDate: nextResearchMeetingDay(kstTodayYmd(), rmPolicy),
           }
         : null;
 
@@ -166,7 +166,7 @@ export async function PUT(request: Request) {
     }
 
     // 2. 적용일은 서버에서 결정 (클라이언트 값 신뢰 금지)
-    const today = new Date(todayYmd() + "T00:00:00.000Z");
+    const today = new Date(kstTodayYmd() + "T00:00:00.000Z");
     const { effectiveDate } = await computeEffectiveDate(prisma, empId, today);
 
     // 3. employee_shifts 갱신

@@ -8,6 +8,10 @@ import {
   requireSession,
   canViewAllEmployees,
 } from "@/lib/auth-helpers";
+import { Prisma } from "@/app/generated/prisma/client";
+import { LIVE_REQUEST_STATUSES } from "@/lib/attendance-live-requests";
+import { loadAttendancePolicy } from "@/lib/attendance-policy";
+import { kstWorkDateMidnightUtc } from "@/lib/kst-date";
 
 // GET /api/attendance/realtime
 // 활성 직원의 실시간 연결 상태 (오늘 기준)
@@ -73,22 +77,13 @@ export async function GET(request: NextRequest) {
       scope = "department";
     }
 
-    // 정책: grace_minutes (60 기본)
-    const policy = await prisma.policySetting.findUnique({
-      where: { key: "debounce_minutes" },
-    });
-    const graceMinutes =
-      policy && /^\d+$/.test(policy.value) ? parseInt(policy.value, 10) : 60;
-
-    // 정책: work_date_cutoff_hour (4 기본) — 야간근무가 자정을 넘긴 경우의 work_date 귀속 기준.
-    // aggregator(attendance_daily)와 동일 cutoff를 presence_raw "오늘" 판정에도 적용.
-    const cutoffPolicy = await prisma.policySetting.findUnique({
-      where: { key: "work_date_cutoff_hour" },
-    });
-    const cutoffHour =
-      cutoffPolicy && /^\d+$/.test(cutoffPolicy.value)
-        ? parseInt(cutoffPolicy.value, 10)
-        : 4;
+    // 정책: grace_minutes(debounce_minutes, 60) · work_date_cutoff_hour(4) — lib/attendance-policy
+    // cutoff 는 야간근무가 자정을 넘긴 경우의 work_date 귀속 기준 (aggregator 와 동일).
+    const policyValues = await loadAttendancePolicy(prisma);
+    const graceMinutes = policyValues.debounceMinutes;
+    const cutoffHour = policyValues.cutoffHour;
+    // 오늘 근무일 (lib/kst-date — aggregator work_date_for 와 같은 규칙)
+    const todayWorkYmd = kstWorkDateMidnightUtc(cutoffHour).toISOString().slice(0, 10);
 
     // 활성 직원 조회
     const employees = await prisma.employee.findMany({
@@ -148,11 +143,7 @@ export async function GET(request: NextRequest) {
 
     const latestRows = await prisma.$queryRaw<LatestRow[]>`
       WITH today_kst AS (
-        SELECT CASE
-          WHEN EXTRACT(HOUR FROM (NOW() AT TIME ZONE 'Asia/Seoul')) < ${cutoffHour}
-          THEN ((NOW() AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '1 day')::date
-          ELSE (NOW() AT TIME ZONE 'Asia/Seoul')::date
-        END AS d
+        SELECT ${todayWorkYmd}::date AS d
       ),
       today_raw AS (
         SELECT
@@ -207,7 +198,7 @@ export async function GET(request: NextRequest) {
         FROM hr.attendance_requests rq
         JOIN hr.attendance_categories rc ON rc.id = rq.category_id
         WHERE rq.employee_id = ANY(${employeeIds}::int[])
-          AND rq.status IN ('approved', 'auto_approved', 'auto_delegated')
+          AND rq.status IN (${Prisma.join(LIVE_REQUEST_STATUSES)})
           AND rq.start_date <= (SELECT d FROM today_kst)
           AND rq.end_date >= (SELECT d FROM today_kst)
           AND rc.type <> 'correction'

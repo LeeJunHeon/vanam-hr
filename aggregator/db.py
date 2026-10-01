@@ -1,10 +1,17 @@
 """psycopg2 DB 연결/쿼리. autocommit=True 패턴으로 트랜잭션 누수 차단."""
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+
+from day_rules import (
+    LIVE_STATUSES,
+    is_research_meeting_day,
+    resolve_shift_point,
+    work_date_for,
+)
 
 
 class Database:
@@ -146,20 +153,8 @@ class Database:
 
         야간 근무자가 새벽까지 일하는 케이스를 위한 정책.
         """
-        self._ensure_connected()
-        with self.conn.cursor() as c:
-            c.execute(
-                """
-                SELECT CASE
-                    WHEN EXTRACT(HOUR FROM (NOW() AT TIME ZONE 'Asia/Seoul')) < %s
-                    THEN ((NOW() AT TIME ZONE 'Asia/Seoul')::date - INTERVAL '1 day')::date
-                    ELSE (NOW() AT TIME ZONE 'Asia/Seoul')::date
-                END
-                """,
-                (cutoff_hour,),
-            )
-            row = c.fetchone()
-            return row[0]
+        # 계산은 day_rules.work_date_for (웹 kst-date.ts 와 같은 규칙 — npm run parity)
+        return work_date_for(datetime.now(timezone.utc), cutoff_hour)
 
     def get_employee_shift(
         self,
@@ -207,22 +202,12 @@ class Database:
             cycle_days = row["cycle_days"]
             schedule = row["schedule"]
 
-            if not isinstance(schedule, list) or cycle_days < 1:
-                return None
-
-            # day_offset 계산 (요일 고정: start_date가 속한 주의 월요일을 기준점으로)
-            # weekday(): 월=0 … 일=6 → start_date를 그 주 월요일로 내린 뒤 사이클 계산
-            anchor = start_date - timedelta(days=start_date.weekday())
-            day_offset = (work_date - anchor).days % cycle_days
-
-            # schedule에서 dayIndex == day_offset 인 point 찾기
-            point = None
-            for p in schedule:
-                if isinstance(p, dict) and p.get("dayIndex") == day_offset:
-                    point = p
-                    break
+            # 배정 시작일이 속한 주의 월요일 기준 (경과일 % cycle_days) 번째 point
+            # — day_rules.resolve_shift_point (웹 shift-schedule.ts 와 같은 규칙, npm run parity)
+            point = resolve_shift_point(start_date, cycle_days, schedule, work_date)
             if point is None:
                 return None
+            day_offset = point.get("dayIndex")
 
             # 연구미팅 대체 — 우선순위: 휴가/신청(상위 레이어) > 시프트 휴무(off) > 연구미팅 > 일반 패턴.
             # 근무일 point일 때만 대체한다. off/미배정 경로는 기존 반환을 그대로 유지.
@@ -282,15 +267,8 @@ class Database:
         except Exception:
             return None
 
-        if work_date.isoweekday() != weekday:
-            return None
-
-        def monday(d: date) -> date:
-            return d - timedelta(days=d.isoweekday() - 1)
-
-        # 파이썬 % 는 음수에도 올바른 리듬 유지 — anchor 이전 날짜도 정상
-        week_diff = (monday(work_date) - monday(anchor)).days // 7
-        return (start_t, end_t) if week_diff % interval == 0 else None
+        # 판정은 day_rules.is_research_meeting_day (웹 researchMeeting.ts 와 같은 규칙, npm run parity)
+        return (start_t, end_t) if is_research_meeting_day(work_date, weekday, interval, anchor) else None
 
     def get_pending_attendance_alerts(self) -> list[dict]:
         """직전 근무일이 비정상(지각·조퇴·결근)이고 아직 알림을 안 보낸 활성 직원 목록.
@@ -491,12 +469,12 @@ class Database:
                 FROM hr.attendance_requests r
                 JOIN hr.attendance_categories c ON c.id = r.category_id
                 WHERE r.employee_id = %s
-                  AND r.status IN ('approved', 'auto_approved', 'auto_delegated')
+                  AND r.status = ANY(%s)
                   AND r.start_date <= %s
                   AND r.end_date >= %s
                 ORDER BY r.requested_at ASC
                 """,
-                (employee_id, work_date, work_date),
+                (employee_id, list(LIVE_STATUSES), work_date, work_date),
             )
             return [dict(r) for r in c.fetchall()]
 
@@ -678,13 +656,13 @@ class Database:
                 JOIN hr.attendance_categories c ON c.id = r.category_id
                 WHERE r.employee_id = %s
                   AND c.code = 'CORRECTION'
-                  AND r.status IN ('approved', 'auto_approved', 'auto_delegated')
+                  AND r.status = ANY(%s)
                   AND r.start_date <= %s
                   AND r.end_date >= %s
                   AND r.{col} IS NOT NULL
                 LIMIT 1
                 """,
-                (employee_id, work_date, work_date),
+                (employee_id, list(LIVE_STATUSES), work_date, work_date),
             )
             return c.fetchone() is not None
 
@@ -793,7 +771,7 @@ class Database:
                            FROM hr.attendance_requests r
                            JOIN hr.attendance_categories cat ON cat.id = r.category_id
                            WHERE r.employee_id = d.employee_id
-                             AND r.status IN ('approved', 'auto_approved', 'auto_delegated')
+                             AND r.status = ANY(%s)
                              AND r.start_date <= d.work_date
                              AND r.end_date >= d.work_date
                              AND cat.type <> 'correction'
@@ -803,7 +781,7 @@ class Database:
                   AND d.is_overridden = true
                   AND d.override_source = 'calendar'
                 """,
-                (employee_id, work_date),
+                (list(LIVE_STATUSES), employee_id, work_date),
             )
             row = c.fetchone()
             if row is None or row["has_request"]:
@@ -855,14 +833,14 @@ class Database:
                       FROM hr.attendance_requests r
                       JOIN hr.attendance_categories cat ON cat.id = r.category_id
                       WHERE r.employee_id = d.employee_id
-                        AND r.status IN ('approved', 'auto_approved', 'auto_delegated')
+                        AND r.status = ANY(%s)
                         AND r.start_date <= d.work_date
                         AND r.end_date >= d.work_date
                         AND cat.type <> 'correction'
                   )
                 RETURNING d.check_in, d.check_out
                 """,
-                (employee_id, work_date),
+                (employee_id, work_date, list(LIVE_STATUSES)),
             )
             row = c.fetchone()
             return (row[0], row[1]) if row else None
