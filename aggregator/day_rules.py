@@ -13,6 +13,8 @@
 - 알림 공용 판단(출근 전·출근 미감지·근무 중 끊김): day_alert_context
 - 평가 키(지각·조퇴 플래그 우선, 둘 다 NULL 인 옛 행은 auto_status): eval_keys
   웹 lib/attendanceLabels.ts evalKeys 와 같은 규칙 — 한쪽을 바꾸면 다른 쪽도.
+- 근무일 창 출퇴근: day_presence / 04:00 을 넘긴 연결이 근무 시작 전에 끝났는지: carry_end
+  (aggregator 전용 — 웹에는 없다)
 
 용어
 - 대상 신청 = 살아 있는(approved·auto_approved·auto_delegated) 휴가·근무 신청. 정정·결재 대기 제외.
@@ -554,3 +556,33 @@ def day_presence(records: list, carried_in: bool, day_start: datetime, day_end: 
     else:
         check_out = day_end if now >= day_end else None
     return check_in, check_out
+
+
+def carry_end(records: list, until: datetime, grace_minutes: int, now: datetime) -> tuple:
+    """04:00 을 넘긴 연결(이월)이 근무 시작 예정 시각 until(P) 전에 끝났는지.
+
+    records: 그 근무일 창 [S, E) 기록 (checked_at 오름차순, 직원 단위 — 기기 합침).
+    나감 = offline 뒤 grace 분 넘게 다시 online 이 없음 (퇴근 판정과 같은 기준). 나간 시각 = 그 offline 시각.
+    grace 안에 돌아오면 잠깐 자리 비움(나간 것 아님). P 이후 기록은 보지 않는다.
+
+    반환:
+      ("ended", 나간 시각, i) — P 전에 나감. i = 그날 몫 기록의 시작 위치(records[i:] 는 이월 아님으로 계산).
+      ("open", None, None)    — P 까지 안 나감 (now >= P). 경계는 P.
+      ("pending", None, None) — 아직 모름 (now < P 이고 연결 중, 또는 P 전에 끊긴 뒤 grace 가 안 지남).
+    """
+    g = timedelta(minutes=grace_minutes)
+    for i, r in enumerate(records):
+        t = r["checked_at"]
+        if t >= until:
+            break
+        if r["status"] != "offline":
+            continue
+        back = next((x["checked_at"] for x in records[i + 1:] if x["status"] == "online"), None)
+        if back is not None:
+            if back - t >= g:
+                return "ended", t, i + 1
+            continue  # grace 안에 돌아옴 — 잠깐 자리 비움
+        if now - t >= g:
+            return "ended", t, i + 1
+        return "pending", None, None
+    return ("open", None, None) if now >= until else ("pending", None, None)

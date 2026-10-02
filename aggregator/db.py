@@ -810,6 +810,36 @@ class Database:
             row = c.fetchone()
             return (row[0], row[1]) if row else None
 
+    def clear_carry_times(self, employee_id: int, work_date: date):
+        """오늘 출근이 없게 된 이월 날 전용 — 자동 행에 남은 출퇴근·근무시간·평가를 비운다.
+
+        04:00 을 넘긴 연결이 근무 시작 전에 끝났거나(근무 시작 전 퇴근) 아직 판단 보류인데
+        예전 계산(04:00 이월 출근)이 남긴 값이 있을 때만 해당한다.
+        캘린더·수동 행(is_overridden=true)과 확정 행은 건드리지 않는다. 행을 지우지 않는다.
+        반환: 비우기 전 (check_in, check_out) 또는 None(해당 없음).
+        """
+        self._ensure_connected()
+        with self.conn.cursor() as c:
+            c.execute(
+                """
+                WITH old AS (
+                    SELECT id, check_in, check_out FROM hr.attendance_daily
+                    WHERE employee_id = %s AND work_date = %s
+                      AND is_overridden = false AND is_confirmed = false
+                      AND (check_in IS NOT NULL OR check_out IS NOT NULL)
+                    FOR UPDATE
+                )
+                UPDATE hr.attendance_daily d
+                SET check_in = NULL, check_out = NULL, work_minutes = NULL,
+                    auto_status = NULL, is_late = NULL, is_early_leave = NULL, updated_at = NOW()
+                FROM old WHERE d.id = old.id
+                RETURNING old.check_in, old.check_out
+                """,
+                (employee_id, work_date),
+            )
+            row = c.fetchone()
+            return (row[0], row[1]) if row else None
+
     def get_recalc_targets(self, before_date: date, limit: int = 200) -> list[dict]:
         """needs_recalc=true 이고 work_date < before_date 인 행. 오래된 날짜 순.
 

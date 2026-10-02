@@ -7,7 +7,8 @@ is_overridden=true 인 row는 건드리지 않음.
 무기록 결근(absent) 자동 생성:
 - 캘린더 없음 + 출퇴근 없음 + 어제(마감된 날) + 근무 시프트일(type != 'off',
   start·end 존재) + 공휴일 아님 → auto_status='absent' 행을 UPSERT.
-- 04:00 에 연결 중이던 날은 출근 04:00(이월)이 있어 결근이 아니다.
+- 04:00 에 연결 중이던 날은 그 연결이 근무 시작까지 이어졌으면 출근 = 근무 시작이라 결근이 아니다.
+  근무 시작 전에 나갔고 그 뒤 출근이 없으면 결근 조건대로 판정한다.
 - 무단 미출근일이 근태 조회에 남고, 직전 근무일 비정상 알림의 대상이 된다.
 - 진행 중인 오늘·시프트 미배정·휴무·공휴일에는 생성하지 않음.
 
@@ -32,12 +33,14 @@ is_overridden=true 인 row는 건드리지 않음.
   category_id 만 대표 카테고리로 바꾼다. 시각·상태·보정 출처·메모는 그대로.
 
 출퇴근 정의 (employee 단위 통합 timeline, location 무관, day_rules.day_presence):
-- 근무일 창 [S, E): S = work_date 의 cutoff 시각(04:00), E = S + 1일. 다음 날 기록은 보지 않는다.
-- 출근: 이월(S 직전 마지막 기록이 online — 04:00 에 연결 중)이면 S, 아니면 창 안 첫 'online'
+- 근무일 창 [S, E): S = work_date 의 cutoff 시각(04:00), E = S + 1일.
+- 출근: 창 안 첫 'online'. 이월(S 직전 마지막 기록이 online — 04:00 에 연결 중)이면 아래
+  "근무일 경계(cutoff)를 넘긴 연결" 규칙(근무 시작 시각 P 또는 나간 뒤 첫 online).
 - 퇴근:
   1) 창 안 마지막=offline + grace 경과 → 그 offline 시각이 퇴근 (정상)
   2) 창 안 마지막=offline + grace 미경과 → None (잠깐 자리 비움, 근무중 유지)
-  3) 마지막 상태=online(창 안 마지막 online, 또는 기록 없이 이월) → E 가 지났으면 E(경계 퇴근),
+  3) 마지막 상태=online(창 안 마지막 online, 또는 기록 없이 이월) → E 가 지났으면 다음 날 규칙으로
+     정한다(다음 날 근무 시작 전에 나간 시각 / 다음 날 근무 시작 P / 다음 날 근무 시작 없으면 E),
      아니면 None (근무중)
      ※ poller는 상태 전환 시에만 INSERT하므로 침묵은 "online 유지" 의미.
        가만히 있는 사람을 퇴근 처리하지 않는다.
@@ -65,11 +68,19 @@ work_date 귀속 (야간 근무자 정책):
 - aggregator는 매 사이클마다 어제+오늘 두 work_date 모두 처리하여
   04:00~05:00 사이 grace 60분 도달 시점도 정확히 잡힌다.
 
-근무일 경계(cutoff)를 넘긴 연결:
-- 연장 없이 04:00 에서 자른다. 04:00 에 연결 중이면 전날 퇴근 = 다음 날 04:00(경계 퇴근),
-  그날 출근 = 04:00(이월 출근). 며칠 연속 연결이면 날마다 04:00 ~ 04:00.
-- 그날 출근이 있으면(이월 포함, 연결 변화 0건이어도) 행을 만든다.
-- 예: KANG — 9/30 06:55 ~ 10/01 04:00, 10/1 은 04:00 이 되는 순간 출근 04:00·근무 중.
+근무일 경계(cutoff)를 넘긴 연결 (day_rules.carry_end):
+- 04:00 에 연결 중이면(이월) "실제로 나간 시각, 또는 그날 근무 시작 시각 P"에서 나눈다.
+  P = 알림의 기준 출근(day_alert_context ref_in — 보통 시프트 시작, 오전반차면 반차 끝).
+  P 없음 = 공휴일·휴무·시프트 미배정·알림 없는 날(종일 휴가·근무 등)·P <= 04:00.
+  나감 = offline 뒤 grace 분 넘게 재연결 없음 (퇴근 판정과 같은 기준).
+  · P 없음 → 04:00 에서 나눔 (출근 = 04:00, 전날 퇴근 = 04:00)
+  · P 전에 나감 → 전날 퇴근 = 나간 시각, 그날은 나간 뒤 기록으로 이월 아님 계산
+  · P 까지 안 나감 → 전날 퇴근 = P, 그날 출근 = P
+  · 아직 모름(P 전 연결 중, 또는 끊긴 뒤 grace 전) → 판단 보류: 그날 출퇴근 없음, 전날 퇴근 비움.
+    판단 보류 중인 직원에게는 출근 전·출근 미감지 알림을 보내지 않는다.
+- 예: KANG — 9/30 06:55 출근, 밤새 연결 → 10/1 근무 시작 07:00 에서 나눔
+  (9/30 퇴근 10/01 07:00, 10/1 출근 07:00).
+- 예: LEE — 밤샘 뒤 7/28 05:58 퇴근, 15:56 출근(시프트 15:00) → 전날 퇴근 05:58, 7/28 출근 15:56(지각).
 
 sync 단순 루프. asyncio 의존성 없음.
 """
@@ -89,6 +100,7 @@ from logger import setup_logger
 from day_rules import (
     LEAVE_WORK_TYPES,
     build_judge_ctx,
+    carry_end,
     day_presence,
     day_alert_context,
     eval_keys,
@@ -136,6 +148,9 @@ class Aggregator:
         # - 날짜가 바뀌면 기록값이 오늘과 달라 자동으로 재발송 허용
         # - 데몬 재시작 시 최악 1회 중복 발송 tradeoff 허용 (끊김 알림과 동일한 결정)
         self._no_show_notified: dict[int, str] = {}
+        # 이번 사이클에 오늘 work_date 가 '이월 판단 보류'(04:00 을 넘긴 연결이 근무 시작 전인지 아직 모름)인
+        # 직원 id — 출근 전·출근 미감지 알림을 보내지 않는다. 사이클마다 직원 루프 시작 직전에 비운다.
+        self._carry_pending: set = set()
         # 대리 위임 자동 마감 스윕 날짜 게이트 (KST 기준 하루 1회)
         self._last_sweep_date = None
         # 출장보고서 미제출 리마인더 스윕 날짜 게이트 (KST 기준 하루 1회)
@@ -248,6 +263,7 @@ class Aggregator:
         skip_no_data = 0
         skip_overridden = 0
 
+        self._carry_pending = set()
         for emp in employees:
             for work_date in (yesterday, today):
                 result = self._process_employee_work_date(
@@ -425,10 +441,14 @@ class Aggregator:
                     (get_pending_attendance_alerts)의 대상이 되게 한다.
                     cycle_today(진행 중인 오늘)에는 절대 생성하지 않는다.
         흐름:
-          1) 근무일 창 [S, E) presence_raw → check_in/out (day_rules.day_presence)
-             - 이월: S 직전 마지막 기록이 online(04:00 에 연결 중) → 출근 = S
-             - 마지막 상태가 online 이고 E 가 지났으면 퇴근 = E (경계 퇴근)
+          1) 근무일 창 [S, E) presence_raw → check_in/out (_presence_with_carry)
+             - 이월(S 직전 마지막 기록이 online — 04:00 에 연결 중)이면 근무 시작 P 기준으로 나눈다:
+               P 없음 → 출근 S / P 전에 나감 → 나간 뒤 기록으로 계산 / P 까지 안 나감 → 출근 P /
+               아직 모름 → 판단 보류(출퇴근 없음)
+             - 마지막 상태가 online 이고 E 가 지났으면 퇴근은 다음 날 규칙(나간 시각 / P / E / 비움)
              - 출근이 없으면 퇴근도 쓰지 않음 (퇴근만 있는 기록 무시)
+             - 오늘 work_date 가 판단 보류·근무 시작 전 퇴근으로 출퇴근이 없으면, 예전 계산이 남긴
+               자동 행의 출퇴근을 비운다(_clear_carry_today)
           2) 캘린더 보정 확인 (get_auto_approved_request)
           3) 캘린더 있음 → category_id 적용, auto_status='normal',
              is_overridden=true, override_source='calendar'
@@ -447,9 +467,21 @@ class Aggregator:
         # 1) presence_raw 기반 check_in/out (없으면 둘 다 None)
         raw = self.db.get_presence_raw_by_work_date(emp_id, work_date, cutoff_hour)
 
-        # 1-a) 근무일 창 [S, E) 출퇴근 — day_rules.day_presence (연장 없이 04:00 에서 자른다)
-        #   이월: S 직전 마지막 기록이 online 이면 04:00 에 연결 중이던 것 → 출근 = S.
-        #   마지막 상태가 online 이면 E 가 지난 뒤 퇴근 = E. 출근이 없으면 퇴근도 쓰지 않는다.
+        # 그날 살아 있는 신청 — 1-a(이월의 근무 시작 P)와 2)(캘린더 보정)가 같이 쓴다.
+        # 근태 정정(type 'correction')은 일정으로 치지 않는다 — 정정은 웹이 수동 보호 행으로 반영한다.
+        # (보호가 풀린 행에서 한쪽만 적힌 정정이 '종일 일정'처럼 처리돼 지각이 정상으로 바뀌고
+        #  구분에 '근태정정'이 찍히던 문제, 2026-07-29 사례)
+        active_requests = [
+            r for r in self.db.get_active_requests(emp_id, work_date)
+            if r.get("category_type") != "correction"
+        ]
+
+        # 시프트 로깅에 쓰일 정보 (분기 둘 다에서 필요) — 1-a 의 근무 시작 P 에도 쓴다
+        shift_info = self.db.get_employee_shift(emp_id, work_date)
+
+        # 1-a) 근무일 창 [S, E) 출퇴근 — _presence_with_carry (day_presence + 이월 규칙 carry_end)
+        #   이월: S 직전 마지막 기록이 online 이면 04:00 에 연결 중이던 것 → 근무 시작 P 기준으로 나눈다.
+        #   마지막 상태가 online 이면 E 가 지난 뒤 퇴근은 다음 날 규칙. 출근이 없으면 퇴근도 쓰지 않는다.
         from datetime import time as _time_b
         S = datetime.combine(work_date, _time_b(hour=cutoff_hour), tzinfo=KST)
         E = S + timedelta(days=1)
@@ -461,8 +493,14 @@ class Aggregator:
             )
             before_s = None
         carried_in = bool(before_s and before_s["status"] == "online")
-        check_in, check_out = day_presence(raw, carried_in, S, E, grace_minutes, now)
-        boundary_out = check_out is not None and check_out == E
+        check_in, check_out, carry_state, carry_label = self._presence_with_carry(
+            emp_id, work_date, raw, carried_in, S, E, shift_info, active_requests,
+            holiday_name, grace_minutes, cutoff_hour, now)
+        is_cycle_today = cycle_today is not None and work_date == cycle_today
+        if carry_state == "pending" and is_cycle_today:
+            self._carry_pending.add(emp_id)
+        # 오늘 출근이 없게 된 이월 날 — no_data 로 끝나면 예전 계산(04:00 이월 출근)이 남긴 자동 행을 비운다
+        clear_carry_today = is_cycle_today and carry_state in ("pending", "ended") and check_in is None
 
         # 초 단위 절삭 — 폴링 사이클 오프셋(초)이 판정/근무시간에 섞이지 않도록 원천 차단
         check_in = _floor_minute(check_in)
@@ -475,17 +513,7 @@ class Aggregator:
         # 재실 중이면 외근이 끝났어도 외근 종료시각을 퇴근으로 굳히지 않는다(복귀 후 조퇴 오판 방지).
         currently_present = (wifi_check_in is not None) and (wifi_check_out is None)
 
-        # 2) 캘린더 자동 등록 보정 확인 (Phase 6-2B)
-        # 근태 정정(type 'correction')은 일정으로 치지 않는다 — 정정은 웹이 수동 보호 행으로 반영한다.
-        # (보호가 풀린 행에서 한쪽만 적힌 정정이 '종일 일정'처럼 처리돼 지각이 정상으로 바뀌고
-        #  구분에 '근태정정'이 찍히던 문제, 2026-07-29 사례)
-        active_requests = [
-            r for r in self.db.get_active_requests(emp_id, work_date)
-            if r.get("category_type") != "correction"
-        ]
-
-        # 시프트 로깅에 쓰일 정보 (분기 둘 다에서 필요)
-        shift_info = self.db.get_employee_shift(emp_id, work_date)
+        # 2) 캘린더 자동 등록 보정 확인 (Phase 6-2B) — active_requests·shift_info 는 1-a 앞에서 읽었다
 
         # 그날 판정 맥락 — (직원, work_date)마다 한 번. 메인 경로·자유면 동기화가 같은 ctx 로 judge_day 를 쓴다.
         # (여러 날 시간형 → 종일, 이 work_date 창의 시간형만 휴가/근무로 나눔, 반차 유효 근무 구간)
@@ -543,6 +571,8 @@ class Aggregator:
             # 정책1: 시작된 것도 없고 종일도 없고 WiFi도 없으면 → 아직 기록 없음
             #        (시간형 휴가가 시작됐으면 행을 만든다)
             if not has_allday and check_in is None and check_out is None and not started_leave:
+                if clear_carry_today:
+                    self._clear_carry_today(emp_id, emp_no, emp_name, work_date, carry_state)
                 return "no_data"
 
             # 정책2: 대표 카테고리 — work_date 범위 내 시간형 + 종일 일정만 후보.
@@ -583,13 +613,14 @@ class Aggregator:
                     auto_status = "absent"
         else:
             # 4) 캘린더 없음 + 출퇴근 없음 → 원칙적으로 INSERT 의미 없음.
-            #    (이월만 있고 기록이 0건인 날도 출근 S 가 있으므로 여기로 오지 않는다)
+            #    (이월이 근무 시작까지 이어진 날은 출근 P(또는 S)가 있어 여기로 오지 않는다.
+            #     근무 시작 전에 나갔고 그 뒤 출근이 없거나, 아직 판단 보류면 여기로 온다)
             if check_in is None and check_out is None:
                 # 다만 '어제(마감된 날)' + '근무 시프트일' + '공휴일 아님'이면
                 # 무기록 결근(absent) 행을 남긴다 (무단 미출근 기록 + 직전 근무일 알림 연동).
                 # 진행 중인 오늘(cycle_today)·시프트 미배정·휴무(off)·공휴일에는 생성 금지.
                 # (active_requests 없음은 이 분기 진입 조건상 이미 보장됨)
-                # 04:00 에 연결 중이던 날은 출근 04:00 이 있어 결근이 아니다(여기 오지 않음).
+                # 이월 판단 보류는 진행 중인 오늘에만 생긴다(지난 날은 now >= P) — 결근 조건은 그대로.
                 is_work_shift = bool(
                     shift_info is not None
                     and shift_info.get("type") != "off"
@@ -623,6 +654,8 @@ class Aggregator:
                         return "upsert"
                     # None → 수동 정정으로 보호된 행. 백필할 raw가 없으므로 그대로 둔다.
                     return "overridden"
+                if clear_carry_today:
+                    self._clear_carry_today(emp_id, emp_no, emp_name, work_date, carry_state)
                 return "no_data"
 
             # 5) 캘린더 없음 + presence_raw 있음 → 기존 로직
@@ -737,11 +770,8 @@ class Aggregator:
                 calendar_label += f", 기준 {_ri}~{_ro}"
                 if leave_window["middle_minutes"]:
                     calendar_label += f"(가운데 휴가 {leave_window['middle_minutes']}분)"
-            # 근무일 경계 표시 — 이월 출근(04:00 에 연결 중) / 경계 퇴근
-            if carried_in:
-                calendar_label += f", 이월 {S.astimezone(KST):%H:%M}"
-            if boundary_out:
-                calendar_label += f", 경계 퇴근 {E.astimezone(KST):%m/%d %H:%M}"
+            # 근무일 경계 표시 — 이월 나눔 / 다음 날 규칙으로 정한 퇴근 (_presence_with_carry)
+            calendar_label += carry_label
             self.logger.info(
                 f"  직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} — "
                 f"check_in={check_in}, check_out={check_out}, "
@@ -749,6 +779,98 @@ class Aggregator:
                 f"{shift_label}, id={new_id}{calendar_label}"
             )
             return "upsert"
+
+    def _expected_start(self, work_date, day_start, shift_info, requests, holiday_name, now):
+        """그날 근무 시작 예정 시각 P — 알림의 기준 출근과 같은 값(day_alert_context ref_in).
+
+        보통 시프트 시작, 오전반차처럼 시작을 덮는 시간형 휴가가 있으면 그 휴가 끝.
+        None(P 없음): 공휴일 / 휴무·시프트 미배정(ref_in 없음) / 알림 없는 날(종일 휴가·근무,
+        시프트 전체를 덮는 휴가) / P <= 그날 04:00(day_start).
+        """
+        if holiday_name:
+            return None
+        ctx = day_alert_context(requests, shift_info, work_date, now)
+        if ctx["no_alert_today"] or ctx["ref_in"] is None:
+            return None
+        return ctx["ref_in"] if ctx["ref_in"] > day_start else None
+
+    def _presence_with_carry(self, emp_id, work_date, raw, carried_in, S, E, shift_info, requests,
+                             holiday_name, grace_minutes, cutoff_hour, now) -> tuple:
+        """근무일 창 [S, E) 출퇴근 + 04:00 을 넘긴 연결(이월) 나누기.
+
+        반환 (check_in, check_out, carry_state, label).
+        carry_state: None(이월 아님) | 'boundary'(P 없음 — 04:00 에서 나눔) | 'ended'(P 전에 나감) |
+                     'open'(P 까지 안 나감 — P 에서 나눔) | 'pending'(아직 모름 — 판단 보류)
+        - 이월 날: P = _expected_start.
+          · P 없음 → day_presence(raw, True) — 출근 = S
+          · P 전에 나감 → 나간 기록 다음부터 이월 아님으로 day_presence (전날 퇴근 = 나간 시각)
+          · P 까지 안 나감 → 출근 = P, 퇴근은 day_presence(raw, True) 의 퇴근
+          · 아직 모름 → 출퇴근 없음
+        - 퇴근 = E 로 나온 경우(마지막 상태 online)만 다음 날에 같은 규칙을 적용한다:
+          다음 날 P 없음 → E / P 전에 나감 → 나간 시각 / P 까지 안 나감 → P / 아직 모름 → 퇴근 비움.
+        이월이 아니고 퇴근이 E 가 아니면 day_presence 결과 그대로(지금까지와 같다).
+        """
+        label = ""
+        state = None
+        if carried_in:
+            P = self._expected_start(work_date, S, shift_info, requests, holiday_name, now)
+            if P is None:
+                state = "boundary"
+                check_in, check_out = day_presence(raw, True, S, E, grace_minutes, now)
+                label = f", 이월 {S.astimezone(KST):%H:%M}(근무 시작 없는 날)"
+            else:
+                state, t, i = carry_end(raw, P, grace_minutes, now)
+                if state == "ended":
+                    check_in, check_out = day_presence(raw[i:], False, S, E, grace_minutes, now)
+                    label = f", 이월 → 전날 퇴근 {t.astimezone(KST):%H:%M}"
+                elif state == "open":
+                    _, check_out = day_presence(raw, True, S, E, grace_minutes, now)
+                    check_in = P
+                    label = f", 이월 → 근무 시작 {P.astimezone(KST):%H:%M} 에서 나눔"
+                else:
+                    check_in, check_out = None, None
+        else:
+            check_in, check_out = day_presence(raw, False, S, E, grace_minutes, now)
+        if check_out is not None and check_out == E:
+            d1 = work_date + timedelta(days=1)
+            P1 = self._expected_start(
+                d1, E, self.db.get_employee_shift(emp_id, d1),
+                self.db.get_active_requests(emp_id, d1), self.db.get_holiday(d1), now)
+            if P1 is None:
+                label += f", 경계 퇴근 {E.astimezone(KST):%m/%d %H:%M}"
+            else:
+                raw1 = self.db.get_presence_raw_by_work_date(emp_id, d1, cutoff_hour)
+                s1, t1, _ = carry_end(raw1, P1, grace_minutes, now)
+                if s1 == "ended":
+                    check_out = t1
+                    label += f", 다음 날 {t1.astimezone(KST):%m/%d %H:%M} 퇴근"
+                elif s1 == "open":
+                    check_out = P1
+                    label += f", 다음 날 근무 시작 {P1.astimezone(KST):%m/%d %H:%M} 에서 나눔"
+                else:
+                    check_out = None
+                    label += ", 다음 날 판단 보류(퇴근 미정)"
+        return check_in, check_out, state, label
+
+    def _clear_carry_today(self, emp_id, emp_no, emp_name, work_date, carry_state) -> None:
+        """오늘 출근이 없게 된 이월 날(판단 보류 / 근무 시작 전 퇴근) — 남은 자동 행의 출퇴근을 비운다.
+
+        평소에는 행이 없어 아무 일도 없다. 배포 직후 남은 04:00 이월 출근 행, 시프트가 바뀌어
+        근무 시작이 늦춰진 날만 해당. 자동 행만 — 캘린더·수동 행은 건드리지 않는다(db.clear_carry_times).
+        """
+        try:
+            cleared = self.db.clear_carry_times(emp_id, work_date)
+        except Exception as e:
+            self.logger.error(
+                f"  [이월정리] 직원 {emp_id} work_date={work_date} 출퇴근 비우기 실패: {e}"
+            )
+            return
+        if cleared is not None:
+            reason = "전날 근무 판단 보류" if carry_state == "pending" else "근무 시작 전 퇴근"
+            self.logger.info(
+                f"  [이월정리] 직원 {emp_id}({emp_no}/{emp_name}) work_date={work_date} — "
+                f"{reason}, 남은 출퇴근 비움: check_in={cleared[0]}, check_out={cleared[1]}"
+            )
 
     def _try_backfill_missing_side(
         self, emp_id, emp_no, emp_name, work_date,
@@ -903,7 +1025,7 @@ class Aggregator:
         - 요청 흔적 행(calendar 보정 + 출퇴근 없음 + 미확정 + 사유 없음·첨부 없음) → 삭제 + info
         - 출퇴근 시각이 있는 calendar 흔적 행(시간형 일정 때문에 시각이 붙었던 행):
           · 메인 루프(allow_times_delete=True)에서, 그 work_date 창에 presence_raw 가 0건이면 삭제 + info
-            (04:00 에 연결 중이던 날은 출근이 생겨 no_data 가 아니므로 여기까지 오지 않는다)
+            (이월이 근무 시작까지 이어진 날은 출근이 생겨 no_data 가 아니므로 여기까지 오지 않는다)
           · 그 외(창에 기록 있음, 재계산 루프 등)는 남기고 warning (같은 직원·날짜 하루 1번)
             재계산 루프는 오래된 raw 가 보관기간 정리로 없을 수 있어 지우지 않는다.
         """
@@ -1127,7 +1249,8 @@ class Aggregator:
              기준 출근 = 유효 근무 구간 시작(오전반차면 반차 끝, day_rules.day_alert_context)
           e) 알림 없는 날(종일 휴가·근무, 시프트 전체를 덮는 휴가)이거나 지금 면제 구간
              (시간형 휴가 중, 시간형 근무 시작 후). 정정·결재 대기는 보지 않는다.
-          f) 이미 출근 기록(check_in) 있음 — 04:00 에 연결 중이던 사람은 출근 04:00(이월)이 있어 여기서 걸러진다
+          f) 이월 판단 보류 중(04:00 을 넘긴 연결이 근무 시작 전에 끝났는지 아직 모름 — _carry_pending)
+          g) 이미 출근 기록(check_in) 있음 — 근무 시작까지 이어진 이월은 출근 P 가 있어 여기서 걸러진다
         """
         emp_id = emp["id"]
 
@@ -1174,7 +1297,12 @@ class Aggregator:
         if ctx["no_alert_today"] or ctx["exempt_now"]:
             return
 
-        # f) 이미 출근 기록 있으면 제외
+        # f) 이월 판단 보류 중이면 제외 (그날 출근을 아직 정할 수 없음)
+        if emp_id in self._carry_pending:
+            self.logger.debug(f"  [no-show] 이월 판단 보류 중 — 스킵 (emp={emp_id})")
+            return
+
+        # g) 이미 출근 기록 있으면 제외
         try:
             check_in = self.db.get_daily_check_in(emp_id, today)
         except Exception as e:
@@ -1185,7 +1313,7 @@ class Aggregator:
         if check_in is not None:
             return
 
-        # g) 전부 통과 → '먼저 기록' 후 발송 (중복 차단). email 없으면 발송 생략.
+        # h) 전부 통과 → '먼저 기록' 후 발송 (중복 차단). email 없으면 발송 생략.
         self._no_show_notified[emp_id] = today_str
 
         email = emp.get("email")
@@ -1234,7 +1362,7 @@ class Aggregator:
           - 현재 시각(KST)이 [기준 출근 - alert_minutes, 기준 출근) 구간 안
             (기준 출근 = 유효 근무 구간 시작 — 오전반차면 반차 끝, day_rules.day_alert_context)
           - 오늘 attendance_daily.check_in 이 아직 없음 — 출근 기록(행) 기준.
-            04:00 에 연결 중이던 사람은 출근 04:00(이월)이 있어 여기서 걸러진다.
+          - 이월 판단 보류 중이 아님(04:00 을 넘긴 연결이 근무 시작 전에 끝났는지 아직 모름 — _carry_pending)
           - 알림 없는 날이 아님(종일 휴가·근무, 시프트 전체를 덮는 휴가) — 정정·결재 대기는 보지 않는다
           - shift_prestart_alert_log에 오늘 기록이 없음
 
@@ -1252,6 +1380,7 @@ class Aggregator:
         skip_parse = 0        # 시작시각 파싱 실패
         skip_window = 0       # 발송 창 밖
         skip_checked_in = 0   # 이미 출근
+        skip_carry = 0        # 이월 판단 보류 중
         skip_allday = 0       # 종일 휴가/출장
         skip_dup = 0          # 오늘 이미 발송
         sent = 0
@@ -1288,6 +1417,11 @@ class Aggregator:
                     skip_checked_in += 1
                     continue
 
+                # 4-1) 이월 판단 보류 중이면 제외 (그날 출근을 아직 정할 수 없음)
+                if emp_id in self._carry_pending:
+                    skip_carry += 1
+                    continue
+
                 # 5) 알림 없는 날(종일 휴가·근무, 시프트 전체를 덮는 휴가) 제외
                 if ctx["no_alert_today"]:
                     skip_allday += 1
@@ -1312,10 +1446,10 @@ class Aggregator:
                 continue
 
         # 창 밖은 거의 모든 사이클에서 전원 해당이라 로그 조건에서 제외(매분 로그 방지).
-        if sent or skip_checked_in or skip_allday or skip_dup or skip_parse:
+        if sent or skip_checked_in or skip_carry or skip_allday or skip_dup or skip_parse:
             self.logger.info(
                 f"  [prestart] 검토 {considered}명 → 발송 {sent}건 "
-                f"(스킵: 창밖 {skip_window}, 이미출근 {skip_checked_in}, "
+                f"(스킵: 창밖 {skip_window}, 이미출근 {skip_checked_in}, 이월보류 {skip_carry}, "
                 f"종일 {skip_allday}, 중복 {skip_dup}, 파싱실패 {skip_parse}, "
                 f"시프트없음 {skip_no_shift})"
             )
