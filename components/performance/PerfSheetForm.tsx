@@ -4,6 +4,7 @@ import { Plus, Trash2 } from "lucide-react";
 import AutoTextarea from "@/components/performance/AutoTextarea";
 import {
   PERF_FORM,
+  PERF_FORM_IS_EXAMPLE,
   TABLE_MAX_ROWS,
   emptyRow,
   fieldMaxLength,
@@ -27,6 +28,16 @@ const SINGLE_LINE_H = "h-[38px]";
 
 // 편집 화면 표 최소 너비 — 좁은 화면에서는 가로 스크롤 (읽기 전용은 최소 너비 없이 줄바꿈)
 const EDIT_TABLE_MIN_WIDTH = "min-w-[760px]";
+
+/** 화면 제목 옆 "예시 양식" 배지 — PERF_FORM_IS_EXAMPLE 가 false 면 그리지 않는다 */
+export function PerfExampleBadge() {
+  if (!PERF_FORM_IS_EXAMPLE) return null;
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-700">
+      예시 양식
+    </span>
+  );
+}
 
 export function PerfStatusBadge({ status }: { status: SheetStatus }) {
   const meta = SHEET_STATUS_META[status];
@@ -269,6 +280,12 @@ export default function PerfSheetForm({
 
   return (
     <div className="space-y-4">
+      {/* 편집·제출 미리보기·관리자 열람 모두 이 렌더러를 쓰므로 여기 한 곳에서 안내 */}
+      {PERF_FORM_IS_EXAMPLE && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 text-sm text-amber-800">
+          예시 양식입니다. 실제 성과표 양식이 정해지면 바뀌며, 지금 입력한 내용은 새 양식으로 옮겨지지 않을 수 있습니다.
+        </div>
+      )}
       {PERF_FORM.map((section) => (
         <section key={section.key} className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
           <h3 className="text-sm font-bold text-gray-900">{section.title}</h3>

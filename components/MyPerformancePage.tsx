@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Loader2, Target, X, AlertTriangle, Send } from "lucide-react";
-import PerfSheetForm, { PerfStatusBadge } from "@/components/performance/PerfSheetForm";
+import PerfSheetForm, { PerfExampleBadge, PerfStatusBadge } from "@/components/performance/PerfSheetForm";
 import { validateForSubmit, withMinRows, type PerfContent } from "@/lib/performance/form";
 import {
   dDayLabel,
@@ -374,6 +374,7 @@ export default function MyPerformancePage() {
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900 flex items-center gap-2">
             <Target size={20} />
             내 성과
+            <PerfExampleBadge />
           </h1>
           <p className="text-sm text-gray-500 mt-0.5">분기별 업무 성과를 작성하고 제출합니다</p>
         </div>

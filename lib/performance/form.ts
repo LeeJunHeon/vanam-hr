@@ -4,6 +4,12 @@
 // 지금 양식은 예시다. 실제 양식을 받으면 이 파일의 PERF_FORM 과 PERF_FORM_VERSION 만 바꾸면
 // 화면·저장·제출 검증이 함께 바뀐다.
 
+/**
+ * 지금 양식이 예시인지 — true 면 성과 화면에 "예시 양식" 배지와 안내 띠가 보인다.
+ * 실제 양식으로 바꿀 때 false 로 바꾼다.
+ */
+export const PERF_FORM_IS_EXAMPLE = true;
+
 /** 새 성과표를 만들 때 perf_sheets.form_version 에 저장되는 값 */
 export const PERF_FORM_VERSION = "example-v1";
 

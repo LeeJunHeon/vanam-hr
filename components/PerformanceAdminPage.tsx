@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Loader2, TrendingUp, X, Plus, Settings, ChevronLeft, ChevronRight, Lock } from "lucide-react";
-import PerfSheetForm, { PerfStatusBadge } from "@/components/performance/PerfSheetForm";
+import PerfSheetForm, { PerfExampleBadge, PerfStatusBadge } from "@/components/performance/PerfSheetForm";
 import type { PerfContent } from "@/lib/performance/form";
 import {
   addDaysYmd,
@@ -332,6 +332,7 @@ export default function PerformanceAdminPage() {
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900 flex items-center gap-2">
             <TrendingUp size={20} />
             성과 관리
+            <PerfExampleBadge />
           </h1>
           <p className="text-sm text-gray-500 mt-0.5">분기별 성과 제출 회차를 만들고 제출 현황을 확인합니다</p>
         </div>
