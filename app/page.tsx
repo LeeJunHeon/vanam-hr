@@ -23,6 +23,8 @@ import AttendanceOverviewPage from "@/components/AttendanceOverviewPage";
 import ScheduleOverviewPage from "@/components/ScheduleOverviewPage";
 import EmployeeShiftsPage from "@/components/EmployeeShiftsPage";
 import AnnualLeavePage from "@/components/AnnualLeavePage";
+import MyPerformancePage from "@/components/MyPerformancePage";
+import PerformanceAdminPage from "@/components/PerformanceAdminPage";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
 
 const PAGE_TITLES: Record<PageId, string> = {
@@ -41,6 +43,8 @@ const PAGE_TITLES: Record<PageId, string> = {
   "employee-shifts": "직원별 시프트",
   "approval-lines": "결재라인 설정",
   "system-settings": "시스템 설정",
+  "my-performance": "내 실적",
+  "performance-admin": "실적 관리",
 };
 
 export default function Home() {
@@ -130,6 +134,8 @@ export default function Home() {
       case "employee-shifts": return <EmployeeShiftsPage />;
       case "approval-lines":  return <ApprovalLinesPage />;
       case "system-settings": return <SystemSettingsPage />;
+      case "my-performance":  return <MyPerformancePage />;
+      case "performance-admin": return <PerformanceAdminPage />;
       default:                return <DashboardPage onNavigate={navigate} />;
     }
   };

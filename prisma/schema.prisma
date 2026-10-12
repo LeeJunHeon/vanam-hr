@@ -231,6 +231,12 @@ model Employee {
   // 출장보고서 (작성자)
   tripReports TripReport[] @relation("EmployeeTripReports")
 
+  // 분기 실적 — 회차 생성자 / 실적표 작성자 / 수정 요청자 / 로그 행위자
+  perfCyclesCreated      PerfCycle[]    @relation("PerfCycleCreatedBy")
+  perfSheets             PerfSheet[]    @relation("PerfSheetEmployee")
+  perfRevisionsRequested PerfSheet[]    @relation("PerfSheetRevisionRequestedBy")
+  perfSheetLogs          PerfSheetLog[] @relation("PerfSheetLogActor")
+
   @@index([isActive], map: "idx_employees_active")
   @@index([departmentId], map: "idx_employees_department")
   @@index([positionId], map: "idx_employees_position")
@@ -731,5 +737,72 @@ model AnnualLeaveGrant {
   @@unique([employeeId, year], map: "uk_annual_leave_grant")
   @@index([year], map: "idx_annual_leave_grant_year")
   @@map("annual_leave_grant")
+  @@schema("hr")
+}
+
+// ============================================
+// 분기 실적 (내 실적 / 실적 관리)
+// ============================================
+
+// 실적 제출 회차 — 분기당 1개. 대상자는 직원 id 배열.
+model PerfCycle {
+  id                Int      @id @default(autoincrement())
+  year              Int
+  quarter           Int
+  submitStart       DateTime @map("submit_start") @db.Date
+  submitEnd         DateTime @map("submit_end") @db.Date
+  targetEmployeeIds Int[]    @default([]) @map("target_employee_ids")
+  createdById       Int?     @map("created_by")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  createdBy Employee? @relation("PerfCycleCreatedBy", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([year, quarter], map: "uk_perf_cycles_period")
+  @@map("perf_cycles")
+  @@schema("hr")
+}
+
+// 직원별 분기 실적표. content = 작성 중 내용, submitted_content = 마지막 제출본(관리자 열람용).
+model PerfSheet {
+  id                    Int       @id @default(autoincrement())
+  employeeId            Int       @map("employee_id")
+  year                  Int
+  quarter               Int
+  formVersion           String    @map("form_version") @db.VarChar(50)
+  content               Json      @default("{}")
+  submittedContent      Json?     @map("submitted_content")
+  status                String    @default("draft") @db.VarChar(20)
+  submittedAt           DateTime? @map("submitted_at") @db.Timestamptz(6)
+  revisionReason        String?   @map("revision_reason")
+  revisionRequestedAt   DateTime? @map("revision_requested_at") @db.Timestamptz(6)
+  revisionRequestedById Int?      @map("revision_requested_by")
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  employee            Employee       @relation("PerfSheetEmployee", fields: [employeeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  revisionRequestedBy Employee?      @relation("PerfSheetRevisionRequestedBy", fields: [revisionRequestedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  logs                PerfSheetLog[]
+
+  @@unique([employeeId, year, quarter], map: "uk_perf_sheets_emp_period")
+  @@index([year, quarter], map: "idx_perf_sheets_period")
+  @@map("perf_sheets")
+  @@schema("hr")
+}
+
+// 실적표 이력 (submit / resubmit / request_revision)
+model PerfSheetLog {
+  id              Int      @id @default(autoincrement())
+  sheetId         Int      @map("sheet_id")
+  action          String   @db.VarChar(30)
+  actorEmployeeId Int?     @map("actor_employee_id")
+  note            String?
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  sheet PerfSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  actor Employee? @relation("PerfSheetLogActor", fields: [actorEmployeeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([sheetId, createdAt], map: "idx_perf_sheet_logs_sheet")
+  @@map("perf_sheet_logs")
   @@schema("hr")
 }

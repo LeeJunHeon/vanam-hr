@@ -4,8 +4,8 @@ import Providers from "@/components/Providers";
 import PortalChatLauncher from "@/components/PortalChatLauncher";
 
 export const metadata: Metadata = {
-  title: "VanaM 근태 관리",
-  description: "VanaM 근태 관리 시스템",
+  title: "VanaM 인사 관리",
+  description: "VanaM 인사 관리 시스템",
   icons: {
     icon: "https://vanam.synology.me/favicon.ico",
     shortcut: "https://vanam.synology.me/favicon.ico",

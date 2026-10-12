@@ -10,7 +10,9 @@ export type PageId =
   | "annual-leave"
   | "employees" | "org" | "devices" | "shifts" | "employee-shifts"
   | "approval-lines"
-  | "system-settings";
+  | "system-settings"
+  | "my-performance"
+  | "performance-admin";
 
 /** 포털 런처가 그릴 수 있는 아이콘 이름 (포털과 공통 계약 — 바꾸지 말 것) */
 export type PortalIconName =
@@ -19,10 +21,15 @@ export type PortalIconName =
   | "Cpu" | "Calendar" | "Plane" | "CheckSquare" | "CalendarDays" | "CalendarCheck" | "Smartphone"
   | "Award" | "IdCard" | "LayoutDashboard" | "ListChecks" | "ClipboardList" | "History" | "Gauge";
 
+/** 사이드바에서만 쓰는 아이콘 (포털 런처 목록에 없음 — 포털에는 icon 을 보낸다) */
+export type SidebarOnlyIconName = "TrendingUp";
+
 export interface MenuItem {
   id: PageId;
   label: string;
   icon: PortalIconName;
+  /** 사이드바 아이콘이 포털 아이콘과 다를 때 */
+  sidebarIcon?: SidebarOnlyIconName;
   group?: string;
   /** true면 admin role 사용자에게만 보임 + 라우팅 허용 */
   adminOnly?: boolean;
@@ -39,10 +46,12 @@ export const MENU_ITEMS: readonly MenuItem[] = [
   { id: "request",        label: "휴가 및 근태 신청", icon: "FileText" },
   { id: "field-trip",     label: "출장 및 외근 관리", icon: "Plane" },
   { id: "approval",       label: "결재함",         icon: "CheckSquare" },
+  { id: "my-performance", label: "내 실적",        icon: "Target" },
   // 관리자
   { id: "attendance-overview", label: "전체 근태 조회", icon: "BarChart3",   group: "관리자", adminOnly: true },
   { id: "schedule-overview",   label: "전체 일정 조회", icon: "CalendarDays", group: "관리자", adminOnly: true },
   { id: "annual-leave",   label: "연차 관리",      icon: "CalendarCheck", group: "관리자", adminOnly: true },
+  { id: "performance-admin", label: "실적 관리",   icon: "Gauge", sidebarIcon: "TrendingUp", group: "관리자", adminOnly: true },
   { id: "employees",      label: "직원 관리",      icon: "Users",       group: "관리자", adminOnly: true },
   { id: "org",            label: "부서/직급",      icon: "Building2",   group: "관리자", adminOnly: true },
   { id: "devices",        label: "디바이스 관리",  icon: "Smartphone",  group: "관리자", adminOnly: true },

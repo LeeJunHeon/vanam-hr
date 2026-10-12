@@ -7,6 +7,7 @@ import {
   Users, Building2, Smartphone, Clock,
   Settings, CalendarDays, Plane,
   LogOut, X, ArrowLeft, BarChart3, CalendarCheck,
+  Target, TrendingUp,
 } from "lucide-react";
 import { visibleMenuItems, type MenuItem, type PageId } from "@/lib/menus";
 
@@ -16,10 +17,10 @@ export type { PageId } from "@/lib/menus";
 export { ADMIN_ONLY_PAGES, isAdminOnlyPage } from "@/lib/menus";
 
 // 메뉴에서 쓰는 아이콘 이름 → lucide 컴포넌트
-const ICONS: Partial<Record<MenuItem["icon"], React.ElementType>> = {
+const ICONS: Partial<Record<MenuItem["icon"] | NonNullable<MenuItem["sidebarIcon"]>, React.ElementType>> = {
   Home, Calendar, FileText, Plane, CheckSquare,
   BarChart3, CalendarDays, CalendarCheck, Users, Building2,
-  Smartphone, Clock, Settings,
+  Smartphone, Clock, Settings, Target, TrendingUp,
 };
 
 interface SidebarProps {
@@ -51,7 +52,7 @@ export default function Sidebar({
     return visibleItems.map((item) => {
       const showDivider = item.group && item.group !== prevGroup;
       prevGroup = item.group;
-      const Icon = ICONS[item.icon] ?? Home;
+      const Icon = ICONS[item.sidebarIcon ?? item.icon] ?? Home;
       return (
         <div key={item.id}>
           {showDivider && (
@@ -107,7 +108,7 @@ export default function Sidebar({
                 <Users size={18} className="text-white" />
               </div>
               <div>
-                <h1 className="text-sm font-bold text-gray-900">근태 관리</h1>
+                <h1 className="text-sm font-bold text-gray-900">인사 관리</h1>
                 <p className="text-[10px] text-gray-400">HR System</p>
               </div>
             </div>
