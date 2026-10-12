@@ -42,7 +42,7 @@ interface SheetData {
 type SaveState = "idle" | "saving" | "saved" | "error";
 
 const AUTOSAVE_MS = 1500;
-// keepalive 요청 본문 한도(64KB) 안쪽
+// keepalive 요청 본문 한도(64KB) 안쪽 — 바이트 수로 비교 (한글은 한 글자 3바이트)
 const KEEPALIVE_MAX_BYTES = 60000;
 const SHEET_URL = "/api/performance/my/sheet";
 
@@ -154,12 +154,23 @@ export default function MyPerformancePage() {
 
     if (opts?.keepalive) {
       dirtyRef.current = false;
+      // 실패하면 그 사이 더 바뀐 내용이 없고 같은 분기일 때 dirty 를 되돌려 다음 저장에서 다시 보낸다
+      const restoreDirty = () => {
+        const cur = selectedRef.current;
+        if (ver === editVerRef.current && cur && cur.year === q.year && cur.quarter === q.quarter) {
+          dirtyRef.current = true;
+        }
+      };
       fetch(SHEET_URL, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body,
-        keepalive: body.length < KEEPALIVE_MAX_BYTES,
-      }).catch(() => {});
+        keepalive: new TextEncoder().encode(body).length < KEEPALIVE_MAX_BYTES,
+      })
+        .then((res) => {
+          if (!res.ok) restoreDirty();
+        })
+        .catch(restoreDirty);
       return Promise.resolve(true);
     }
 
@@ -219,9 +230,17 @@ export default function MyPerformancePage() {
     const onVis = () => {
       if (document.visibilityState === "hidden") persist({ keepalive: true });
     };
+    // 저장되지 않은 변경이 있을 때만 창 닫기·새로고침 경고
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
     document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
       document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("beforeunload", onBeforeUnload);
       persist({ keepalive: true });
     };
   }, [persist]);

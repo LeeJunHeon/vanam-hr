@@ -1,12 +1,12 @@
 "use client";
 
 import { Plus, Trash2 } from "lucide-react";
+import AutoTextarea from "@/components/performance/AutoTextarea";
 import {
   PERF_FORM,
   TABLE_MAX_ROWS,
-  TEXT_MAX,
-  TEXTAREA_MAX,
   emptyRow,
+  fieldMaxLength,
   type PerfCellValue,
   type PerfContent,
   type PerfField,
@@ -20,6 +20,13 @@ import { SHEET_STATUS_META, type SheetStatus } from "@/lib/performance/rules";
 
 const INPUT_CLS =
   "w-full px-2.5 py-2 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-blue-200";
+
+// 한 줄 칸 높이 = 줄 높이 20 + 위아래 padding 16 + border 2. 브라우저마다 select 기본 높이가 달라(크롬 40px)
+// select·숫자 칸을 여기에 고정해 빈 AutoTextarea(한 줄, 38px)와 정확히 맞춘다.
+const SINGLE_LINE_H = "h-[38px]";
+
+// 편집 화면 표 최소 너비 — 좁은 화면에서는 가로 스크롤 (읽기 전용은 최소 너비 없이 줄바꿈)
+const EDIT_TABLE_MIN_WIDTH = "min-w-[760px]";
 
 export function PerfStatusBadge({ status }: { status: SheetStatus }) {
   const meta = SHEET_STATUS_META[status];
@@ -66,7 +73,9 @@ function Cell({
   if (readOnly) {
     const text = displayValue(field, row);
     return (
-      <div className={`px-1 py-1 text-sm whitespace-pre-wrap break-words ${text ? "text-gray-800" : "text-gray-300"}`}>
+      <div
+        className={`px-1 py-1 text-sm whitespace-pre-wrap [overflow-wrap:anywhere] ${text ? "text-gray-800" : "text-gray-300"}`}
+      >
         {text || "-"}
       </div>
     );
@@ -75,7 +84,11 @@ function Cell({
   switch (field.kind) {
     case "select":
       return (
-        <select value={value} onChange={(e) => onChange(field.key, e.target.value)} className={INPUT_CLS}>
+        <select
+          value={value}
+          onChange={(e) => onChange(field.key, e.target.value)}
+          className={`${INPUT_CLS} ${SINGLE_LINE_H} py-0`}
+        >
           <option value="">선택</option>
           {field.options.map((o) => (
             <option key={o} value={o}>{o}</option>
@@ -90,28 +103,30 @@ function Cell({
           value={value}
           onChange={(e) => onChange(field.key, e.target.value)}
           placeholder={field.placeholder}
-          className={`${INPUT_CLS} tabular-nums`}
+          className={`${INPUT_CLS} ${SINGLE_LINE_H} tabular-nums`}
         />
       );
     case "textarea":
+      // 표 안은 빈 칸일 때 한 줄, fields 섹션은 3줄에서 시작 — 내용에 따라 늘어남
       return (
-        <textarea
+        <AutoTextarea
           value={value}
-          onChange={(e) => onChange(field.key, e.target.value)}
+          onChange={(v) => onChange(field.key, v)}
           placeholder={field.placeholder}
-          maxLength={TEXTAREA_MAX}
-          rows={compact ? 2 : 4}
-          className={`${INPUT_CLS} resize-y`}
+          maxLength={fieldMaxLength(field) ?? 0}
+          minRows={compact ? 1 : 3}
+          className={INPUT_CLS}
         />
       );
     default:
+      // 한 줄 항목 — 긴 내용은 옆으로 숨지 않고 아래로 늘어남, 줄바꿈은 공백으로
       return (
-        <input
-          type="text"
+        <AutoTextarea
           value={value}
-          onChange={(e) => onChange(field.key, e.target.value)}
+          onChange={(v) => onChange(field.key, v)}
           placeholder={field.placeholder}
-          maxLength={TEXT_MAX}
+          maxLength={fieldMaxLength(field) ?? 0}
+          singleLine
           className={INPUT_CLS}
         />
       );
@@ -147,16 +162,24 @@ function TableSection({
     <div>
       {/* sm 이상: 표 */}
       <div className="hidden sm:block overflow-x-auto border border-gray-100 rounded-xl">
-        <table className="w-full text-sm">
+        {/* table-fixed + colgroup — 열 너비는 양식의 width 비율을 따르고 내용 길이로 흔들리지 않음 */}
+        <table className={`w-full table-fixed text-sm ${readOnly ? "" : EDIT_TABLE_MIN_WIDTH}`}>
+          <colgroup>
+            <col className="w-10" />
+            {section.fields.map((f) => (
+              <col key={f.key} style={f.width ? { width: `${f.width}%` } : undefined} />
+            ))}
+            {!readOnly && <col className="w-11" />}
+          </colgroup>
           <thead className="bg-gray-50 text-xs font-semibold text-gray-500">
             <tr>
-              <th className="w-8 px-2 py-2 text-center">#</th>
+              <th className="px-2 py-2 text-center">#</th>
               {section.fields.map((f) => (
-                <th key={f.key} className="px-2 py-2 text-left whitespace-nowrap">
+                <th key={f.key} className="px-2 py-2 text-left break-keep">
                   <FieldLabel field={f} />
                 </th>
               ))}
-              {!readOnly && <th className="w-10" />}
+              {!readOnly && <th />}
             </tr>
           </thead>
           <tbody>
@@ -164,7 +187,7 @@ function TableSection({
               <tr key={i} className="border-t border-gray-50 align-top">
                 <td className="px-2 py-2.5 text-center text-xs text-gray-400">{i + 1}</td>
                 {section.fields.map((f) => (
-                  <td key={f.key} className={`px-1.5 py-1.5 ${f.kind === "textarea" ? "min-w-[220px]" : "min-w-[90px]"}`}>
+                  <td key={f.key} className="px-1.5 py-1.5">
                     <Cell field={f} row={row} readOnly={readOnly} onChange={(k, v) => update(i, k, v)} compact />
                   </td>
                 ))}

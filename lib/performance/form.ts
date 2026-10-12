@@ -21,10 +21,16 @@ interface FieldBase {
   label: string;
   required?: boolean;
   placeholder?: string;
+  /** 표 섹션의 열 너비 비율(%) — 한 표의 칸끼리 합이 100 이 되게 */
+  width?: number;
+}
+/** 글자 칸 — maxLength 가 없으면 text 200 / textarea 2000 (fieldMaxLength 로 얻는다) */
+interface TextFieldBase extends FieldBase {
+  maxLength?: number;
 }
 export type PerfField =
-  | (FieldBase & { kind: "text" })
-  | (FieldBase & { kind: "textarea" })
+  | (TextFieldBase & { kind: "text" })
+  | (TextFieldBase & { kind: "textarea" })
   | (FieldBase & { kind: "number" })
   | (FieldBase & { kind: "select"; options: string[] })
   /** 저장하지 않고 같은 행의 다른 칸으로 화면에서 계산 */
@@ -74,11 +80,11 @@ export const PERF_FORM: PerfSection[] = [
     help: "이번 분기에 수행한 주요 업무를 한 줄씩 적어 주세요.",
     minRows: 1,
     fields: [
-      { key: "category", label: "업무 구분", kind: "select", options: ["연구개발", "생산·공정", "영업·고객", "관리·기타"] },
-      { key: "title", label: "업무 내용", kind: "text", required: true },
-      { key: "period", label: "기간", kind: "text", placeholder: "예: 10/1~11/15" },
-      { key: "result", label: "결과·성과", kind: "textarea" },
-      { key: "status", label: "진행 상태", kind: "select", options: ["완료", "진행 중", "보류"] },
+      { key: "category", label: "업무 구분", kind: "select", options: ["연구개발", "생산·공정", "영업·고객", "관리·기타"], width: 13 },
+      { key: "title", label: "업무 내용", kind: "text", required: true, width: 27 },
+      { key: "period", label: "기간", kind: "text", placeholder: "예: 10/1~11/15", width: 12 },
+      { key: "result", label: "결과·성과", kind: "textarea", width: 38 },
+      { key: "status", label: "진행 상태", kind: "select", options: ["완료", "진행 중", "보류"], width: 10 },
     ],
   },
   {
@@ -88,15 +94,16 @@ export const PERF_FORM: PerfSection[] = [
     help: "수치로 관리하는 목표가 있으면 적어 주세요.",
     minRows: 0,
     fields: [
-      { key: "item", label: "목표 항목", kind: "text" },
-      { key: "unit", label: "단위", kind: "text" },
-      { key: "target", label: "목표", kind: "number" },
-      { key: "actual", label: "성과", kind: "number" },
+      { key: "item", label: "목표 항목", kind: "text", width: 36 },
+      { key: "unit", label: "단위", kind: "text", width: 10 },
+      { key: "target", label: "목표", kind: "number", width: 18 },
+      { key: "actual", label: "성과", kind: "number", width: 18 },
       {
         key: "rate",
         label: "달성률",
         kind: "computed",
         compute: (row) => computeAchievementRate(row.target, row.actual),
+        width: 18,
       },
     ],
   },
@@ -123,12 +130,18 @@ function storedFields(fields: PerfField[]): PerfField[] {
   return fields.filter((f) => f.kind !== "computed");
 }
 
+/** 글자 칸의 최대 글자 수 — 화면 maxLength 와 서버 sanitize 가 같이 쓴다. 글자 칸이 아니면 null */
+export function fieldMaxLength(field: PerfField): number | null {
+  if (field.kind === "text") return field.maxLength ?? TEXT_MAX;
+  if (field.kind === "textarea") return field.maxLength ?? TEXTAREA_MAX;
+  return null;
+}
+
 function sanitizeValue(field: PerfField, raw: unknown): PerfCellValue {
   switch (field.kind) {
     case "text":
-      return typeof raw === "string" ? raw.trim().slice(0, TEXT_MAX) : "";
     case "textarea":
-      return typeof raw === "string" ? raw.trim().slice(0, TEXTAREA_MAX) : "";
+      return typeof raw === "string" ? raw.trim().slice(0, fieldMaxLength(field) ?? undefined) : "";
     case "number":
       return toNumberOrNull(raw);
     case "select":
