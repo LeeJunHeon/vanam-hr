@@ -8,57 +8,19 @@ import {
   Settings, CalendarDays, Plane,
   LogOut, X, ArrowLeft, BarChart3, CalendarCheck,
 } from "lucide-react";
+import { visibleMenuItems, type MenuItem, type PageId } from "@/lib/menus";
 
-export type PageId =
-  | "dashboard" | "my-attendance" | "request" | "approval"
-  | "field-trip"
-  | "attendance-overview"
-  | "schedule-overview"
-  | "annual-leave"
-  | "employees" | "org" | "devices" | "shifts" | "employee-shifts"
-  | "approval-lines"
-  | "system-settings";
+// 메뉴 정의(키·이름·아이콘·그룹·adminOnly)는 lib/menus 한 곳에 둔다 (포털 메뉴 목록 API 와 공용).
+// 기존 import 경로 호환을 위해 PageId·isAdminOnlyPage 를 여기서도 내보낸다.
+export type { PageId } from "@/lib/menus";
+export { ADMIN_ONLY_PAGES, isAdminOnlyPage } from "@/lib/menus";
 
-interface NavItem {
-  id: PageId;
-  label: string;
-  icon: React.ElementType;
-  group?: string;
-  /** true면 admin role 사용자에게만 보임 + 라우팅 허용 */
-  adminOnly?: boolean;
-}
-
-const NAV_ITEMS: NavItem[] = [
-  // 일반 (그룹 헤더 없음)
-  { id: "dashboard",      label: "대시보드",      icon: Home },
-  { id: "my-attendance",  label: "내 근태",        icon: Calendar },
-  { id: "request",        label: "휴가 및 근태 신청", icon: FileText },
-  { id: "field-trip",     label: "출장 및 외근 관리", icon: Plane },
-  { id: "approval",       label: "결재함",         icon: CheckSquare },
-  // 관리자
-  { id: "attendance-overview", label: "전체 근태 조회", icon: BarChart3,   group: "관리자", adminOnly: true },
-  { id: "schedule-overview",   label: "전체 일정 조회", icon: CalendarDays, group: "관리자", adminOnly: true },
-  { id: "annual-leave",   label: "연차 관리",      icon: CalendarCheck, group: "관리자", adminOnly: true },
-  { id: "employees",      label: "직원 관리",      icon: Users,       group: "관리자", adminOnly: true },
-  { id: "org",            label: "부서/직급",      icon: Building2,   group: "관리자", adminOnly: true },
-  { id: "devices",        label: "디바이스 관리",  icon: Smartphone,  group: "관리자", adminOnly: true },
-  { id: "shifts",         label: "시프트 패턴",    icon: Clock,       group: "관리자", adminOnly: true },
-  { id: "employee-shifts", label: "직원별 시프트",  icon: Clock,       group: "관리자", adminOnly: true },
-  { id: "approval-lines", label: "결재라인 설정",  icon: Users,       group: "관리자", adminOnly: true },
-  { id: "system-settings", label: "시스템 설정",   icon: Settings,    group: "관리자", adminOnly: true },
-];
-
-/**
- * admin role이어야만 접근 가능한 PageId 집합.
- * app/page.tsx 라우팅 가드에서 사용.
- */
-export const ADMIN_ONLY_PAGES: ReadonlySet<PageId> = new Set(
-  NAV_ITEMS.filter((i) => i.adminOnly).map((i) => i.id)
-);
-
-export function isAdminOnlyPage(page: PageId): boolean {
-  return ADMIN_ONLY_PAGES.has(page);
-}
+// 메뉴에서 쓰는 아이콘 이름 → lucide 컴포넌트
+const ICONS: Partial<Record<MenuItem["icon"], React.ElementType>> = {
+  Home, Calendar, FileText, Plane, CheckSquare,
+  BarChart3, CalendarDays, CalendarCheck, Users, Building2,
+  Smartphone, Clock, Settings,
+};
 
 interface SidebarProps {
   currentPage: PageId;
@@ -82,16 +44,14 @@ export default function Sidebar({
 
   // CEO와 ADMIN 둘 다 관리자 메뉴 접근 가능
   const isAdmin = userRole === "admin" || userRole === "ceo";
-  const visibleItems = NAV_ITEMS.filter((i) => {
-    if (i.adminOnly) return isAdmin;
-    return true;
-  });
+  const visibleItems = visibleMenuItems(isAdmin);
 
   const renderNavItems = () => {
     let prevGroup: string | undefined = undefined;
     return visibleItems.map((item) => {
       const showDivider = item.group && item.group !== prevGroup;
       prevGroup = item.group;
+      const Icon = ICONS[item.icon] ?? Home;
       return (
         <div key={item.id}>
           {showDivider && (
@@ -109,7 +69,7 @@ export default function Sidebar({
                 : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
             }`}
           >
-            <item.icon size={18} />
+            <Icon size={18} />
             {item.label}
           </button>
         </div>
