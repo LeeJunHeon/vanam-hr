@@ -155,12 +155,12 @@ export default function PerformanceAdminPage() {
       if (req !== sheetReq.current) return;
       if (!res.ok) {
         setSheet(null);
-        setSheetError(data.error ?? "실적을 불러오지 못했습니다.");
+        setSheetError(data.error ?? "성과를 불러오지 못했습니다.");
         return;
       }
       setSheet(data);
     } catch {
-      if (req === sheetReq.current) setSheetError("네트워크 오류로 실적을 불러오지 못했습니다.");
+      if (req === sheetReq.current) setSheetError("네트워크 오류로 성과를 불러오지 못했습니다.");
     } finally {
       if (req === sheetReq.current) setSheetLoading(false);
     }
@@ -331,9 +331,9 @@ export default function PerformanceAdminPage() {
         <div className="flex-1 min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900 flex items-center gap-2">
             <TrendingUp size={20} />
-            실적 관리
+            성과 관리
           </h1>
-          <p className="text-sm text-gray-500 mt-0.5">분기별 실적 제출 회차를 만들고 제출 현황을 확인합니다</p>
+          <p className="text-sm text-gray-500 mt-0.5">분기별 성과 제출 회차를 만들고 제출 현황을 확인합니다</p>
         </div>
         {cycles.length > 0 && (
           <div className="flex flex-wrap items-center gap-2">
@@ -779,7 +779,7 @@ function RevisionModal({
           <p className="text-xs text-gray-500 mt-0.5">{title}</p>
         </div>
         <p className="text-sm text-gray-600">
-          수정을 요청하면 직원이 실적을 고쳐서 다시 제출할 수 있습니다. 사유는 직원에게 알림으로 전달됩니다.
+          수정을 요청하면 직원이 성과를 고쳐서 다시 제출할 수 있습니다. 사유는 직원에게 알림으로 전달됩니다.
         </p>
         <textarea
           value={reason}

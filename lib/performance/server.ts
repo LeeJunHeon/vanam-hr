@@ -1,4 +1,4 @@
-// 분기 실적 API 공용 (서버 전용) — DB 행 ↔ 판정 규칙 연결.
+// 분기 성과 API 공용 (서버 전용) — DB 행 ↔ 판정 규칙 연결.
 import { NextResponse } from "next/server";
 import type { Session } from "next-auth";
 import { prisma } from "@/lib/prisma";

@@ -18,7 +18,7 @@ const NOTIFY_TYPES: { type: string; label: string; desc: string; channels: ("app
   { type: "trip_report", label: "출장보고서 미제출", desc: "종료 후 영업일 4일차부터 미제출 본인에게 매 영업일 1회", channels: ["app", "email", "push"] },
   { type: "attendance_alert", label: "근태 확인 요청", desc: "결근/지각/조퇴 기록 시 본인에게", channels: ["app", "email", "push"] },
   { type: "team_schedule", label: "팀 일정 안내", desc: "같은 부서 동료의 휴가/반차 승인 시 팀원에게", channels: ["app", "email", "push"] },
-  { type: "perf_revision", label: "실적 수정 요청", desc: "관리자가 실적 수정을 요청하면 본인에게", channels: ["app", "email", "push"] },
+  { type: "perf_revision", label: "성과 수정 요청", desc: "관리자가 성과 수정을 요청하면 본인에게", channels: ["app", "email", "push"] },
 ];
 
 type FlagMap = Record<string, boolean>; // key(notify_xxx_app) → bool

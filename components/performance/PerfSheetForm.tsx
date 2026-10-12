@@ -15,8 +15,8 @@ import {
 } from "@/lib/performance/form";
 import { SHEET_STATUS_META, type SheetStatus } from "@/lib/performance/rules";
 
-// 분기 실적표 렌더러 — lib/performance/form.ts 의 PERF_FORM 정의를 읽어 그린다.
-// readOnly 하나로 편집(내 실적) / 열람(제출 미리보기·관리자 열람) 겸용.
+// 분기 성과표 렌더러 — lib/performance/form.ts 의 PERF_FORM 정의를 읽어 그린다.
+// readOnly 하나로 편집(내 성과) / 열람(제출 미리보기·관리자 열람) 겸용.
 
 const INPUT_CLS =
   "w-full px-2.5 py-2 border border-gray-200 rounded-lg text-sm bg-white outline-none focus:ring-2 focus:ring-blue-200";

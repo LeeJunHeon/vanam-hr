@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
       },
     });
     if (!sheet || !sheet.submittedAt) {
-      return NextResponse.json({ error: "아직 제출하지 않은 실적입니다." }, { status: 404 });
+      return NextResponse.json({ error: "아직 제출하지 않은 성과입니다." }, { status: 404 });
     }
 
     const history = await prisma.perfSheet.findMany({
@@ -57,6 +57,6 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("GET /api/performance/sheets error:", error);
-    return NextResponse.json({ error: "실적 조회 실패" }, { status: 500 });
+    return NextResponse.json({ error: "성과 조회 실패" }, { status: 500 });
   }
 }

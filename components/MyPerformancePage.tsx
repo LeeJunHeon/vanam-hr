@@ -89,7 +89,7 @@ export default function MyPerformancePage() {
       if (!cur || cur.year !== q.year || cur.quarter !== q.quarter) return;
       if (!res.ok) {
         setSheet(null);
-        setLoadError(data.error ?? "실적을 불러오지 못했습니다.");
+        setLoadError(data.error ?? "성과를 불러오지 못했습니다.");
         return;
       }
       const sd = data as SheetData;
@@ -104,16 +104,16 @@ export default function MyPerformancePage() {
       setSaveError("");
       setSavedAt(null);
     } catch {
-      setLoadError("네트워크 오류로 실적을 불러오지 못했습니다.");
+      setLoadError("네트워크 오류로 성과를 불러오지 못했습니다.");
     } finally {
       setSheetLoading(false);
     }
   }, []);
 
-  /** 분기 선택 → 실적표 불러오기 */
+  /** 분기 선택 → 성과표 불러오기 */
   const openQuarter = useCallback(
     (q: YearQuarter) => {
-      // 이전 분기 내용이 새 분기로 저장되지 않게 — 새 실적표를 불러오기 전까지 편집·저장 막음
+      // 이전 분기 내용이 새 분기로 저장되지 않게 — 새 성과표를 불러오기 전까지 편집·저장 막음
       selectedRef.current = q;
       dirtyRef.current = false;
       canEditRef.current = false;
@@ -128,13 +128,13 @@ export default function MyPerformancePage() {
       const res = await fetch("/api/performance/my", { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setLoadError(data.error ?? "실적 목록을 불러오지 못했습니다.");
+        setLoadError(data.error ?? "성과 목록을 불러오지 못했습니다.");
         return;
       }
       setQuarters(data.quarters ?? []);
       if (selectDefault && data.defaultQuarter) openQuarter(data.defaultQuarter);
     } catch {
-      setLoadError("네트워크 오류로 실적 목록을 불러오지 못했습니다.");
+      setLoadError("네트워크 오류로 성과 목록을 불러오지 못했습니다.");
     } finally {
       setListLoading(false);
     }
@@ -313,7 +313,7 @@ export default function MyPerformancePage() {
           <p className="text-sm font-semibold text-emerald-800">
             제출 완료{sheet.submittedAt ? ` · ${formatKstShort(sheet.submittedAt)}` : ""}
           </p>
-          <p className="text-xs text-emerald-700 mt-0.5">제출한 실적은 수정할 수 없습니다.</p>
+          <p className="text-xs text-emerald-700 mt-0.5">제출한 성과는 수정할 수 없습니다.</p>
         </div>
       );
     }
@@ -354,9 +354,9 @@ export default function MyPerformancePage() {
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900 flex items-center gap-2">
             <Target size={20} />
-            내 실적
+            내 성과
           </h1>
-          <p className="text-sm text-gray-500 mt-0.5">분기별 업무 실적을 작성하고 제출합니다</p>
+          <p className="text-sm text-gray-500 mt-0.5">분기별 업무 성과를 작성하고 제출합니다</p>
         </div>
         {canEdit && (
           <div className="text-xs pt-2 shrink-0">

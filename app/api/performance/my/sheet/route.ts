@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
 const BAD_QUARTER = "연도와 분기가 올바르지 않습니다.";
 const FUTURE_QUARTER = "아직 시작하지 않은 분기입니다.";
 
-// GET /api/performance/my/sheet?year=&quarter= — 내 실적표 (작성 중 내용)
+// GET /api/performance/my/sheet?year=&quarter= — 내 성과표 (작성 중 내용)
 export async function GET(request: NextRequest) {
   try {
     const sessionR = await requireSession();
@@ -64,7 +64,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("GET /api/performance/my/sheet error:", error);
-    return NextResponse.json({ error: "실적 조회 실패" }, { status: 500 });
+    return NextResponse.json({ error: "성과 조회 실패" }, { status: 500 });
   }
 }
 
@@ -117,7 +117,7 @@ export async function PUT(request: NextRequest) {
         data: { content, updatedAt: now },
       });
       if (updated.count === 0) {
-        return { ok: false as const, reason: "제출한 실적은 수정할 수 없습니다." };
+        return { ok: false as const, reason: "제출한 성과는 수정할 수 없습니다." };
       }
       return { ok: true as const, sheet: { status: sheet.status, updatedAt: now } };
     });
@@ -139,6 +139,6 @@ export async function PUT(request: NextRequest) {
     });
   } catch (error) {
     console.error("PUT /api/performance/my/sheet error:", error);
-    return NextResponse.json({ error: "실적 저장 실패" }, { status: 500 });
+    return NextResponse.json({ error: "성과 저장 실패" }, { status: 500 });
   }
 }

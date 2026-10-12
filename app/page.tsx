@@ -43,8 +43,8 @@ const PAGE_TITLES: Record<PageId, string> = {
   "employee-shifts": "직원별 시프트",
   "approval-lines": "결재라인 설정",
   "system-settings": "시스템 설정",
-  "my-performance": "내 실적",
-  "performance-admin": "실적 관리",
+  "my-performance": "내 성과",
+  "performance-admin": "성과 관리",
 };
 
 export default function Home() {

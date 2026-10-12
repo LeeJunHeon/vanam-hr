@@ -231,7 +231,7 @@ model Employee {
   // 출장보고서 (작성자)
   tripReports TripReport[] @relation("EmployeeTripReports")
 
-  // 분기 실적 — 회차 생성자 / 실적표 작성자 / 수정 요청자 / 로그 행위자
+  // 분기 성과 — 회차 생성자 / 성과표 작성자 / 수정 요청자 / 로그 행위자
   perfCyclesCreated      PerfCycle[]    @relation("PerfCycleCreatedBy")
   perfSheets             PerfSheet[]    @relation("PerfSheetEmployee")
   perfRevisionsRequested PerfSheet[]    @relation("PerfSheetRevisionRequestedBy")
@@ -741,10 +741,10 @@ model AnnualLeaveGrant {
 }
 
 // ============================================
-// 분기 실적 (내 실적 / 실적 관리)
+// 분기 성과 (내 성과 / 성과 관리)
 // ============================================
 
-// 실적 제출 회차 — 분기당 1개. 대상자는 직원 id 배열.
+// 성과 제출 회차 — 분기당 1개. 대상자는 직원 id 배열.
 model PerfCycle {
   id                Int      @id @default(autoincrement())
   year              Int
@@ -763,7 +763,7 @@ model PerfCycle {
   @@schema("hr")
 }
 
-// 직원별 분기 실적표. content = 작성 중 내용, submitted_content = 마지막 제출본(관리자 열람용).
+// 직원별 분기 성과표. content = 작성 중 내용, submitted_content = 마지막 제출본(관리자 열람용).
 model PerfSheet {
   id                    Int       @id @default(autoincrement())
   employeeId            Int       @map("employee_id")
@@ -790,7 +790,7 @@ model PerfSheet {
   @@schema("hr")
 }
 
-// 실적표 이력 (submit / resubmit / request_revision)
+// 성과표 이력 (submit / resubmit / request_revision)
 model PerfSheetLog {
   id              Int      @id @default(autoincrement())
   sheetId         Int      @map("sheet_id")

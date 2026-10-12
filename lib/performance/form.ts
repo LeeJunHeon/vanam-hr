@@ -1,10 +1,10 @@
-// 분기 실적표 양식 정의 — 서버(API 검증)와 화면(PerfSheetForm 렌더러)이 같이 쓴다.
+// 분기 성과표 양식 정의 — 서버(API 검증)와 화면(PerfSheetForm 렌더러)이 같이 쓴다.
 // ⚠ prisma 등 서버 전용 모듈을 import 하지 말 것 (클라이언트 번들에 들어감).
 //
 // 지금 양식은 예시다. 실제 양식을 받으면 이 파일의 PERF_FORM 과 PERF_FORM_VERSION 만 바꾸면
 // 화면·저장·제출 검증이 함께 바뀐다.
 
-/** 새 실적표를 만들 때 perf_sheets.form_version 에 저장되는 값 */
+/** 새 성과표를 만들 때 perf_sheets.form_version 에 저장되는 값 */
 export const PERF_FORM_VERSION = "example-v1";
 
 export const TEXT_MAX = 200;
@@ -57,7 +57,7 @@ export function toNumberOrNull(v: unknown): number | null {
   return null;
 }
 
-/** 달성률 = 실적 / 목표 × 100 (소수 1자리 + "%"). 목표가 비었거나 0이면 "-" */
+/** 달성률 = 성과 / 목표 × 100 (소수 1자리 + "%"). 목표가 비었거나 0이면 "-" */
 export function computeAchievementRate(target: unknown, actual: unknown): string {
   const t = toNumberOrNull(target);
   const a = toNumberOrNull(actual);
@@ -70,7 +70,7 @@ export const PERF_FORM: PerfSection[] = [
   {
     kind: "table",
     key: "tasks",
-    title: "주요 업무 실적",
+    title: "주요 업무 성과",
     help: "이번 분기에 수행한 주요 업무를 한 줄씩 적어 주세요.",
     minRows: 1,
     fields: [
@@ -84,14 +84,14 @@ export const PERF_FORM: PerfSection[] = [
   {
     kind: "table",
     key: "kpis",
-    title: "목표 대비 실적",
+    title: "목표 대비 성과",
     help: "수치로 관리하는 목표가 있으면 적어 주세요.",
     minRows: 0,
     fields: [
       { key: "item", label: "목표 항목", kind: "text" },
       { key: "unit", label: "단위", kind: "text" },
       { key: "target", label: "목표", kind: "number" },
-      { key: "actual", label: "실적", kind: "number" },
+      { key: "actual", label: "성과", kind: "number" },
       {
         key: "rate",
         label: "달성률",

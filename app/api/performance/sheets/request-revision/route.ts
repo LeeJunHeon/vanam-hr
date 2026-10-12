@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
         where: { employeeId_year_quarter: { employeeId, ...yq } },
         select: { id: true },
       });
-      if (!sheet) return { ok: false as const, status: 404, error: "아직 제출하지 않은 실적입니다." };
+      if (!sheet) return { ok: false as const, status: 404, error: "아직 제출하지 않은 성과입니다." };
 
       const now = new Date();
       const updated = await tx.perfSheet.updateMany({
@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
         return {
           ok: false as const,
           status: 409,
-          error: "제출 완료 상태인 실적에만 수정을 요청할 수 있습니다.",
+          error: "제출 완료 상태인 성과에만 수정을 요청할 수 있습니다.",
         };
       }
       await tx.perfSheetLog.create({
@@ -68,8 +68,8 @@ export async function POST(request: NextRequest) {
       await createNotifications({
         employeeIds: [employeeId],
         type: "perf_revision",
-        title: "실적 수정 요청",
-        body: `${quarterLabel(yq.year, yq.quarter)} 실적에 수정 요청이 있습니다: ${reason}`,
+        title: "성과 수정 요청",
+        body: `${quarterLabel(yq.year, yq.quarter)} 성과에 수정 요청이 있습니다: ${reason}`,
         linkPage: "my-performance",
       });
     } catch (e) {

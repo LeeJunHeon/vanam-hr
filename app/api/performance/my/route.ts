@@ -19,7 +19,7 @@ export const dynamic = "force-dynamic";
 
 const MAX_QUARTERS = 8;
 
-// GET /api/performance/my — 내 실적 분기 목록 + 기본 선택 분기
+// GET /api/performance/my — 내 성과 분기 목록 + 기본 선택 분기
 export async function GET() {
   try {
     const sessionR = await requireSession();
@@ -43,7 +43,7 @@ export async function GET() {
     const sheetMap = new Map(sheets.map((s) => [quarterKey(s.year, s.quarter), s]));
     const cycleMap = new Map(cycles.map((c) => [quarterKey(c.year, c.quarter), c]));
 
-    // 목록 = 현재 분기 + 직전 분기 + 내 실적표가 있는 분기 + 진행 전/진행 중 회차 분기
+    // 목록 = 현재 분기 + 직전 분기 + 내 성과표가 있는 분기 + 진행 전/진행 중 회차 분기
     const candidates: YearQuarter[] = [current, prevQuarter(current)];
     for (const s of sheets) candidates.push({ year: s.year, quarter: s.quarter });
     for (const c of cycles) {
@@ -92,6 +92,6 @@ export async function GET() {
     });
   } catch (error) {
     console.error("GET /api/performance/my error:", error);
-    return NextResponse.json({ error: "실적 목록 조회 실패" }, { status: 500 });
+    return NextResponse.json({ error: "성과 목록 조회 실패" }, { status: 500 });
   }
 }

@@ -88,7 +88,7 @@ export async function PUT(
   }
 }
 
-// DELETE /api/performance/cycles/[id] — 그 분기에 제출 이력이 없을 때만. 실적표는 지우지 않는다.
+// DELETE /api/performance/cycles/[id] — 그 분기에 제출 이력이 없을 때만. 성과표는 지우지 않는다.
 export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }

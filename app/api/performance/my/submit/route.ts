@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
           data,
         });
         if (updated.count === 0) {
-          return { kind: "conflict" as const, error: "이미 제출한 실적입니다." };
+          return { kind: "conflict" as const, error: "이미 제출한 성과입니다." };
         }
         sheetId = sheet.id;
       } else {
@@ -101,6 +101,6 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("POST /api/performance/my/submit error:", error);
-    return NextResponse.json({ error: "실적 제출 실패" }, { status: 500 });
+    return NextResponse.json({ error: "성과 제출 실패" }, { status: 500 });
   }
 }

@@ -1,4 +1,4 @@
-// 분기 실적 판정 규칙 — 분기 계산, 회차 상태, 실적표 상태 표시, 편집/제출 가능 여부.
+// 분기 성과 판정 규칙 — 분기 계산, 회차 상태, 성과표 상태 표시, 편집/제출 가능 여부.
 // 서버(API)와 화면이 같이 쓴다. "오늘"은 항상 서버가 KST 로 구해 넘긴 todayYmd 를 쓴다.
 // ⚠ prisma 등 서버 전용 모듈을 import 하지 말 것 (클라이언트 번들에 들어감).
 
@@ -140,7 +140,7 @@ export function cycleProgressLabel(cycle: CycleDates & { state: CycleState; dDay
   return cycle.dDay <= 0 ? "오늘 마감" : `마감 D-${cycle.dDay}`;
 }
 
-// ── 실적표 상태 ──
+// ── 성과표 상태 ──
 
 export type SheetStatus = "none" | "draft" | "submitted" | "revision";
 
@@ -170,7 +170,7 @@ export function getSheetAccess(args: {
   year: number;
   quarter: number;
   todayYmd: string;
-  /** DB status 또는 "none"/null(실적표 없음) */
+  /** DB status 또는 "none"/null(성과표 없음) */
   sheetStatus: string | null;
   cycle: CycleDates | null;
   isTarget: boolean;
@@ -184,10 +184,10 @@ export function getSheetAccess(args: {
     return {
       canEdit: false,
       canSubmit: false,
-      reason: "제출한 실적은 수정할 수 없습니다. 수정이 필요하면 관리자에게 요청하세요.",
+      reason: "제출한 성과는 수정할 수 없습니다. 수정이 필요하면 관리자에게 요청하세요.",
     };
   }
-  // 관리자가 수정 요청으로 다시 열어 준 실적 — 회차 기간과 무관
+  // 관리자가 수정 요청으로 다시 열어 준 성과 — 회차 기간과 무관
   if (sheetStatus === "revision") {
     return { canEdit: true, canSubmit: true, reason: null };
   }

@@ -8,7 +8,7 @@ import { EMPLOYEE_ORDER } from "@/lib/performance/server";
 export const dynamic = "force-dynamic";
 
 // GET /api/performance/cycles/[id]/status — 대상자별 제출 현황.
-// ⚠ 실적 내용(content)은 절대 포함하지 않는다 (상태 판정에만 쓴다).
+// ⚠ 성과 내용(content)은 절대 포함하지 않는다 (상태 판정에만 쓴다).
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }

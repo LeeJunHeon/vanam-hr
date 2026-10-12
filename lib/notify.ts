@@ -13,7 +13,7 @@ interface CreateNotificationArgs {
 
 // notifications 테이블 컬럼 길이 (title VARCHAR(200), body VARCHAR(500)).
 // 넘치는 값을 그대로 넣으면 앱 알림 저장(createMany)이 통째로 실패하고, 그 뒤의 이메일·푸시까지
-// 나가지 않는다 (예: 실적 수정 요청 사유는 최대 1000자). 그래서 앱 알림에 넣을 때만 잘라 저장한다.
+// 나가지 않는다 (예: 성과 수정 요청 사유는 최대 1000자). 그래서 앱 알림에 넣을 때만 잘라 저장한다.
 // 이메일·푸시에는 원문을 그대로 보낸다.
 const NOTIFICATION_TITLE_MAX = 200;
 const NOTIFICATION_BODY_MAX = 500;
