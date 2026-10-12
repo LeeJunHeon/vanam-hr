@@ -13,7 +13,7 @@ export default function LoginPage() {
             <LayoutGrid size={28} className="text-white" />
           </div>
           <div className="text-center">
-            <h1 className="text-xl font-bold text-gray-900">VanaM 인사·근태</h1>
+            <h1 className="text-xl font-bold text-gray-900">VanaM 인사 관리</h1>
             <p className="text-sm text-gray-400 mt-1">VanaM HR System</p>
           </div>
         </div>

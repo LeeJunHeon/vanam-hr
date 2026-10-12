@@ -11,6 +11,21 @@ interface CreateNotificationArgs {
   sourceType?: string | null;
 }
 
+// notifications 테이블 컬럼 길이 (title VARCHAR(200), body VARCHAR(500)).
+// 넘치는 값을 그대로 넣으면 앱 알림 저장(createMany)이 통째로 실패하고, 그 뒤의 이메일·푸시까지
+// 나가지 않는다 (예: 실적 수정 요청 사유는 최대 1000자). 그래서 앱 알림에 넣을 때만 잘라 저장한다.
+// 이메일·푸시에는 원문을 그대로 보낸다.
+const NOTIFICATION_TITLE_MAX = 200;
+const NOTIFICATION_BODY_MAX = 500;
+
+// max 글자(코드 포인트 기준 — Postgres VARCHAR 는 글자 수로 센다) 이내로. 넘치면 끝을 잘라 "…" 를 붙인다.
+// 길이 안이면 원래 값을 그대로 돌려준다.
+function clipForColumn(value: string, max: number): string {
+  const chars = Array.from(value);
+  if (chars.length <= max) return value;
+  return chars.slice(0, max - 1).join("") + "…";
+}
+
 // 전역 정책(policy_settings)에서 이 type의 앱/이메일 on 여부를 읽는다.
 // 키 규칙: notify_{type}_app / notify_{type}_email. 값은 'true'/'false' 문자열.
 // 키가 없으면 기본값: 앱=true(수신), 이메일=false(미수신) — 안전.
@@ -49,8 +64,8 @@ export async function createNotifications(args: CreateNotificationArgs): Promise
       data: uniqueIds.map((employeeId) => ({
         employeeId,
         type,
-        title,
-        body: body ?? null,
+        title: clipForColumn(title, NOTIFICATION_TITLE_MAX),
+        body: body != null ? clipForColumn(body, NOTIFICATION_BODY_MAX) : null,
         linkPage: linkPage ?? null,
         linkRefId: linkRefId != null ? BigInt(linkRefId) : null,
         sourceType: sourceType ?? null,
