@@ -3,8 +3,14 @@ import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/app/generated/prisma/client";
 import { requireSession } from "@/lib/auth-helpers";
 import { PERF_FORM_VERSION, sanitizeContent, validateForSubmit } from "@/lib/performance/form";
-import { getSheetAccess, isFutureQuarter, parseYearQuarter } from "@/lib/performance/rules";
-import { cycleDates, loadEmployeeProfile, perfTodayYmd, requireEmployeeId } from "@/lib/performance/server";
+import { checkQuarter, getSheetAccess, parseYearQuarter } from "@/lib/performance/rules";
+import {
+  cycleDates,
+  loadEmployeeProfile,
+  loadStartQuarter,
+  perfTodayYmd,
+  requireEmployeeId,
+} from "@/lib/performance/server";
 
 export const dynamic = "force-dynamic";
 
@@ -23,9 +29,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "연도와 분기가 올바르지 않습니다." }, { status: 400 });
     }
     const todayYmd = perfTodayYmd();
-    if (isFutureQuarter(yq, todayYmd)) {
-      return NextResponse.json({ error: "아직 시작하지 않은 분기입니다." }, { status: 400 });
-    }
+    const quarterError = checkQuarter(yq, todayYmd, await loadStartQuarter());
+    if (quarterError) return NextResponse.json({ error: quarterError }, { status: 400 });
 
     // 제출 순간의 프로필 — profile_snapshot 에 저장 (다시 제출하면 갱신)
     const profile = await loadEmployeeProfile(employeeId);
@@ -56,6 +61,7 @@ export async function POST(request: NextRequest) {
       const now = new Date();
       const json = content as Prisma.InputJsonObject;
       const data = {
+        formVersion: PERF_FORM_VERSION,
         content: json,
         submittedContent: json,
         profileSnapshot: { ...profile } as Prisma.InputJsonObject,
@@ -76,7 +82,7 @@ export async function POST(request: NextRequest) {
         sheetId = sheet.id;
       } else {
         const created = await tx.perfSheet.create({
-          data: { employeeId, ...yq, formVersion: PERF_FORM_VERSION, ...data },
+          data: { employeeId, ...yq, ...data },
           select: { id: true },
         });
         sheetId = created.id;

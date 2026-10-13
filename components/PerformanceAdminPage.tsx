@@ -7,6 +7,7 @@ import PerfReviewPanel, { type PerfReviewData } from "@/components/performance/P
 import type { PerfContent, PerfInfo } from "@/lib/performance/form";
 import {
   addDaysYmd,
+  checkQuarter,
   cycleProgressLabel,
   formatKstShort,
   quarterKey,
@@ -34,8 +35,12 @@ interface CycleItem {
 interface CycleDefaults {
   todayYmd: string;
   submitDays: number;
+  /** 새 회차 기본 분기 = 오늘이 속한 분기 */
   suggestedYear: number;
   suggestedQuarter: number;
+  /** 성과 관리 시작 분기 */
+  startYear: number;
+  startQuarter: number;
 }
 
 interface EmployeeOption {
@@ -598,6 +603,13 @@ function CycleModal({
 
   const canDelete = isEdit && statusRows.every((r) => !r.hasSubmitted);
   const dupQuarter = !isEdit && existingKeys.includes(quarterKey(year, quarter));
+  // 미래·시작 전 분기 — 서버와 같은 검사 함수로 미리 알려 준다
+  const quarterProblem = isEdit
+    ? null
+    : checkQuarter({ year, quarter }, defaults.todayYmd, {
+        year: defaults.startYear,
+        quarter: defaults.startQuarter,
+      });
 
   const toggle = (id: number) => {
     if (locked.has(id)) return;
@@ -698,7 +710,11 @@ function CycleModal({
               </select>
             </div>
           </div>
-          {dupQuarter && <p className="text-xs text-rose-600 -mt-2">이미 같은 분기 회차가 있습니다.</p>}
+          {quarterProblem ? (
+            <p className="text-xs text-rose-600 -mt-2">{quarterProblem}</p>
+          ) : (
+            dupQuarter && <p className="text-xs text-rose-600 -mt-2">이미 같은 분기 회차가 있습니다.</p>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -795,7 +811,7 @@ function CycleModal({
           </button>
           <button
             onClick={save}
-            disabled={saving || dupQuarter}
+            disabled={saving || dupQuarter || !!quarterProblem}
             className="inline-flex items-center gap-2 bg-blue-600 text-white text-sm font-semibold px-5 py-2.5 rounded-xl hover:bg-blue-700 disabled:opacity-50"
           >
             {saving && <Loader2 size={16} className="animate-spin" />}

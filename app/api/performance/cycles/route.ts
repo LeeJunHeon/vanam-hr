@@ -2,10 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth-helpers";
 import {
-  isFutureQuarter,
+  checkQuarter,
   isValidYmd,
   parseYearQuarter,
-  prevQuarter,
   quarterKey,
   quarterLabel,
   quarterOfYmd,
@@ -13,6 +12,7 @@ import {
 import {
   EMPLOYEE_ORDER,
   cycleView,
+  loadStartQuarter,
   loadSubmitDefaultDays,
   parseEmployeeIds,
   perfTodayYmd,
@@ -28,9 +28,10 @@ export async function GET() {
     if (!r.ok) return r.response;
 
     const todayYmd = perfTodayYmd();
-    const [cycles, submitDays, employees] = await Promise.all([
+    const [cycles, submitDays, start, employees] = await Promise.all([
       prisma.perfCycle.findMany({ orderBy: [{ year: "desc" }, { quarter: "desc" }] }),
       loadSubmitDefaultDays(),
+      loadStartQuarter(),
       prisma.employee.findMany({
         where: { isActive: true, isHrOnly: false },
         orderBy: EMPLOYEE_ORDER,
@@ -50,10 +51,8 @@ export async function GET() {
             select: { employeeId: true, year: true, quarter: true },
           });
 
-    const current = quarterOfYmd(todayYmd);
-    const prev = prevQuarter(current);
-    const hasPrevCycle = cycles.some((c) => c.year === prev.year && c.quarter === prev.quarter);
-    const suggested = hasPrevCycle ? current : prev;
+    // 새 회차 기본 분기 = 오늘(KST)이 속한 분기
+    const suggested = quarterOfYmd(todayYmd);
 
     return NextResponse.json({
       cycles: cycles.map((c) => {
@@ -76,6 +75,8 @@ export async function GET() {
         submitDays,
         suggestedYear: suggested.year,
         suggestedQuarter: suggested.quarter,
+        startYear: start.year,
+        startQuarter: start.quarter,
       },
       employees: employees.map((e) => ({
         id: e.id,
@@ -101,12 +102,8 @@ export async function POST(request: NextRequest) {
     if (!yq) {
       return NextResponse.json({ error: "연도와 분기가 올바르지 않습니다." }, { status: 400 });
     }
-    if (isFutureQuarter(yq, perfTodayYmd())) {
-      return NextResponse.json(
-        { error: "아직 시작하지 않은 분기의 회차는 만들 수 없습니다." },
-        { status: 400 }
-      );
-    }
+    const quarterError = checkQuarter(yq, perfTodayYmd(), await loadStartQuarter());
+    if (quarterError) return NextResponse.json({ error: quarterError }, { status: 400 });
     const { submitStart, submitEnd } = body ?? {};
     if (!isValidYmd(submitStart) || !isValidYmd(submitEnd)) {
       return NextResponse.json({ error: "제출 기간 날짜가 올바르지 않습니다." }, { status: 400 });

@@ -3,21 +3,22 @@ import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth-helpers";
 import { hasAnyContent } from "@/lib/performance/form";
 import {
-  compareQuarter,
   effectiveSheetStatus,
   getSheetAccess,
-  isFutureQuarter,
-  prevQuarter,
   quarterKey,
   quarterLabel,
   quarterOfYmd,
-  type YearQuarter,
+  quartersBetween,
 } from "@/lib/performance/rules";
-import { cycleDates, cycleView, perfTodayYmd, requireEmployeeId } from "@/lib/performance/server";
+import {
+  cycleDates,
+  cycleView,
+  loadStartQuarter,
+  perfTodayYmd,
+  requireEmployeeId,
+} from "@/lib/performance/server";
 
 export const dynamic = "force-dynamic";
-
-const MAX_QUARTERS = 8;
 
 // GET /api/performance/my — 내 성과 분기 목록 + 기본 선택 분기
 export async function GET() {
@@ -31,7 +32,7 @@ export async function GET() {
     const todayYmd = perfTodayYmd();
     const current = quarterOfYmd(todayYmd);
 
-    const [sheets, cycles] = await Promise.all([
+    const [sheets, cycles, start] = await Promise.all([
       prisma.perfSheet.findMany({
         where: { employeeId },
         select: { year: true, quarter: true, status: true, content: true },
@@ -39,23 +40,14 @@ export async function GET() {
       prisma.perfCycle.findMany({
         select: { year: true, quarter: true, submitStart: true, submitEnd: true, targetEmployeeIds: true },
       }),
+      loadStartQuarter(),
     ]);
     const sheetMap = new Map(sheets.map((s) => [quarterKey(s.year, s.quarter), s]));
     const cycleMap = new Map(cycles.map((c) => [quarterKey(c.year, c.quarter), c]));
 
-    // 목록 = 현재 분기 + 직전 분기 + 내 성과표가 있는 분기 + 진행 전/진행 중 회차 분기
-    const candidates: YearQuarter[] = [current, prevQuarter(current)];
-    for (const s of sheets) candidates.push({ year: s.year, quarter: s.quarter });
-    for (const c of cycles) {
-      if (cycleView(c, todayYmd).state !== "closed") candidates.push({ year: c.year, quarter: c.quarter });
-    }
-    const unique = new Map<string, YearQuarter>();
-    for (const q of candidates) {
-      if (!isFutureQuarter(q, todayYmd)) unique.set(quarterKey(q.year, q.quarter), q);
-    }
-    const list = Array.from(unique.values())
-      .sort(compareQuarter)
-      .slice(-MAX_QUARTERS);
+    // 목록 = 성과 관리 시작 분기부터 오늘이 속한 분기까지 전부 (오래된 순).
+    // 시작 분기가 오늘 분기보다 뒤면 빈 목록 — 화면이 "{시작 분기}부터 시작합니다"를 보여 준다.
+    const list = quartersBetween(start, current);
 
     const quarters = list.map(({ year, quarter }) => {
       const key = quarterKey(year, quarter);
@@ -84,11 +76,12 @@ export async function GET() {
     const pick =
       latestFirst.find((q) => q.canSubmit && (q.status === "none" || q.status === "draft")) ??
       latestFirst.find((q) => q.status === "revision") ??
-      current;
+      (list.length > 0 ? current : null);
 
     return NextResponse.json({
       quarters,
-      defaultQuarter: { year: pick.year, quarter: pick.quarter },
+      defaultQuarter: pick ? { year: pick.year, quarter: pick.quarter } : null,
+      startLabel: quarterLabel(start.year, start.quarter),
     });
   } catch (error) {
     console.error("GET /api/performance/my error:", error);

@@ -120,6 +120,32 @@ export function isFutureQuarter(q: YearQuarter, todayYmd: string): boolean {
   return compareQuarter(q, quarterOfYmd(todayYmd)) > 0;
 }
 
+/** start~end 분기 목록 (둘 다 포함, 오래된 순). start 가 end 보다 뒤면 빈 배열 */
+export function quartersBetween(start: YearQuarter, end: YearQuarter): YearQuarter[] {
+  const out: YearQuarter[] = [];
+  for (let q = start; compareQuarter(q, end) <= 0; q = nextQuarter(q)) out.push(q);
+  return out;
+}
+
+/**
+ * 분기 검사 — 성과표·회차를 다룰 수 있는 분기인지. 문제가 없으면 null.
+ * 오늘이 속한 분기보다 뒤 / 성과 관리 시작 분기보다 앞이면 그 사유.
+ */
+export function checkQuarter(q: YearQuarter, todayYmd: string, start: YearQuarter): string | null {
+  if (isFutureQuarter(q, todayYmd)) return "아직 시작하지 않은 분기입니다.";
+  if (compareQuarter(q, start) < 0) {
+    return `성과 관리 시작(${quarterLabel(start.year, start.quarter)}) 전 분기입니다.`;
+  }
+  return null;
+}
+
+/** 시작 분기 설정값 "2026-4" / "2026-Q4" → 분기. 형식이 틀리면 null */
+export function parseQuarterSetting(raw: unknown): YearQuarter | null {
+  if (typeof raw !== "string") return null;
+  const m = /^\s*(\d{4})-[Qq]?([1-4])\s*$/.exec(raw);
+  return m ? parseYearQuarter(m[1], m[2]) : null;
+}
+
 /** 쿼리·바디의 year/quarter 검증 */
 export function parseYearQuarter(rawYear: unknown, rawQuarter: unknown): YearQuarter | null {
   const year = Number(rawYear);

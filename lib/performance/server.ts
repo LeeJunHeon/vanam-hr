@@ -9,6 +9,7 @@ import {
   formatYmdDot,
   getCycleState,
   getDDay,
+  parseQuarterSetting,
   parseYearQuarter,
   quarterEndYmd,
   quarterLabel,
@@ -63,6 +64,25 @@ export async function loadSubmitDefaultDays(): Promise<number> {
   return n;
 }
 
+/** 성과 관리 시작 분기 (설정이 없거나 형식이 틀릴 때) */
+const DEFAULT_START_QUARTER: YearQuarter = { year: 2026, quarter: 4 };
+
+/** policy_settings "perf_start_quarter" ("2026-4" 또는 "2026-Q4"). 없거나 형식이 틀리면 2026년 4분기 */
+export async function loadStartQuarter(): Promise<YearQuarter> {
+  const row = await prisma.policySetting.findUnique({
+    where: { key: "perf_start_quarter" },
+    select: { value: true },
+  });
+  const q = parseQuarterSetting(row?.value);
+  if (!q) {
+    console.warn(
+      `[performance] perf_start_quarter 값이 없거나 형식이 틀립니다(${row?.value ?? "없음"}) — ${DEFAULT_START_QUARTER.year}-${DEFAULT_START_QUARTER.quarter} 사용`
+    );
+    return DEFAULT_START_QUARTER;
+  }
+  return q;
+}
+
 /** 직원용 API — 세션에 연결된 직원 id. 없으면 403 응답 */
 export function requireEmployeeId(
   session: Session
@@ -93,32 +113,25 @@ export const EMPLOYEE_ORDER = [{ employeeNo: "asc" as const }];
 
 // ── 기본 정보(info) ──
 
-/** 성과표에 보여 줄 직원 프로필 — 제출 때 perf_sheets.profile_snapshot 에도 이 모양으로 저장 */
+/**
+ * 성과표에 보여 줄 직원 프로필 — 제출 때 perf_sheets.profile_snapshot 에도 이 모양으로 저장.
+ * 부서·직급은 인사 관리 값이 실제와 달라 성과표에서 직원이 직접 입력한다(basic 섹션).
+ */
 export interface PerfProfile {
   name: string;
-  department: string;
-  position: string;
 }
 
-/** 현재 직원 정보 (이름·부서명·직급명). 직원이 없으면 빈 값 */
+/** 현재 직원 이름. 직원이 없으면 빈 값 */
 export async function loadEmployeeProfile(employeeId: number): Promise<PerfProfile> {
-  const e = await prisma.employee.findUnique({
-    where: { id: employeeId },
-    select: { name: true, department: { select: { name: true } }, position: { select: { name: true } } },
-  });
-  return {
-    name: e?.name ?? "",
-    department: e?.department?.name ?? "",
-    position: e?.position?.name ?? "",
-  };
+  const e = await prisma.employee.findUnique({ where: { id: employeeId }, select: { name: true } });
+  return { name: e?.name ?? "" };
 }
 
-/** profile_snapshot JSON → 프로필 (모양이 다르면 null) */
+/** profile_snapshot JSON → 프로필 (name 만 읽고 예전 snapshot 의 다른 키는 무시, 모양이 다르면 null) */
 export function parseProfileSnapshot(raw: unknown): PerfProfile | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
-  const o = raw as Record<string, unknown>;
-  const s = (v: unknown) => (typeof v === "string" ? v : "");
-  return { name: s(o.name), department: s(o.department), position: s(o.position) };
+  const name = (raw as Record<string, unknown>).name;
+  return { name: typeof name === "string" ? name : "" };
 }
 
 /** 보여 줄 프로필 — 제출 완료 상태이고 snapshot 이 있으면 snapshot, 아니면 현재 직원 정보 */
@@ -135,8 +148,6 @@ export function pickProfile(
 export function buildPerfInfo(profile: PerfProfile, yq: YearQuarter): PerfInfo {
   return {
     employeeName: profile.name,
-    department: profile.department,
-    position: profile.position,
     period: `${formatYmdDot(quarterStartYmd(yq))} ~ ${formatYmdDot(quarterEndYmd(yq))}`,
     quarter: quarterLabel(yq.year, yq.quarter),
   };

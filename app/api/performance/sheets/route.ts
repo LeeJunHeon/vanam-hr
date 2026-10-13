@@ -36,9 +36,7 @@ export async function GET(request: NextRequest) {
         reviewFinalizedAt: true,
         reviewUpdatedBy: { select: { name: true } },
         reviewFinalizedBy: { select: { name: true } },
-        employee: {
-          select: { name: true, department: { select: { name: true } }, position: { select: { name: true } } },
-        },
+        employee: { select: { name: true } },
       },
     });
     if (!sheet || !sheet.submittedAt) {
@@ -58,11 +56,7 @@ export async function GET(request: NextRequest) {
         : Promise.resolve(null),
     ]);
 
-    const profile = pickProfile(sheet.status, sheet.profileSnapshot, {
-      name: sheet.employee.name,
-      department: sheet.employee.department?.name ?? "",
-      position: sheet.employee.position?.name ?? "",
-    });
+    const profile = pickProfile(sheet.status, sheet.profileSnapshot, { name: sheet.employee.name });
 
     return NextResponse.json({
       employeeName: sheet.employee.name,

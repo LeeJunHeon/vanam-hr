@@ -5,7 +5,8 @@ import { Loader2, Target, X, AlertTriangle, Send, Download } from "lucide-react"
 import PerfSheetForm, { PerfExampleBadge, PerfStatusBadge } from "@/components/performance/PerfSheetForm";
 import {
   PERF_FORM,
-  importPreviousProposals,
+  importPrevious,
+  pendingBasicFields,
   pendingProposals,
   validateForSubmit,
   withDisplayRows,
@@ -19,6 +20,7 @@ import {
   formatKstTime,
   formatMonthDay,
   quarterKey,
+  SHEET_STATUS_META,
   type CycleState,
   type SheetAccess,
   type SheetStatus,
@@ -47,7 +49,7 @@ interface SheetData {
   isTarget: boolean;
   access: SheetAccess;
   info: PerfInfo;
-  /** 직전 분기에 제안한 다음 분기 목표 (없으면 null) */
+  /** 직전 분기 성과표의 기본 정보·다음 분기 목표 제안 (없으면 null) */
   previous: PerfPrevious | null;
 }
 
@@ -57,9 +59,12 @@ const AUTOSAVE_MS = 1500;
 // keepalive 요청 본문 한도(64KB) 안쪽 — 바이트 수로 비교 (한글은 한 글자 3바이트)
 const KEEPALIVE_MAX_BYTES = 60000;
 const SHEET_URL = "/api/performance/my/sheet";
+// 분기 선택 — 최근 이만큼은 버튼, 그보다 앞은 "이전 분기" 선택 상자
+const RECENT_QUARTER_BUTTONS = 4;
 
 export default function MyPerformancePage() {
   const [quarters, setQuarters] = useState<QuarterItem[]>([]);
+  const [startLabel, setStartLabel] = useState("");
   const [selected, setSelected] = useState<YearQuarter | null>(null);
   const [sheet, setSheet] = useState<SheetData | null>(null);
   const [content, setContent] = useState<PerfContent>({});
@@ -144,6 +149,7 @@ export default function MyPerformancePage() {
         return;
       }
       setQuarters(data.quarters ?? []);
+      setStartLabel(data.startLabel ?? "");
       if (selectDefault && data.defaultQuarter) openQuarter(data.defaultQuarter);
     } catch {
       setLoadError("네트워크 오류로 성과 목록을 불러오지 못했습니다.");
@@ -316,20 +322,40 @@ export default function MyPerformancePage() {
     }
   };
 
-  /** 지난 분기 제안을 이번 분기 목표로 — 내용만 바꾸고 자동 저장 흐름을 그대로 탄다 */
-  const importProposals = () => {
+  /** 지난 분기 기본 정보·목표 제안 불러오기 — 내용만 바꾸고 자동 저장 흐름을 그대로 탄다 */
+  const importFromPrevious = () => {
     if (!sheet) return;
-    const r = importPreviousProposals(contentRef.current, sheet.previous);
-    if (r.imported === 0) {
+    const r = importPrevious(contentRef.current, sheet.previous);
+    if (r.imported === 0 && r.basicFilled === 0) {
       showToast("목표 표에 빈 자리가 없어 불러오지 못했습니다.");
       return;
     }
     handleChange(r.content);
-    showToast(`목표 ${r.imported}개를 불러왔습니다.`);
+    if (r.basicFilled > 0 && r.imported > 0) showToast(`기본 정보와 목표 ${r.imported}개를 불러왔습니다.`);
+    else if (r.basicFilled > 0) showToast("기본 정보를 불러왔습니다.");
+    else showToast(`목표 ${r.imported}개를 불러왔습니다.`);
   };
 
   const canEdit = !!sheet?.access.canEdit;
   const pending = canEdit && sheet ? pendingProposals(content, sheet.previous) : [];
+  const pendingBasic = canEdit && sheet ? pendingBasicFields(content, sheet.previous) : [];
+  const importText = !sheet?.previous
+    ? ""
+    : pendingBasic.length > 0 && pending.length > 0
+      ? `${sheet.previous.label} 성과표에서 기본 정보(부서·직급 등)와 다음 분기 목표 제안 ${pending.length}개를 불러올 수 있습니다.`
+      : pendingBasic.length > 0
+        ? `${sheet.previous.label} 성과표에서 기본 정보(부서·직급 등)를 불러올 수 있습니다.`
+        : pending.length > 0
+          ? `${sheet.previous.label}에 제안한 다음 분기 목표 ${pending.length}개가 있습니다.`
+          : "";
+
+  // 분기 선택 — 최근 4개는 버튼(오래된 순), 그보다 앞은 "이전 분기" 선택 상자(최근 순)
+  const recentQuarters = quarters.slice(-RECENT_QUARTER_BUTTONS);
+  const olderQuarters = quarters.slice(0, Math.max(0, quarters.length - RECENT_QUARTER_BUTTONS)).reverse();
+  const selectedOlder =
+    selected && olderQuarters.some((q) => q.year === selected.year && q.quarter === selected.quarter)
+      ? quarterKey(selected.year, selected.quarter)
+      : "";
   const previewErrors = previewOpen ? validateForSubmit(content) : [];
 
   // ── 상태 띠 ──
@@ -434,8 +460,37 @@ export default function MyPerformancePage() {
       ) : (
         <>
           {/* 분기 선택 */}
+          {quarters.length === 0 && startLabel && (
+            <div className="bg-gray-50 border border-gray-200 rounded-2xl px-4 py-6 text-center text-sm text-gray-500">
+              성과 관리는 {startLabel}부터 시작합니다.
+            </div>
+          )}
           <div className="flex gap-2 overflow-x-auto pb-1">
-            {quarters.map((q) => {
+            {olderQuarters.length > 0 && (
+              <select
+                value={selectedOlder}
+                onChange={(e) => {
+                  const q = olderQuarters.find((x) => quarterKey(x.year, x.quarter) === e.target.value);
+                  if (q) selectQuarter({ year: q.year, quarter: q.quarter });
+                }}
+                aria-label="이전 분기"
+                className={`shrink-0 px-3 py-2 rounded-xl border text-sm outline-none ${
+                  selectedOlder
+                    ? "border-blue-500 bg-blue-50 text-blue-700 font-semibold"
+                    : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                <option value="" disabled>
+                  이전 분기
+                </option>
+                {olderQuarters.map((q) => (
+                  <option key={quarterKey(q.year, q.quarter)} value={quarterKey(q.year, q.quarter)}>
+                    {q.label} · {SHEET_STATUS_META[q.status].label}
+                  </option>
+                ))}
+              </select>
+            )}
+            {recentQuarters.map((q) => {
               const active = selected?.year === q.year && selected?.quarter === q.quarter;
               return (
                 <button
@@ -464,16 +519,14 @@ export default function MyPerformancePage() {
             sheet && (
               <div className={`space-y-4 ${sheetLoading ? "opacity-60 pointer-events-none" : ""}`}>
                 {renderBand()}
-                {pending.length > 0 && sheet.previous && (
+                {importText && (
                   <div className="flex flex-col sm:flex-row sm:items-center gap-3 bg-sky-50 border border-sky-200 rounded-2xl px-4 py-3">
-                    <p className="flex-1 text-sm text-sky-800">
-                      {sheet.previous.label}에 제안한 다음 분기 목표 {pending.length}개가 있습니다.
-                    </p>
+                    <p className="flex-1 text-sm text-sky-800">{importText}</p>
                     <button
-                      onClick={importProposals}
+                      onClick={importFromPrevious}
                       className="shrink-0 inline-flex items-center justify-center gap-1.5 bg-white border border-sky-300 text-sky-700 text-sm font-semibold px-4 py-2 rounded-xl hover:bg-sky-100"
                     >
-                      <Download size={14} />이번 분기 목표로 불러오기
+                      <Download size={14} />불러오기
                     </button>
                   </div>
                 )}

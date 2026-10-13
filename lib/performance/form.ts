@@ -28,7 +28,8 @@ export type PerfRow = Record<string, PerfCellValue>;
 export type PerfContent = Record<string, PerfRow[] | PerfRow>;
 
 /** info 칸에 자동으로 보여 줄 값 — 서버가 만들어 렌더러에 info prop 으로 넘긴다 */
-export type PerfInfoSource = "employeeName" | "department" | "position" | "period" | "quarter";
+/** 부서·직급은 인사 관리 값이 실제와 달라 basic 섹션에서 직원이 직접 입력한다 (info 아님) */
+export type PerfInfoSource = "employeeName" | "period" | "quarter";
 export type PerfInfo = Partial<Record<PerfInfoSource, string>>;
 
 interface FieldBase {
@@ -165,12 +166,12 @@ export const PERF_FORM: PerfForm = [
         columns: 3,
         fields: [
           { key: "employeeName", label: "직원명", kind: "info", source: "employeeName" },
-          { key: "department", label: "부서", kind: "info", source: "department" },
+          { key: "department", label: "부서", kind: "text", required: true, maxLength: 50, placeholder: "예: 연구개발팀" },
           { key: "jobRole", label: "직무", kind: "text", maxLength: 100, placeholder: "예: ALD 공정 개발" },
           { key: "period", label: "평가기간", kind: "info", source: "period" },
           { key: "quarter", label: "평가분기", kind: "info", source: "quarter" },
           { key: "supervisor", label: "상급자", kind: "text", maxLength: 50, placeholder: "예: 홍길동 팀장" },
-          { key: "position", label: "직급", kind: "info", source: "position" },
+          { key: "position", label: "직급", kind: "text", required: true, maxLength: 50, placeholder: "예: 선임연구원" },
           { key: "agreedDate", label: "목표합의일", kind: "date" },
         ],
       },
@@ -603,9 +604,13 @@ export function validateForSubmit(content: unknown, form: PerfForm = PERF_FORM):
   return errors;
 }
 
-// ── 지난 분기 제안 불러오기 ──
-// ⚠ 아래는 PERF_FORM 의 칸 key(nextGoals → goals, basic.jobRole·supervisor)에 맞춰져 있다.
+// ── 지난 분기 불러오기 (기본 정보 + 다음 분기 목표 제안) ──
+// ⚠ 아래는 PERF_FORM 의 칸 key(nextGoals → goals, basic 의 부서·직무·상급자·직급)에 맞춰져 있다.
 //    양식이 바뀌면 이 부분도 같이 바꾼다.
+
+/** 지난 분기에서 불러올 기본 정보 칸 (basic 섹션 key) */
+export const PREVIOUS_BASIC_KEYS = ["department", "jobRole", "supervisor", "position"] as const;
+export type PreviousBasicKey = (typeof PREVIOUS_BASIC_KEYS)[number];
 
 export interface PerfProposal {
   goal: string;
@@ -616,8 +621,7 @@ export interface PerfProposal {
 /** 직전 분기 성과표에서 가져온 값 (GET my/sheet 의 previous) */
 export interface PerfPrevious {
   label: string;
-  jobRole: string;
-  supervisor: string;
+  basic: Record<PreviousBasicKey, string>;
   proposals: PerfProposal[];
 }
 
@@ -625,18 +629,26 @@ function str(v: PerfCellValue | undefined): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
-/** 지난 분기 성과표 내용 → 목표가 있는 다음 분기 제안 + 직무·상급자 */
-export function extractPrevious(
-  raw: unknown,
-  label: string
-): PerfPrevious | null {
+/** 지난 분기 성과표 내용 → 기본 정보(부서·직무·상급자·직급) + 목표가 있는 다음 분기 제안. 넷 다 비었고 제안도 없으면 null */
+export function extractPrevious(raw: unknown, label: string): PerfPrevious | null {
   const c = sanitizeContent(raw);
   const proposals = ((c.nextGoals as PerfRow[]) ?? [])
     .map((r) => ({ goal: str(r.goal), criteria: str(r.criteria), targetDate: str(r.targetDate) }))
     .filter((p) => p.goal !== "");
-  if (proposals.length === 0) return null;
-  const basic = (c.basic as PerfRow) ?? {};
-  return { label, jobRole: str(basic.jobRole), supervisor: str(basic.supervisor), proposals };
+  const src = (c.basic as PerfRow) ?? {};
+  const basic = Object.fromEntries(PREVIOUS_BASIC_KEYS.map((k) => [k, str(src[k])])) as Record<
+    PreviousBasicKey,
+    string
+  >;
+  if (proposals.length === 0 && PREVIOUS_BASIC_KEYS.every((k) => basic[k] === "")) return null;
+  return { label, basic, proposals };
+}
+
+/** 아직 채울 수 있는 기본 정보 칸 — 지금 비어 있고 지난 값이 있는 칸 */
+export function pendingBasicFields(content: PerfContent, previous: PerfPrevious | null): PreviousBasicKey[] {
+  if (!previous) return [];
+  const basic = (content.basic as PerfRow | undefined) ?? {};
+  return PREVIOUS_BASIC_KEYS.filter((k) => !str(basic[k]) && previous.basic[k] !== "");
 }
 
 /** 아직 이번 분기 목표에 없는 제안 (목표 문구 앞뒤 공백 무시 비교) */
@@ -654,35 +666,40 @@ export function pendingProposals(content: PerfContent, previous: PerfPrevious | 
 }
 
 /**
- * 지난 분기 제안을 이번 분기 goals 표로 옮긴다 (goal→goal, criteria→criteria, targetDate→deadline, 나머지 기본값).
- * 같은 목표 문구가 이미 있으면 건너뛰고, 빈 행부터 채운 뒤 모자라면 뒤에 추가 — maxRows 를 넘기지 않는다.
- * 직무·상급자가 비어 있으면 지난 값으로 채운다.
+ * 지난 분기 값을 이번 분기로 불러온다.
+ * - 기본 정보: 지금 비어 있는 부서·직무·상급자·직급만 지난 값으로 채운다 (입력한 값은 덮어쓰지 않음).
+ * - 목표: 제안을 goals 표로 옮긴다 (goal→goal, criteria→criteria, targetDate→deadline, 나머지 기본값).
+ *   같은 목표 문구가 이미 있으면 건너뛰고, 빈 행부터 채운 뒤 모자라면 뒤에 추가 — maxRows 를 넘기지 않는다.
+ * 채운 기본 정보 칸 수(basicFilled)와 옮긴 목표 수(imported)를 돌려준다.
  */
-export function importPreviousProposals(
+export function importPrevious(
   content: PerfContent,
   previous: PerfPrevious | null,
   form: PerfForm = PERF_FORM
-): { content: PerfContent; imported: number } {
+): { content: PerfContent; basicFilled: number; imported: number } {
+  if (!previous) return { content, basicFilled: 0, imported: 0 };
+
+  const basic: PerfRow = { ...((content.basic as PerfRow | undefined) ?? {}) };
+  const fill = pendingBasicFields(content, previous);
+  for (const k of fill) basic[k] = previous.basic[k];
+
+  let rows = Array.isArray(content.goals) ? (content.goals as PerfRow[]) : [];
+  let imported = 0;
   const section = formSections(form)
     .map((x) => x.section)
     .find((s): s is PerfTableSection => s.kind === "table" && s.key === "goals");
-  if (!previous || !section) return { content, imported: 0 };
-
-  const rows = Array.isArray(content.goals) ? [...(content.goals as PerfRow[])] : [];
-  const max = tableMaxRows(section);
-  let imported = 0;
-  for (const p of pendingProposals(content, previous)) {
-    const row: PerfRow = { ...emptyRow(section), goal: p.goal, criteria: p.criteria, deadline: p.targetDate };
-    const emptyIdx = rows.findIndex((r) => isRowEmpty(section.fields, r));
-    if (emptyIdx >= 0) rows[emptyIdx] = row;
-    else if (rows.length < max) rows.push(row);
-    else break;
-    imported++;
+  if (section) {
+    rows = [...rows];
+    const max = tableMaxRows(section);
+    for (const p of pendingProposals(content, previous)) {
+      const row: PerfRow = { ...emptyRow(section), goal: p.goal, criteria: p.criteria, deadline: p.targetDate };
+      const emptyIdx = rows.findIndex((r) => isRowEmpty(section.fields, r));
+      if (emptyIdx >= 0) rows[emptyIdx] = row;
+      else if (rows.length < max) rows.push(row);
+      else break;
+      imported++;
+    }
   }
 
-  const basic: PerfRow = { ...((content.basic as PerfRow | undefined) ?? {}) };
-  if (!str(basic.jobRole) && previous.jobRole) basic.jobRole = previous.jobRole;
-  if (!str(basic.supervisor) && previous.supervisor) basic.supervisor = previous.supervisor;
-
-  return { content: { ...content, goals: rows, basic }, imported };
+  return { content: { ...content, goals: rows, basic }, basicFilled: fill.length, imported };
 }

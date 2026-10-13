@@ -4,9 +4,10 @@ import { Prisma } from "@/app/generated/prisma/client";
 import { requireSession } from "@/lib/auth-helpers";
 import { PERF_FORM_VERSION, extractPrevious, hasAnyContent, sanitizeContent } from "@/lib/performance/form";
 import {
+  checkQuarter,
+  compareQuarter,
   effectiveSheetStatus,
   getSheetAccess,
-  isFutureQuarter,
   parseYearQuarter,
   prevQuarter,
   quarterLabel,
@@ -16,6 +17,7 @@ import {
   cycleDates,
   cycleView,
   loadEmployeeProfile,
+  loadStartQuarter,
   perfTodayYmd,
   pickProfile,
   requireEmployeeId,
@@ -24,7 +26,6 @@ import {
 export const dynamic = "force-dynamic";
 
 const BAD_QUARTER = "연도와 분기가 올바르지 않습니다.";
-const FUTURE_QUARTER = "아직 시작하지 않은 분기입니다.";
 
 // GET /api/performance/my/sheet?year=&quarter= — 내 성과표 (작성 중 내용)
 export async function GET(request: NextRequest) {
@@ -39,9 +40,9 @@ export async function GET(request: NextRequest) {
     const yq = parseYearQuarter(sp.get("year"), sp.get("quarter"));
     if (!yq) return NextResponse.json({ error: BAD_QUARTER }, { status: 400 });
     const todayYmd = perfTodayYmd();
-    if (isFutureQuarter(yq, todayYmd)) {
-      return NextResponse.json({ error: FUTURE_QUARTER }, { status: 400 });
-    }
+    const start = await loadStartQuarter();
+    const quarterError = checkQuarter(yq, todayYmd, start);
+    if (quarterError) return NextResponse.json({ error: quarterError }, { status: 400 });
 
     // perf_sheets 는 직원에게 보여 줄 컬럼만 select 한다 (관리자 전용 컬럼이 섞이지 않게)
     const prev = prevQuarter(yq);
@@ -59,10 +60,13 @@ export async function GET(request: NextRequest) {
           profileSnapshot: true,
         },
       }),
-      prisma.perfSheet.findUnique({
-        where: { employeeId_year_quarter: { employeeId, ...prev } },
-        select: { content: true },
-      }),
+      // 직전 분기가 성과 관리 시작 전이면 불러올 것이 없다
+      compareQuarter(prev, start) < 0
+        ? Promise.resolve(null)
+        : prisma.perfSheet.findUnique({
+            where: { employeeId_year_quarter: { employeeId, ...prev } },
+            select: { content: true },
+          }),
       prisma.perfCycle.findUnique({ where: { year_quarter: yq } }),
       loadEmployeeProfile(employeeId),
     ]);
@@ -82,7 +86,7 @@ export async function GET(request: NextRequest) {
       cycle: cycle ? cycleView(cycle, todayYmd) : null,
       isTarget,
       info: buildPerfInfo(profile, yq),
-      // 직전 분기에 제안한 다음 분기 목표 (없으면 null)
+      // 직전 분기 성과표의 기본 정보·다음 분기 목표 제안 (없으면 null)
       previous: prevSheet ? extractPrevious(prevSheet.content, quarterLabel(prev.year, prev.quarter)) : null,
       access: getSheetAccess({
         ...yq,
@@ -111,9 +115,8 @@ export async function PUT(request: NextRequest) {
     const yq = parseYearQuarter(body?.year, body?.quarter);
     if (!yq) return NextResponse.json({ error: BAD_QUARTER }, { status: 400 });
     const todayYmd = perfTodayYmd();
-    if (isFutureQuarter(yq, todayYmd)) {
-      return NextResponse.json({ error: FUTURE_QUARTER }, { status: 400 });
-    }
+    const quarterError = checkQuarter(yq, todayYmd, await loadStartQuarter());
+    if (quarterError) return NextResponse.json({ error: quarterError }, { status: 400 });
     const content = sanitizeContent(body?.content) as Prisma.InputJsonObject;
 
     const save = () => prisma.$transaction(async (tx) => {
@@ -144,7 +147,7 @@ export async function PUT(request: NextRequest) {
       const now = new Date();
       const updated = await tx.perfSheet.updateMany({
         where: { id: sheet.id, status: { not: "submitted" } },
-        data: { content, updatedAt: now },
+        data: { content, formVersion: PERF_FORM_VERSION, updatedAt: now },
       });
       if (updated.count === 0) {
         return { ok: false as const, reason: "제출한 성과는 수정할 수 없습니다." };
