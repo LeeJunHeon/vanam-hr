@@ -1,13 +1,24 @@
 "use client";
 
-import { Fragment, type ReactNode } from "react";
-import { ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
+import { Fragment, createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronDown, ChevronUp, Paperclip, Plus, Trash2, X } from "lucide-react";
 import AutoTextarea from "@/components/performance/AutoTextarea";
+import { withBasePath } from "@/lib/base-path";
+import { formatFileSize } from "@/lib/file-size";
+import {
+  PERF_FILE_ACCEPT,
+  perfFileUrl,
+  type PerfFileMeta,
+  type PerfUploadResult,
+} from "@/lib/performance/files";
 import {
   PERF_FORM,
   PERF_FORM_IS_EXAMPLE,
   TABLE_MIN_WIDTH,
+  addEvidenceFile,
   emptyRow,
+  evidenceMaxFiles,
+  isEvidenceValue,
   fieldMaxLength,
   formatPerfNumber,
   isRowEmpty,
@@ -15,6 +26,7 @@ import {
   tableSumStatus,
   type PerfCellValue,
   type PerfContent,
+  type PerfEvidenceValue,
   type PerfField,
   type PerfFieldsSection,
   type PerfForm,
@@ -134,6 +146,199 @@ function ReadOnlyValue({ field, row }: { field: PerfField; row: PerfRow }) {
   }
 }
 
+// ── 증빙 칸 (링크·문서 이름 + 첨부 파일) ──
+
+interface EvidenceContextValue {
+  /** 파일 id → 메타. 메타가 없는 id(지워진 파일 등)는 칩을 그리지 않는다 */
+  files: Record<number, PerfFileMeta>;
+  /** 없으면 [파일 첨부] 버튼을 그리지 않는다 */
+  upload?: (file: File) => Promise<PerfUploadResult>;
+  /** 업로드가 끝난 그 순간의 최신 내용에 파일 id 를 더한다 (올리는 동안 입력한 다른 칸을 덮어쓰지 않게) */
+  addFile: (sectionKey: string, rowIndex: number | null, field: PerfField, fileId: number) => void;
+}
+const EvidenceContext = createContext<EvidenceContextValue>({ files: {}, addFile: () => {} });
+
+const EMPTY_EVIDENCE: PerfEvidenceValue = { text: "", fileIds: [] };
+const ERROR_CLEAR_MS = 5000;
+
+function toEvidence(v: PerfCellValue | undefined): PerfEvidenceValue {
+  if (isEvidenceValue(v)) return v;
+  return typeof v === "string" ? { text: v, fileIds: [] } : EMPTY_EVIDENCE;
+}
+
+/** 파일 칩 — 누르면 새 탭으로 열기(pdf·이미지는 바로 보기, 그 밖은 내려받기) */
+function FileChip({ meta, onRemove }: { meta: PerfFileMeta; onRemove?: () => void }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1 max-w-full min-w-0 bg-gray-100 border border-gray-200 rounded-full pl-2.5 py-0.5 text-[11px] text-gray-700 ${
+        onRemove ? "pr-1" : "pr-2.5"
+      }`}
+    >
+      {/* <a href> 는 BasePathFetch 가 고쳐 주지 않으므로 withBasePath 로 만든다 */}
+      <a
+        href={withBasePath(perfFileUrl(meta.id))}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={meta.fileName}
+        className="truncate min-w-0 hover:text-blue-600 hover:underline"
+      >
+        {meta.fileName}
+      </a>
+      <span className="text-gray-400 shrink-0">{formatFileSize(meta.fileSize)}</span>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="p-0.5 rounded-full text-gray-400 hover:text-rose-600 hover:bg-rose-50 shrink-0"
+          aria-label={`${meta.fileName} 삭제`}
+        >
+          <X size={12} />
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** 읽기 전용 증빙 — 링크(http/https 면 새 탭) 또는 글자 + 파일 칩. 둘 다 없으면 "-" */
+function EvidenceView({ value }: { value: PerfCellValue | undefined }) {
+  const { files } = useContext(EvidenceContext);
+  const v = toEvidence(value);
+  const metas = v.fileIds.map((id) => files[id]).filter((m): m is PerfFileMeta => !!m);
+  if (!v.text && metas.length === 0) return <div className="px-1 py-1 text-sm text-gray-300">-</div>;
+  return (
+    <div className="px-1 py-1 space-y-1">
+      {v.text && (
+        <div className="text-sm text-gray-800 whitespace-pre-wrap [overflow-wrap:anywhere]">
+          {isHttpUrl(v.text) ? (
+            <a href={v.text} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+              {v.text}
+            </a>
+          ) : (
+            v.text
+          )}
+        </div>
+      )}
+      {metas.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {metas.map((m) => (
+            <FileChip key={m.id} meta={m} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 편집 증빙 — 한 줄 입력 + [파일 첨부] + 파일 칩(삭제는 칸 값에서 id 를 빼는 것뿐, 파일 정리는 서버가 한다) */
+function EvidenceInput({
+  field,
+  value,
+  onValueChange,
+  sectionKey,
+  rowIndex,
+}: {
+  field: PerfField;
+  value: PerfCellValue | undefined;
+  onValueChange: (next: PerfEvidenceValue) => void;
+  sectionKey: string;
+  rowIndex: number | null;
+}) {
+  const { files, upload, addFile } = useContext(EvidenceContext);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const errorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(
+    () => () => {
+      if (errorTimer.current) clearTimeout(errorTimer.current);
+    },
+    []
+  );
+
+  const v = toEvidence(value);
+  const max = evidenceMaxFiles(field);
+  const full = v.fileIds.length >= max;
+  const metas = v.fileIds.map((id) => files[id]).filter((m): m is PerfFileMeta => !!m);
+  const fullText = `파일은 칸마다 최대 ${max}개까지 올릴 수 있습니다`;
+
+  const clearError = () => {
+    if (errorTimer.current) clearTimeout(errorTimer.current);
+    errorTimer.current = null;
+    setError("");
+  };
+  const showError = (msg: string) => {
+    clearError();
+    setError(msg);
+    errorTimer.current = setTimeout(() => setError(""), ERROR_CLEAR_MS);
+  };
+
+  /** 고른 파일을 칸의 남은 자리만큼 하나씩 차례로 올린다 */
+  const handlePick = async (list: FileList | null) => {
+    const picked = list ? Array.from(list) : [];
+    if (inputRef.current) inputRef.current.value = "";
+    if (!upload || picked.length === 0) return;
+    clearError();
+    const room = Math.max(0, max - v.fileIds.length);
+    let lastError = picked.length > room ? fullText : "";
+    setUploading(true);
+    for (const f of picked.slice(0, room)) {
+      const r = await upload(f);
+      if (r.ok) addFile(sectionKey, rowIndex, field, r.file.id);
+      else lastError = r.error;
+    }
+    setUploading(false);
+    if (lastError) showError(lastError);
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <AutoTextarea
+        value={v.text}
+        onChange={(text) => onValueChange({ ...v, text })}
+        placeholder={field.placeholder}
+        maxLength={fieldMaxLength(field) ?? 0}
+        singleLine
+        className={INPUT_CLS}
+      />
+      {(upload || metas.length > 0) && (
+        <div className="flex flex-wrap items-center gap-1">
+          {metas.map((m) => (
+            <FileChip
+              key={m.id}
+              meta={m}
+              onRemove={() => onValueChange({ ...v, fileIds: v.fileIds.filter((id) => id !== m.id) })}
+            />
+          ))}
+          {upload && (
+            <>
+              <button
+                type="button"
+                onClick={() => inputRef.current?.click()}
+                disabled={uploading || full}
+                title={full ? fullText : undefined}
+                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 disabled:opacity-50"
+              >
+                <Paperclip size={12} />
+                {uploading ? "올리는 중…" : "파일 첨부"}
+              </button>
+              <input
+                ref={inputRef}
+                type="file"
+                multiple
+                accept={PERF_FILE_ACCEPT}
+                className="hidden"
+                onChange={(e) => handlePick(e.target.files)}
+              />
+            </>
+          )}
+        </div>
+      )}
+      {error && <p className="text-[11px] text-rose-600">{error}</p>}
+    </div>
+  );
+}
+
 /** 칸 하나 — 편집 입력 또는 열람 텍스트 */
 function Cell({
   field,
@@ -142,6 +347,8 @@ function Cell({
   onChange,
   info,
   compact,
+  sectionKey,
+  rowIndex,
 }: {
   field: PerfField;
   row: PerfRow;
@@ -150,8 +357,24 @@ function Cell({
   info?: PerfInfo;
   /** 표 안(행 높이 낮게) */
   compact?: boolean;
+  /** 칸 위치 — 증빙 업로드가 끝난 뒤 최신 내용에 파일 id 를 더할 때 쓴다 (fields 섹션은 rowIndex null) */
+  sectionKey: string;
+  rowIndex: number | null;
 }) {
   if (field.kind === "info") return <InfoBox value={info?.[field.source]} />;
+  if (field.kind === "evidence") {
+    return readOnly ? (
+      <EvidenceView value={row[field.key]} />
+    ) : (
+      <EvidenceInput
+        field={field}
+        value={row[field.key]}
+        onValueChange={(next) => onChange(field.key, next)}
+        sectionKey={sectionKey}
+        rowIndex={rowIndex}
+      />
+    );
+  }
   if (field.kind === "computed") {
     return <div className="px-1 py-2 text-sm font-semibold text-gray-700 tabular-nums">{field.compute(row)}</div>;
   }
@@ -405,7 +628,15 @@ function TableSection({
                 <td className="px-2 py-2.5 text-center text-xs text-gray-400 tabular-nums">{no}</td>
                 {section.fields.map((f) => (
                   <td key={f.key} className="px-1.5 py-1.5">
-                    <Cell field={f} row={row} readOnly={readOnly} onChange={(k, v) => update(i, k, v)} compact />
+                    <Cell
+                      field={f}
+                      row={row}
+                      readOnly={readOnly}
+                      onChange={(k, v) => update(i, k, v)}
+                      compact
+                      sectionKey={section.key}
+                      rowIndex={i}
+                    />
                   </td>
                 ))}
                 {showOps && <td className="px-1 py-1.5">{ops(i)}</td>}
@@ -438,7 +669,15 @@ function TableSection({
                       <FieldLabel field={f} />
                       <FieldHint field={f} />
                     </label>
-                    <Cell field={f} row={row} readOnly={readOnly} onChange={(k, v) => update(i, k, v)} compact />
+                    <Cell
+                      field={f}
+                      row={row}
+                      readOnly={readOnly}
+                      onChange={(k, v) => update(i, k, v)}
+                      compact
+                      sectionKey={section.key}
+                      rowIndex={i}
+                    />
                   </div>
                 </Fragment>
               );
@@ -493,6 +732,8 @@ function FieldsSection({
             readOnly={readOnly}
             info={info}
             onChange={(k, v) => onRowChange({ ...row, [k]: v })}
+            sectionKey={section.key}
+            rowIndex={null}
           />
         </div>
       ))}
@@ -556,11 +797,20 @@ export default function PerfSheetForm({
   readOnly,
   info,
   titleAside,
+  files,
+  onUpload,
+  onUpdate,
 }: {
   form?: PerfForm;
   content: PerfContent;
   onChange?: (next: PerfContent) => void;
   readOnly: boolean;
+  /** 증빙 파일 id → 메타 */
+  files?: Record<number, PerfFileMeta>;
+  /** 증빙 파일 올리기 — 없으면 [파일 첨부] 버튼을 그리지 않는다 */
+  onUpload?: (file: File) => Promise<PerfUploadResult>;
+  /** "최신 내용 → 새 내용" 변경 — 업로드처럼 늦게 끝나는 변경이 그 사이 입력을 덮어쓰지 않게 */
+  onUpdate?: (fn: (latest: PerfContent) => PerfContent) => void;
   /** info 칸 값 (직원명·부서·직급·평가기간·평가분기) */
   info?: PerfInfo;
   /** 부분 제목 옆에 붙일 표시 (예: 04 의 "관리자 전용") */
@@ -568,44 +818,55 @@ export default function PerfSheetForm({
 }) {
   const ro = readOnly || !onChange;
   const setSection = (key: string, value: PerfRow[] | PerfRow) => onChange?.({ ...content, [key]: value });
+  const evidence: EvidenceContextValue = {
+    files: files ?? {},
+    upload: ro ? undefined : onUpload,
+    addFile: (sectionKey, rowIndex, field, fileId) => {
+      const fn = (latest: PerfContent) => addEvidenceFile(latest, sectionKey, rowIndex, field, fileId);
+      if (onUpdate) onUpdate(fn);
+      else onChange?.(fn(content));
+    },
+  };
 
   return (
-    <div className="space-y-6">
-      {/* 편집·제출 미리보기·관리자 열람 모두 이 렌더러를 쓰므로 여기 한 곳에서 안내 */}
-      {PERF_FORM_IS_EXAMPLE && (
-        <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 text-sm text-amber-800">
-          예시 양식입니다. 실제 성과표 양식이 정해지면 바뀌며, 지금 입력한 내용은 새 양식으로 옮겨지지 않을 수 있습니다.
-        </div>
-      )}
-      {form.map((part) => (
-        <div key={part.key} className="space-y-3">
-          <div>
-            <h2 className="flex flex-wrap items-center gap-2 text-base font-bold text-gray-900">
-              <span className="inline-flex items-center justify-center px-1.5 py-0.5 rounded-md bg-gray-900 text-white text-[11px] font-bold tabular-nums">
-                {part.no}
-              </span>
-              {part.title}
-              {titleAside}
-            </h2>
-            {part.intro && !ro && <p className="text-xs text-gray-500 mt-1">{part.intro}</p>}
+    <EvidenceContext.Provider value={evidence}>
+      <div className="space-y-6">
+        {/* 편집·제출 미리보기·관리자 열람 모두 이 렌더러를 쓰므로 여기 한 곳에서 안내 */}
+        {PERF_FORM_IS_EXAMPLE && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 text-sm text-amber-800">
+            예시 양식입니다. 실제 성과표 양식이 정해지면 바뀌며, 지금 입력한 내용은 새 양식으로 옮겨지지 않을 수 있습니다.
           </div>
-          {part.sections.map((section) => (
-            <SectionCard
-              key={section.key}
-              section={section}
-              content={content}
-              readOnly={ro}
-              info={info}
-              setSection={setSection}
-            />
-          ))}
-          {part.notice && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-xs text-amber-800">
-              {part.notice}
+        )}
+        {form.map((part) => (
+          <div key={part.key} className="space-y-3">
+            <div>
+              <h2 className="flex flex-wrap items-center gap-2 text-base font-bold text-gray-900">
+                <span className="inline-flex items-center justify-center px-1.5 py-0.5 rounded-md bg-gray-900 text-white text-[11px] font-bold tabular-nums">
+                  {part.no}
+                </span>
+                {part.title}
+                {titleAside}
+              </h2>
+              {part.intro && !ro && <p className="text-xs text-gray-500 mt-1">{part.intro}</p>}
             </div>
-          )}
-        </div>
-      ))}
-    </div>
+            {part.sections.map((section) => (
+              <SectionCard
+                key={section.key}
+                section={section}
+                content={content}
+                readOnly={ro}
+                info={info}
+                setSection={setSection}
+              />
+            ))}
+            {part.notice && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-xs text-amber-800">
+                {part.notice}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </EvidenceContext.Provider>
   );
 }

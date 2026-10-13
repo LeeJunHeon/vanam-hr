@@ -15,6 +15,8 @@ import {
   showCorrectionBadge,
 } from "@/lib/attendanceLabels";
 import { todayYmd } from "@/lib/dateUtils";
+import { withBasePath } from "@/lib/base-path";
+import { formatFileSize } from "@/lib/file-size";
 import { exportExcel } from "@/lib/excelUtils";
 import ExcelButton from "@/components/ExcelButton";
 import type { AttendanceRow } from "@/lib/attendance-rows";
@@ -204,13 +206,6 @@ const REASON_FILE_ACCEPT =
   ".jpg,.jpeg,.png,.heic,.webp,.pdf,.hwp,.hwpx,.doc,.docx";
 const REASON_FILE_MAX = 3;
 
-function formatFileSize(bytes: number | null): string {
-  if (bytes == null) return "";
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
-
 /** 첨부 칩 — 클릭하면 새 탭으로 열기(이미지/PDF 미리보기, hwp/doc은 다운로드) */
 function ReasonFileChip({
   dailyId,
@@ -229,7 +224,7 @@ function ReasonFileChip({
         type="button"
         onClick={() =>
           window.open(
-            `/api/attendance-daily/${dailyId}/files/${file.id}`,
+            withBasePath(`/api/attendance-daily/${dailyId}/files/${file.id}`),
             "_blank",
             "noopener"
           )

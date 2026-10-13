@@ -794,10 +794,28 @@ model PerfSheet {
   reviewUpdatedBy     Employee?      @relation("PerfSheetReviewUpdatedBy", fields: [reviewUpdatedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   reviewFinalizedBy   Employee?      @relation("PerfSheetReviewFinalizedBy", fields: [reviewFinalizedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   logs                PerfSheetLog[]
+  files               PerfFile[]
 
   @@unique([employeeId, year, quarter], map: "uk_perf_sheets_emp_period")
   @@index([year, quarter], map: "idx_perf_sheets_period")
   @@map("perf_sheets")
+  @@schema("hr")
+}
+
+// 성과표 증빙 첨부 파일 — file_data 는 다운로드 API 에서 권한 확인 뒤에만 select 한다
+model PerfFile {
+  id        Int      @id @default(autoincrement())
+  sheetId   Int      @map("sheet_id")
+  fileName  String   @map("file_name") @db.VarChar(255)
+  mimeType  String   @map("mime_type") @db.VarChar(100)
+  fileSize  Int      @map("file_size")
+  fileData  Bytes    @map("file_data")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  sheet PerfSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([sheetId], map: "idx_perf_files_sheet")
+  @@map("perf_files")
   @@schema("hr")
 }
 

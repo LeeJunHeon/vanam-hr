@@ -149,7 +149,8 @@ export async function POST(
     return NextResponse.json({ error: "첨부는 최대 3개까지 가능합니다." }, { status: 400 });
   }
 
-  const mimeType = file.type || EXT_MIME[ext] || "application/octet-stream";
+  // 브라우저가 보낸 file.type 은 믿지 않고 확장자로만 정한다
+  const mimeType = EXT_MIME[ext];
   const buffer = Buffer.from(await file.arrayBuffer());
 
   const created = await prisma.attendanceReasonFile.create({

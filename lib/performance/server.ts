@@ -4,7 +4,18 @@ import type { Session } from "next-auth";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/app/generated/prisma/client";
 import { kstTodayYmd } from "@/lib/kst-date";
-import type { PerfInfo } from "@/lib/performance/form";
+import {
+  PERF_FILE_DEFAULT_MAX_MB,
+  PERF_FILE_MAX_MB_LIMIT,
+  type PerfFileMeta,
+} from "@/lib/performance/files";
+import {
+  collectEvidenceFileIds,
+  filterEvidenceFileIds,
+  sanitizeContent,
+  type PerfContent,
+  type PerfInfo,
+} from "@/lib/performance/form";
 import {
   formatYmdDot,
   getCycleState,
@@ -243,4 +254,84 @@ export async function writeReview(args: {
     }
     return { ok: true as const, updatedAt: now };
   });
+}
+
+// ── 증빙 첨부 파일 ──
+// ⚠ perf_files 는 메타 칼럼만 select 한다. file_data 는 다운로드 API 에서 권한 확인 뒤에만 읽는다.
+
+/** perf_files 메타 칼럼 (file_data 제외) */
+export const PERF_FILE_META_SELECT = {
+  id: true,
+  fileName: true,
+  mimeType: true,
+  fileSize: true,
+} as const;
+
+/** 파일 정리 대상에서 빼는 최소 경과 시간 — 올린 직후 자동 저장 전인 파일 보호 */
+export const UNREFERENCED_FILE_GRACE_MS = 24 * 3600 * 1000;
+
+/** policy_settings "perf_file_max_mb" (MB 정수). 숫자가 아니거나 1 미만이면 10, 코드 상한(20) 초과면 20 */
+export async function loadFileMaxMb(): Promise<number> {
+  const row = await prisma.policySetting.findUnique({
+    where: { key: "perf_file_max_mb" },
+    select: { value: true },
+  });
+  const n = row ? Number(row.value) : NaN;
+  if (!Number.isInteger(n) || n < 1) {
+    console.warn(
+      `[performance] perf_file_max_mb 값이 없거나 숫자가 아닙니다(${row?.value ?? "없음"}) — ${PERF_FILE_DEFAULT_MAX_MB}MB 사용`
+    );
+    return PERF_FILE_DEFAULT_MAX_MB;
+  }
+  if (n > PERF_FILE_MAX_MB_LIMIT) {
+    console.warn(`[performance] perf_file_max_mb(${n})가 상한을 넘습니다 — ${PERF_FILE_MAX_MB_LIMIT}MB 사용`);
+    return PERF_FILE_MAX_MB_LIMIT;
+  }
+  return n;
+}
+
+type FileDb = Pick<Prisma.TransactionClient, "perfFile">;
+
+/** 성과표에 있는 파일 메타 전부 */
+export async function loadSheetFileMetas(sheetId: number, db: FileDb = prisma): Promise<PerfFileMeta[]> {
+  return db.perfFile.findMany({
+    where: { sheetId },
+    select: PERF_FILE_META_SELECT,
+    orderBy: { id: "asc" },
+  });
+}
+
+/** 내용의 증빙 파일 id 를 그 성과표에 실제로 있는 파일로 거른다 */
+export function keepExistingFiles(content: PerfContent, metas: PerfFileMeta[]): PerfContent {
+  return filterEvidenceFileIds(content, new Set(metas.map((m) => m.id)));
+}
+
+/** 내용이 참조하는 파일 메타만 (응답용) */
+export function referencedFileMetas(content: PerfContent, metas: PerfFileMeta[]): PerfFileMeta[] {
+  const ids = new Set(collectEvidenceFileIds(content));
+  return metas.filter((m) => ids.has(m.id));
+}
+
+/**
+ * 성과표의 파일 중 content·submitted_content 어디에도 없는 것을 지운다.
+ * graceMs 가 있으면 만든 지 그만큼 지난 것만 (null 이면 기간과 상관없이). 지운 개수를 돌려준다.
+ */
+export async function cleanupSheetFiles(sheetId: number, graceMs: number | null): Promise<number> {
+  const sheet = await prisma.perfSheet.findUnique({
+    where: { id: sheetId },
+    select: { content: true, submittedContent: true },
+  });
+  if (!sheet) return 0;
+  const keep = new Set([
+    ...collectEvidenceFileIds(sanitizeContent(sheet.content)),
+    ...collectEvidenceFileIds(sanitizeContent(sheet.submittedContent)),
+  ]);
+  const { count } = await prisma.perfFile.deleteMany({
+    where: {
+      sheetId,
+      id: { notIn: Array.from(keep) },
+      ...(graceMs != null ? { createdAt: { lt: new Date(Date.now() - graceMs) } } : {}),
+    },
+  });
+  return count;
 }

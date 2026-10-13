@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Loader2, TrendingUp, X, Plus, Settings, ChevronLeft, ChevronRight, Lock } from "lucide-react";
 import PerfSheetForm, { PerfExampleBadge, PerfStatusBadge } from "@/components/performance/PerfSheetForm";
 import PerfReviewPanel, { type PerfReviewData } from "@/components/performance/PerfReviewPanel";
+import { filesById, type PerfFileMeta } from "@/lib/performance/files";
 import type { PerfContent, PerfInfo } from "@/lib/performance/form";
 import {
   addDaysYmd,
@@ -69,6 +70,8 @@ interface SheetView {
   revisionRequestedAt: string | null;
   content: PerfContent;
   info: PerfInfo;
+  /** 제출본이 참조하는 증빙 파일 메타 */
+  files: PerfFileMeta[];
   /** 04 면담 및 평가 기록 (관리자 전용) */
   review: PerfReviewData;
   /** 로그인한 관리자 이름 — 평가자 칸 미리 채우기 */
@@ -335,7 +338,7 @@ export default function PerformanceAdminPage() {
                 </div>
               )}
 
-              <PerfSheetForm content={sheet.content} readOnly info={sheet.info} />
+              <PerfSheetForm content={sheet.content} readOnly info={sheet.info} files={filesById(sheet.files ?? [])} />
 
               {sheet.status === "submitted" &&
                 (sheet.review.finalizedAt ? (

@@ -5,6 +5,7 @@
 // 하드코딩하지 않고 여기 정의의 속성으로 표현한다. 정리·검증·계산 함수는 양식을 마지막 인자로 받고
 // 기본값은 PERF_FORM 이다.
 
+import { EVIDENCE_MAX_FILES } from "@/lib/performance/files";
 import { isValidYmd } from "@/lib/performance/rules";
 
 /**
@@ -22,7 +23,12 @@ export const URL_MAX = 500;
 export const TABLE_MAX_ROWS = 30;
 export const TABLE_MIN_WIDTH = 760;
 
-export type PerfCellValue = string | number | null;
+/** 증빙 칸 값 — text 는 링크 또는 문서 이름, fileIds 는 perf_files.id */
+export interface PerfEvidenceValue {
+  text: string;
+  fileIds: number[];
+}
+export type PerfCellValue = string | number | null | PerfEvidenceValue;
 export type PerfRow = Record<string, PerfCellValue>;
 /** { goals: [{...}], basic: {...} } — 표 섹션은 행 배열, fields 섹션은 객체 */
 export type PerfContent = Record<string, PerfRow[] | PerfRow>;
@@ -52,6 +58,8 @@ export type PerfField =
   | (TextFieldBase & { kind: "text" })
   | (TextFieldBase & { kind: "textarea" })
   | (TextFieldBase & { kind: "url" })
+  /** 링크·문서 이름(text, 기본 500자) + 첨부 파일(칸마다 maxFiles 개, 기본 5) */
+  | (TextFieldBase & { kind: "evidence"; maxFiles?: number })
   | (FieldBase & { kind: "number"; min?: number; max?: number; suffix?: string })
   /** "YYYY-MM-DD" 로 저장 */
   | (FieldBase & { kind: "date" })
@@ -207,7 +215,14 @@ export const PERF_FORM: PerfForm = [
             unsetValues: ["미평가"],
             width: 11,
           },
-          { key: "evidence", label: "증빙 링크 / 문서", kind: "url", placeholder: "https://… 또는 문서 이름", width: 17 },
+          {
+            key: "evidence",
+            label: "증빙 링크 / 문서",
+            hint: "링크 또는 파일",
+            kind: "evidence",
+            placeholder: "https://… 또는 문서 이름",
+            width: 17,
+          },
         ],
         sum: {
           field: "weight",
@@ -263,7 +278,7 @@ export const PERF_FORM: PerfForm = [
           { key: "basis", label: "정량적 근거", hint: "원·%·건·시간 등", kind: "textarea", width: 16 },
           { key: "role", label: "본인 역할", kind: "select", options: ["책임자", "공동수행", "기술지원", "행정지원"], width: 10 },
           { key: "impact", label: "회사에 준 효과", hint: "매출·연구·품질·비용", kind: "textarea", width: 16 },
-          { key: "link", label: "증빙자료 URL", kind: "url", width: 13 },
+          { key: "link", label: "증빙자료", hint: "링크 또는 파일", kind: "evidence", width: 13 },
         ],
         guide: {
           title: "짧은 작성 원칙",
@@ -392,8 +407,33 @@ export function tableMaxRows(section: PerfTableSection): number {
 export function fieldMaxLength(field: PerfField): number | null {
   if (field.kind === "text") return field.maxLength ?? TEXT_MAX;
   if (field.kind === "textarea") return field.maxLength ?? TEXTAREA_MAX;
-  if (field.kind === "url") return field.maxLength ?? URL_MAX;
+  if (field.kind === "url" || field.kind === "evidence") return field.maxLength ?? URL_MAX;
   return null;
+}
+
+/** 증빙 칸에 붙일 수 있는 파일 수 */
+export function evidenceMaxFiles(field: PerfField): number {
+  return field.kind === "evidence" ? field.maxFiles ?? EVIDENCE_MAX_FILES : 0;
+}
+
+export function isEvidenceValue(v: unknown): v is PerfEvidenceValue {
+  return isPlainObject(v) && typeof v.text === "string" && Array.isArray(v.fileIds);
+}
+
+/**
+ * 증빙 값 정리 — 문자열(예전 저장 값)이면 { text: 그 문자열, fileIds: [] }.
+ * 객체면 text 는 trim·최대 글자, fileIds 는 양의 정수만·중복 제거·maxFiles 개까지. 그 밖은 빈 값.
+ */
+function sanitizeEvidence(field: PerfField, raw: unknown): PerfEvidenceValue {
+  const max = fieldMaxLength(field) ?? URL_MAX;
+  if (typeof raw === "string") return { text: raw.trim().slice(0, max), fileIds: [] };
+  if (!isPlainObject(raw)) return { text: "", fileIds: [] };
+  const text = typeof raw.text === "string" ? raw.text.trim().slice(0, max) : "";
+  const ids = Array.isArray(raw.fileIds) ? raw.fileIds : [];
+  const fileIds = Array.from(
+    new Set(ids.filter((n): n is number => typeof n === "number" && Number.isInteger(n) && n > 0))
+  ).slice(0, evidenceMaxFiles(field));
+  return { text, fileIds };
 }
 
 function sanitizeValue(field: PerfField, raw: unknown): PerfCellValue {
@@ -408,6 +448,8 @@ function sanitizeValue(field: PerfField, raw: unknown): PerfCellValue {
       return isValidYmd(raw) ? raw : "";
     case "select":
       return typeof raw === "string" && field.options.includes(raw) ? raw : field.defaultValue ?? "";
+    case "evidence":
+      return sanitizeEvidence(field, raw);
     default:
       return null;
   }
@@ -419,6 +461,7 @@ function sanitizeValue(field: PerfField, raw: unknown): PerfCellValue {
  */
 export function isEmptyFieldValue(field: PerfField, v: PerfCellValue | undefined): boolean {
   if (v == null) return true;
+  if (isEvidenceValue(v)) return v.text.trim() === "" && v.fileIds.length === 0;
   if (typeof v === "string" && v.trim() === "") return true;
   if (field.kind === "select" && typeof v === "string") {
     if (field.defaultValue != null && v === field.defaultValue) return true;
@@ -469,6 +512,77 @@ export function sanitizeContent(raw: unknown, form: PerfForm = PERF_FORM): PerfC
     }
   }
   return out;
+}
+
+// ── 증빙 파일 id ──
+
+/** 섹션의 각 행(표는 행 배열, fields 는 객체 하나)에 함수 적용 */
+function mapSectionRows(content: PerfContent, form: PerfForm, fn: (fields: PerfField[], row: PerfRow) => PerfRow) {
+  const out: PerfContent = { ...content };
+  for (const { section: s } of formSections(form)) {
+    const v = out[s.key];
+    if (s.kind === "table") {
+      if (Array.isArray(v)) out[s.key] = v.map((r) => fn(s.fields, r));
+    } else if (isPlainObject(v)) {
+      out[s.key] = fn(s.fields, v as PerfRow);
+    }
+  }
+  return out;
+}
+
+/** 내용에서 증빙 파일 id 전부 모으기 (중복 없이, 나온 순서대로) */
+export function collectEvidenceFileIds(content: PerfContent, form: PerfForm = PERF_FORM): number[] {
+  const ids = new Set<number>();
+  mapSectionRows(content, form, (fields, row) => {
+    for (const f of fields) {
+      const v = row[f.key];
+      if (f.kind === "evidence" && isEvidenceValue(v)) v.fileIds.forEach((id) => ids.add(id));
+    }
+    return row;
+  });
+  return Array.from(ids);
+}
+
+/** 주어진 id 집합에 없는 증빙 파일 id 빼기 (그 성과표에 실제로 있는 파일만 남길 때) */
+export function filterEvidenceFileIds(
+  content: PerfContent,
+  allowed: ReadonlySet<number>,
+  form: PerfForm = PERF_FORM
+): PerfContent {
+  return mapSectionRows(content, form, (fields, row) => {
+    let next = row;
+    for (const f of fields) {
+      const v = row[f.key];
+      if (f.kind !== "evidence" || !isEvidenceValue(v)) continue;
+      const kept = v.fileIds.filter((id) => allowed.has(id));
+      if (kept.length !== v.fileIds.length) next = { ...next, [f.key]: { ...v, fileIds: kept } };
+    }
+    return next;
+  });
+}
+
+/**
+ * 증빙 칸 하나에 파일 id 더하기 — 표는 rowIndex 행, fields 섹션은 rowIndex null.
+ * 이미 있거나 칸이 가득 찼으면 그대로.
+ */
+export function addEvidenceFile(
+  content: PerfContent,
+  sectionKey: string,
+  rowIndex: number | null,
+  field: PerfField,
+  fileId: number
+): PerfContent {
+  const add = (row: PerfRow): PerfRow => {
+    const cur = isEvidenceValue(row[field.key]) ? (row[field.key] as PerfEvidenceValue) : { text: "", fileIds: [] };
+    if (cur.fileIds.includes(fileId) || cur.fileIds.length >= evidenceMaxFiles(field)) return row;
+    return { ...row, [field.key]: { ...cur, fileIds: [...cur.fileIds, fileId] } };
+  };
+  const v = content[sectionKey];
+  if (rowIndex == null) {
+    return { ...content, [sectionKey]: add(isPlainObject(v) ? (v as PerfRow) : {}) };
+  }
+  if (!Array.isArray(v) || !v[rowIndex]) return content;
+  return { ...content, [sectionKey]: v.map((r, i) => (i === rowIndex ? add(r) : r)) };
 }
 
 /**

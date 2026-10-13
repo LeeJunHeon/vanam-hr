@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Loader2, Target, X, AlertTriangle, Send, Download } from "lucide-react";
 import PerfSheetForm, { PerfExampleBadge, PerfStatusBadge } from "@/components/performance/PerfSheetForm";
+import { filesById, type PerfFileMeta, type PerfUploadResult } from "@/lib/performance/files";
 import {
   PERF_FORM,
   importPrevious,
@@ -51,6 +52,8 @@ interface SheetData {
   info: PerfInfo;
   /** 직전 분기 성과표의 기본 정보·다음 분기 목표 제안 (없으면 null) */
   previous: PerfPrevious | null;
+  /** 내용이 참조하는 증빙 파일 메타 */
+  files: PerfFileMeta[];
 }
 
 type SaveState = "idle" | "saving" | "saved" | "error";
@@ -79,6 +82,10 @@ export default function MyPerformancePage() {
   const [submitError, setSubmitError] = useState("");
   const [serverErrors, setServerErrors] = useState<string[]>([]);
   const [toast, setToast] = useState("");
+  // 증빙 파일 id → 메타 (불러온 것 + 이번에 올린 것)
+  const [files, setFiles] = useState<Record<number, PerfFileMeta>>({});
+  // 올리는 중인 파일 수 — 0 이 아니면 제출을 막는다
+  const [uploadingCount, setUploadingCount] = useState(0);
 
   // 자동 저장용 최신 값 (타이머·이벤트 핸들러에서 읽음)
   const selectedRef = useRef<YearQuarter | null>(null);
@@ -117,6 +124,7 @@ export default function MyPerformancePage() {
       canEditRef.current = sd.access.canEdit;
       setContent(initial);
       setSheet(sd);
+      setFiles(filesById(sd.files ?? []));
       setSaveState("idle");
       setSaveError("");
       setSavedAt(null);
@@ -273,6 +281,36 @@ export default function MyPerformancePage() {
       timerRef.current = null;
       persist();
     }, AUTOSAVE_MS);
+  };
+
+  /** "최신 내용 → 새 내용" 변경 — 업로드가 끝난 순간의 최신 내용(contentRef)에 적용 */
+  const handleUpdate = (fn: (latest: PerfContent) => PerfContent) => handleChange(fn(contentRef.current));
+
+  /** 증빙 파일 올리기 — 시작과 끝의 선택 분기가 다르면 결과를 버리고 실패로 돌려준다 */
+  const uploadFile = async (file: File): Promise<PerfUploadResult> => {
+    const q = selectedRef.current;
+    if (!q) return { ok: false, error: "분기를 선택해 주세요." };
+    setUploadingCount((n) => n + 1);
+    try {
+      const fd = new FormData();
+      fd.append("year", String(q.year));
+      fd.append("quarter", String(q.quarter));
+      fd.append("file", file);
+      const res = await fetch("/api/performance/my/files", { method: "POST", body: fd });
+      const data = await res.json().catch(() => ({}));
+      const cur = selectedRef.current;
+      if (!cur || cur.year !== q.year || cur.quarter !== q.quarter) {
+        return { ok: false, error: "다른 분기로 이동해 올린 파일을 반영하지 않았습니다." };
+      }
+      if (!res.ok) return { ok: false, error: data.error ?? "파일을 올리지 못했습니다." };
+      const meta = data as PerfFileMeta;
+      setFiles((prev) => ({ ...prev, [meta.id]: meta }));
+      return { ok: true, file: meta };
+    } catch {
+      return { ok: false, error: "네트워크 오류로 파일을 올리지 못했습니다." };
+    } finally {
+      setUploadingCount((n) => n - 1);
+    }
   };
 
   const selectQuarter = async (q: YearQuarter) => {
@@ -534,8 +572,11 @@ export default function MyPerformancePage() {
                   form={PERF_FORM}
                   content={content}
                   onChange={canEdit ? handleChange : undefined}
+                  onUpdate={canEdit ? handleUpdate : undefined}
                   readOnly={!canEdit}
                   info={sheet.info}
+                  files={files}
+                  onUpload={canEdit ? uploadFile : undefined}
                 />
               </div>
             )
@@ -572,7 +613,7 @@ export default function MyPerformancePage() {
                   </ul>
                 </div>
               )}
-              <PerfSheetForm form={PERF_FORM} content={content} readOnly info={sheet.info} />
+              <PerfSheetForm form={PERF_FORM} content={content} readOnly info={sheet.info} files={files} />
             </div>
 
             <div className="px-5 py-4 border-t border-gray-100 space-y-3">
@@ -580,6 +621,12 @@ export default function MyPerformancePage() {
                 <AlertTriangle size={16} className="shrink-0 mt-0.5" />
                 제출하면 수정할 수 없습니다. 수정은 관리자의 수정 요청이 있어야 가능합니다.
               </p>
+              {uploadingCount > 0 && (
+                <p className="flex items-center gap-2 text-sm text-gray-500">
+                  <Loader2 size={14} className="animate-spin" />
+                  파일을 올리는 중입니다.
+                </p>
+              )}
               {submitError && (
                 <div className="text-sm text-rose-600">
                   {submitError}
@@ -602,7 +649,7 @@ export default function MyPerformancePage() {
                 </button>
                 <button
                   onClick={handleSubmit}
-                  disabled={submitting || previewErrors.length > 0}
+                  disabled={submitting || previewErrors.length > 0 || uploadingCount > 0}
                   className="inline-flex items-center gap-2 bg-blue-600 text-white text-sm font-semibold px-5 py-2.5 rounded-xl hover:bg-blue-700 disabled:opacity-50"
                 >
                   {submitting && <Loader2 size={16} className="animate-spin" />}

@@ -3,7 +3,14 @@ import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth-helpers";
 import { PERF_REVIEW_FORM, sanitizeContent } from "@/lib/performance/form";
 import { parseYearQuarter, quarterLabel } from "@/lib/performance/rules";
-import { buildPerfInfo, pickProfile, sessionEmployeeId } from "@/lib/performance/server";
+import {
+  buildPerfInfo,
+  keepExistingFiles,
+  loadSheetFileMetas,
+  pickProfile,
+  referencedFileMetas,
+  sessionEmployeeId,
+} from "@/lib/performance/server";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +32,7 @@ export async function GET(request: NextRequest) {
     const sheet = await prisma.perfSheet.findUnique({
       where: { employeeId_year_quarter: { employeeId, ...yq } },
       select: {
+        id: true,
         status: true,
         submittedContent: true,
         submittedAt: true,
@@ -56,6 +64,11 @@ export async function GET(request: NextRequest) {
         : Promise.resolve(null),
     ]);
 
+    // 제출본이 참조하는 파일만 (작성 중에 올린 파일은 관리자에게 보이지 않는다)
+    const fileMetas = await loadSheetFileMetas(sheet.id);
+    const content = keepExistingFiles(sanitizeContent(sheet.submittedContent), fileMetas);
+    const files = referencedFileMetas(content, fileMetas);
+
     const profile = pickProfile(sheet.status, sheet.profileSnapshot, { name: sheet.employee.name });
 
     return NextResponse.json({
@@ -65,7 +78,8 @@ export async function GET(request: NextRequest) {
       submittedAt: sheet.submittedAt.toISOString(),
       revisionReason: sheet.revisionReason,
       revisionRequestedAt: sheet.revisionRequestedAt?.toISOString() ?? null,
-      content: sanitizeContent(sheet.submittedContent),
+      content,
+      files,
       info: buildPerfInfo(profile, yq),
       review: {
         content: sanitizeContent(sheet.reviewContent, PERF_REVIEW_FORM),

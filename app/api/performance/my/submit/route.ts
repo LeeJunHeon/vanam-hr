@@ -5,8 +5,11 @@ import { requireSession } from "@/lib/auth-helpers";
 import { PERF_FORM_VERSION, sanitizeContent, validateForSubmit } from "@/lib/performance/form";
 import { checkQuarter, getSheetAccess, parseYearQuarter } from "@/lib/performance/rules";
 import {
+  cleanupSheetFiles,
   cycleDates,
+  keepExistingFiles,
   loadEmployeeProfile,
+  loadSheetFileMetas,
   loadStartQuarter,
   perfTodayYmd,
   requireEmployeeId,
@@ -36,7 +39,6 @@ export async function POST(request: NextRequest) {
     const profile = await loadEmployeeProfile(employeeId);
 
     const result = await prisma.$transaction(async (tx) => {
-      const content = sanitizeContent(body?.content);
       const [sheet, cycle] = await Promise.all([
         tx.perfSheet.findUnique({
           where: { employeeId_year_quarter: { employeeId, ...yq } },
@@ -57,6 +59,10 @@ export async function POST(request: NextRequest) {
       // 받은 배열 그대로 검증 — 오류 행 번호가 화면 번호와 같게 (검증 안에서 칸별로 정리한다)
       const errors = validateForSubmit(body?.content);
       if (errors.length > 0) return { kind: "invalid" as const, errors };
+
+      // 증빙 파일 id 는 이 성과표의 파일로 거른다 (새로 만드는 경우는 파일이 없으므로 모두 빠진다)
+      const metas = sheet ? await loadSheetFileMetas(sheet.id, tx) : [];
+      const content = keepExistingFiles(sanitizeContent(body?.content), metas);
 
       const now = new Date();
       const json = content as Prisma.InputJsonObject;
@@ -94,7 +100,7 @@ export async function POST(request: NextRequest) {
           actorEmployeeId: employeeId,
         },
       });
-      return { kind: "ok" as const, submittedAt: now };
+      return { kind: "ok" as const, submittedAt: now, sheetId };
     });
 
     if (result.kind === "conflict") {
@@ -106,6 +112,13 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+    // 제출본에 없는 이 성과표의 파일은 기간과 상관없이 지운다 — 실패해도 제출 응답은 그대로
+    try {
+      await cleanupSheetFiles(result.sheetId, null);
+    } catch (e) {
+      console.error("[performance] 증빙 파일 정리 실패:", e);
+    }
+
     return NextResponse.json({
       status: "submitted",
       submittedAt: result.submittedAt.toISOString(),

@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession, isAdminSession } from "@/lib/auth-helpers";
 
-/** 이미지/PDF는 브라우저에서 미리보기, 그 외(hwp/doc 등)는 다운로드 */
+/** jpeg·png·webp·PDF 만 브라우저에서 미리보기, 그 외(heic·svg·hwp·doc 등)는 다운로드 */
+const INLINE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
 function isInlineType(mimeType: string): boolean {
-  return mimeType.startsWith("image/") || mimeType === "application/pdf";
+  return INLINE_TYPES.has(mimeType);
 }
 
 export async function GET(
@@ -54,6 +55,7 @@ export async function GET(
       "Content-Disposition": `${disposition}; filename*=UTF-8''${encodeURIComponent(
         file.fileName
       )}`,
+      "X-Content-Type-Options": "nosniff",
     },
   });
 }

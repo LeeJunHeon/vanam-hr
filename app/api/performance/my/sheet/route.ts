@@ -13,13 +13,18 @@ import {
   quarterLabel,
 } from "@/lib/performance/rules";
 import {
+  UNREFERENCED_FILE_GRACE_MS,
   buildPerfInfo,
+  cleanupSheetFiles,
   cycleDates,
   cycleView,
+  keepExistingFiles,
   loadEmployeeProfile,
+  loadSheetFileMetas,
   loadStartQuarter,
   perfTodayYmd,
   pickProfile,
+  referencedFileMetas,
   requireEmployeeId,
 } from "@/lib/performance/server";
 
@@ -50,6 +55,7 @@ export async function GET(request: NextRequest) {
       prisma.perfSheet.findUnique({
         where: { employeeId_year_quarter: { employeeId, ...yq } },
         select: {
+          id: true,
           formVersion: true,
           status: true,
           content: true,
@@ -70,7 +76,9 @@ export async function GET(request: NextRequest) {
       prisma.perfCycle.findUnique({ where: { year_quarter: yq } }),
       loadEmployeeProfile(employeeId),
     ]);
-    const content = sanitizeContent(sheet?.content);
+    // 증빙 파일 id 는 이 성과표에 실제로 있는 파일로 거르고, 참조된 파일의 메타만 내보낸다
+    const fileMetas = sheet ? await loadSheetFileMetas(sheet.id) : [];
+    const content = keepExistingFiles(sanitizeContent(sheet?.content), fileMetas);
     const isTarget = cycle ? cycle.targetEmployeeIds.includes(employeeId) : false;
     const profile = pickProfile(sheet?.status, sheet?.profileSnapshot, currentProfile);
 
@@ -79,6 +87,7 @@ export async function GET(request: NextRequest) {
       formVersion: sheet?.formVersion ?? PERF_FORM_VERSION,
       status: effectiveSheetStatus(sheet?.status, hasAnyContent(content)),
       content,
+      files: referencedFileMetas(content, fileMetas),
       submittedAt: sheet?.submittedAt?.toISOString() ?? null,
       revisionReason: sheet?.revisionReason ?? null,
       revisionRequestedAt: sheet?.revisionRequestedAt?.toISOString() ?? null,
@@ -117,7 +126,7 @@ export async function PUT(request: NextRequest) {
     const todayYmd = perfTodayYmd();
     const quarterError = checkQuarter(yq, todayYmd, await loadStartQuarter());
     if (quarterError) return NextResponse.json({ error: quarterError }, { status: 400 });
-    const content = sanitizeContent(body?.content) as Prisma.InputJsonObject;
+    const sanitized = sanitizeContent(body?.content);
 
     const save = () => prisma.$transaction(async (tx) => {
       const [sheet, cycle] = await Promise.all([
@@ -136,12 +145,16 @@ export async function PUT(request: NextRequest) {
       });
       if (!access.canEdit) return { ok: false as const, reason: access.reason };
 
+      // 증빙 파일 id 는 이 성과표의 파일로 거른다 (새로 만드는 경우는 파일이 없으므로 모두 빠진다)
+      const metas = sheet ? await loadSheetFileMetas(sheet.id, tx) : [];
+      const content = keepExistingFiles(sanitized, metas) as Prisma.InputJsonObject;
+
       if (!sheet) {
         const created = await tx.perfSheet.create({
           data: { employeeId, ...yq, formVersion: PERF_FORM_VERSION, content, status: "draft" },
-          select: { status: true, updatedAt: true },
+          select: { id: true, status: true, updatedAt: true },
         });
-        return { ok: true as const, sheet: created };
+        return { ok: true as const, sheet: created, content };
       }
       // 저장 사이에 제출된 경우를 막는다 (제출본 이후 content 덮어쓰기 금지)
       const now = new Date();
@@ -152,7 +165,7 @@ export async function PUT(request: NextRequest) {
       if (updated.count === 0) {
         return { ok: false as const, reason: "제출한 성과는 수정할 수 없습니다." };
       }
-      return { ok: true as const, sheet: { status: sheet.status, updatedAt: now } };
+      return { ok: true as const, sheet: { id: sheet.id, status: sheet.status, updatedAt: now }, content };
     });
     // 첫 저장 두 건이 동시에 들어와 같은 행을 만들려 하면(유니크 충돌) 한 번 더 시도 — 두 번째는 update 경로
     let result: Awaited<ReturnType<typeof save>>;
@@ -166,8 +179,16 @@ export async function PUT(request: NextRequest) {
     if (!result.ok) {
       return NextResponse.json({ error: result.reason ?? "수정할 수 없습니다." }, { status: 409 });
     }
+
+    // 어디에도 쓰이지 않고 만든 지 하루가 지난 파일 정리 — 실패해도 저장 응답은 그대로
+    try {
+      await cleanupSheetFiles(result.sheet.id, UNREFERENCED_FILE_GRACE_MS);
+    } catch (e) {
+      console.error("[performance] 증빙 파일 정리 실패:", e);
+    }
+
     return NextResponse.json({
-      status: effectiveSheetStatus(result.sheet.status, hasAnyContent(content)),
+      status: effectiveSheetStatus(result.sheet.status, hasAnyContent(result.content)),
       updatedAt: result.sheet.updatedAt.toISOString(),
     });
   } catch (error) {
