@@ -90,6 +90,21 @@ export function quarterLabel(year: number, quarter: number): string {
   return `${year}년 ${quarter}분기`;
 }
 
+/** 분기 첫날 "YYYY-MM-DD" */
+export function quarterStartYmd({ year, quarter }: YearQuarter): string {
+  return `${year}-${String((quarter - 1) * 3 + 1).padStart(2, "0")}-01`;
+}
+
+/** 분기 마지막 날 "YYYY-MM-DD" */
+export function quarterEndYmd(q: YearQuarter): string {
+  return addDaysYmd(quarterStartYmd(nextQuarter(q)), -1);
+}
+
+/** "2026-11-30" → "2026.11.30" (형식이 다르면 그대로) */
+export function formatYmdDot(ymd: string): string {
+  return YMD_RE.test(ymd) ? ymd.replace(/-/g, ".") : ymd;
+}
+
 export function quarterKey(year: number, quarter: number): string {
   return `${year}-Q${quarter}`;
 }

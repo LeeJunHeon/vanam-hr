@@ -2,15 +2,24 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/app/generated/prisma/client";
 import { requireSession } from "@/lib/auth-helpers";
-import { PERF_FORM_VERSION, hasAnyContent, sanitizeContent } from "@/lib/performance/form";
+import { PERF_FORM_VERSION, extractPrevious, hasAnyContent, sanitizeContent } from "@/lib/performance/form";
 import {
   effectiveSheetStatus,
   getSheetAccess,
   isFutureQuarter,
   parseYearQuarter,
+  prevQuarter,
   quarterLabel,
 } from "@/lib/performance/rules";
-import { cycleDates, cycleView, perfTodayYmd, requireEmployeeId } from "@/lib/performance/server";
+import {
+  buildPerfInfo,
+  cycleDates,
+  cycleView,
+  loadEmployeeProfile,
+  perfTodayYmd,
+  pickProfile,
+  requireEmployeeId,
+} from "@/lib/performance/server";
 
 export const dynamic = "force-dynamic";
 
@@ -34,14 +43,32 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: FUTURE_QUARTER }, { status: 400 });
     }
 
-    const [sheet, cycle] = await Promise.all([
+    // perf_sheets 는 직원에게 보여 줄 컬럼만 select 한다 (관리자 전용 컬럼이 섞이지 않게)
+    const prev = prevQuarter(yq);
+    const [sheet, prevSheet, cycle, currentProfile] = await Promise.all([
       prisma.perfSheet.findUnique({
         where: { employeeId_year_quarter: { employeeId, ...yq } },
+        select: {
+          formVersion: true,
+          status: true,
+          content: true,
+          submittedAt: true,
+          revisionReason: true,
+          revisionRequestedAt: true,
+          updatedAt: true,
+          profileSnapshot: true,
+        },
+      }),
+      prisma.perfSheet.findUnique({
+        where: { employeeId_year_quarter: { employeeId, ...prev } },
+        select: { content: true },
       }),
       prisma.perfCycle.findUnique({ where: { year_quarter: yq } }),
+      loadEmployeeProfile(employeeId),
     ]);
     const content = sanitizeContent(sheet?.content);
     const isTarget = cycle ? cycle.targetEmployeeIds.includes(employeeId) : false;
+    const profile = pickProfile(sheet?.status, sheet?.profileSnapshot, currentProfile);
 
     return NextResponse.json({
       label: quarterLabel(yq.year, yq.quarter),
@@ -54,6 +81,9 @@ export async function GET(request: NextRequest) {
       updatedAt: sheet?.updatedAt.toISOString() ?? null,
       cycle: cycle ? cycleView(cycle, todayYmd) : null,
       isTarget,
+      info: buildPerfInfo(profile, yq),
+      // 직전 분기에 제안한 다음 분기 목표 (없으면 null)
+      previous: prevSheet ? extractPrevious(prevSheet.content, quarterLabel(prev.year, prev.quarter)) : null,
       access: getSheetAccess({
         ...yq,
         todayYmd,

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Loader2, TrendingUp, X, Plus, Settings, ChevronLeft, ChevronRight, Lock } from "lucide-react";
 import PerfSheetForm, { PerfExampleBadge, PerfStatusBadge } from "@/components/performance/PerfSheetForm";
-import type { PerfContent } from "@/lib/performance/form";
+import type { PerfContent, PerfInfo } from "@/lib/performance/form";
 import {
   addDaysYmd,
   cycleProgressLabel,
@@ -56,6 +56,7 @@ interface SheetView {
   revisionReason: string | null;
   revisionRequestedAt: string | null;
   content: PerfContent;
+  info: PerfInfo;
   history: { year: number; quarter: number; label: string }[];
 }
 
@@ -291,7 +292,7 @@ export default function PerformanceAdminPage() {
                 </div>
               )}
 
-              <PerfSheetForm content={sheet.content} readOnly />
+              <PerfSheetForm content={sheet.content} readOnly info={sheet.info} />
 
               {sheet.status === "submitted" && (
                 <div className="flex justify-end">

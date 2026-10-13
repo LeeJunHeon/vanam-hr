@@ -777,6 +777,7 @@ model PerfSheet {
   revisionReason        String?   @map("revision_reason")
   revisionRequestedAt   DateTime? @map("revision_requested_at") @db.Timestamptz(6)
   revisionRequestedById Int?      @map("revision_requested_by")
+  profileSnapshot       Json?     @map("profile_snapshot")
   createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt             DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 

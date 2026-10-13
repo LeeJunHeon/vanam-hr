@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth-helpers";
 import { sanitizeContent } from "@/lib/performance/form";
 import { parseYearQuarter, quarterLabel } from "@/lib/performance/rules";
+import { buildPerfInfo, pickProfile } from "@/lib/performance/server";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +29,10 @@ export async function GET(request: NextRequest) {
         submittedAt: true,
         revisionReason: true,
         revisionRequestedAt: true,
-        employee: { select: { name: true } },
+        profileSnapshot: true,
+        employee: {
+          select: { name: true, department: { select: { name: true } }, position: { select: { name: true } } },
+        },
       },
     });
     if (!sheet || !sheet.submittedAt) {
@@ -41,6 +45,12 @@ export async function GET(request: NextRequest) {
       select: { year: true, quarter: true },
     });
 
+    const profile = pickProfile(sheet.status, sheet.profileSnapshot, {
+      name: sheet.employee.name,
+      department: sheet.employee.department?.name ?? "",
+      position: sheet.employee.position?.name ?? "",
+    });
+
     return NextResponse.json({
       employeeName: sheet.employee.name,
       label: quarterLabel(yq.year, yq.quarter),
@@ -49,6 +59,7 @@ export async function GET(request: NextRequest) {
       revisionReason: sheet.revisionReason,
       revisionRequestedAt: sheet.revisionRequestedAt?.toISOString() ?? null,
       content: sanitizeContent(sheet.submittedContent),
+      info: buildPerfInfo(profile, yq),
       history: history.map((h) => ({
         year: h.year,
         quarter: h.quarter,

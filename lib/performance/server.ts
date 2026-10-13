@@ -3,11 +3,17 @@ import { NextResponse } from "next/server";
 import type { Session } from "next-auth";
 import { prisma } from "@/lib/prisma";
 import { kstTodayYmd } from "@/lib/kst-date";
+import type { PerfInfo } from "@/lib/performance/form";
 import {
+  formatYmdDot,
   getCycleState,
   getDDay,
+  quarterEndYmd,
+  quarterLabel,
+  quarterStartYmd,
   type CycleDates,
   type CycleState,
+  type YearQuarter,
 } from "@/lib/performance/rules";
 
 const DEFAULT_SUBMIT_DAYS = 7;
@@ -82,3 +88,54 @@ export function parseEmployeeIds(raw: unknown): number[] | null {
 
 /** 직원 정렬 — 직원 관리 화면과 같은 기준(사번 오름차순) */
 export const EMPLOYEE_ORDER = [{ employeeNo: "asc" as const }];
+
+// ── 기본 정보(info) ──
+
+/** 성과표에 보여 줄 직원 프로필 — 제출 때 perf_sheets.profile_snapshot 에도 이 모양으로 저장 */
+export interface PerfProfile {
+  name: string;
+  department: string;
+  position: string;
+}
+
+/** 현재 직원 정보 (이름·부서명·직급명). 직원이 없으면 빈 값 */
+export async function loadEmployeeProfile(employeeId: number): Promise<PerfProfile> {
+  const e = await prisma.employee.findUnique({
+    where: { id: employeeId },
+    select: { name: true, department: { select: { name: true } }, position: { select: { name: true } } },
+  });
+  return {
+    name: e?.name ?? "",
+    department: e?.department?.name ?? "",
+    position: e?.position?.name ?? "",
+  };
+}
+
+/** profile_snapshot JSON → 프로필 (모양이 다르면 null) */
+export function parseProfileSnapshot(raw: unknown): PerfProfile | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const s = (v: unknown) => (typeof v === "string" ? v : "");
+  return { name: s(o.name), department: s(o.department), position: s(o.position) };
+}
+
+/** 보여 줄 프로필 — 제출 완료 상태이고 snapshot 이 있으면 snapshot, 아니면 현재 직원 정보 */
+export function pickProfile(
+  status: string | null | undefined,
+  snapshot: unknown,
+  current: PerfProfile
+): PerfProfile {
+  const snap = status === "submitted" ? parseProfileSnapshot(snapshot) : null;
+  return snap ?? current;
+}
+
+/** 양식의 info 칸 값 — period "2026.10.01 ~ 2026.12.31", quarter "2026년 4분기" */
+export function buildPerfInfo(profile: PerfProfile, yq: YearQuarter): PerfInfo {
+  return {
+    employeeName: profile.name,
+    department: profile.department,
+    position: profile.position,
+    period: `${formatYmdDot(quarterStartYmd(yq))} ~ ${formatYmdDot(quarterEndYmd(yq))}`,
+    quarter: quarterLabel(yq.year, yq.quarter),
+  };
+}

@@ -1,9 +1,18 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Loader2, Target, X, AlertTriangle, Send } from "lucide-react";
+import { Loader2, Target, X, AlertTriangle, Send, Download } from "lucide-react";
 import PerfSheetForm, { PerfExampleBadge, PerfStatusBadge } from "@/components/performance/PerfSheetForm";
-import { validateForSubmit, withMinRows, type PerfContent } from "@/lib/performance/form";
+import {
+  PERF_FORM,
+  importPreviousProposals,
+  pendingProposals,
+  validateForSubmit,
+  withDisplayRows,
+  type PerfContent,
+  type PerfInfo,
+  type PerfPrevious,
+} from "@/lib/performance/form";
 import {
   dDayLabel,
   formatKstShort,
@@ -37,6 +46,9 @@ interface SheetData {
   cycle: { submitStart: string; submitEnd: string; state: CycleState; dDay: number } | null;
   isTarget: boolean;
   access: SheetAccess;
+  info: PerfInfo;
+  /** 직전 분기에 제안한 다음 분기 목표 (없으면 null) */
+  previous: PerfPrevious | null;
 }
 
 type SaveState = "idle" | "saving" | "saved" | "error";
@@ -93,7 +105,7 @@ export default function MyPerformancePage() {
         return;
       }
       const sd = data as SheetData;
-      const initial = withMinRows(sd.content);
+      const initial = withDisplayRows(sd.content);
       // 불러온 직후에는 저장하지 않는다
       contentRef.current = initial;
       dirtyRef.current = false;
@@ -304,7 +316,20 @@ export default function MyPerformancePage() {
     }
   };
 
+  /** 지난 분기 제안을 이번 분기 목표로 — 내용만 바꾸고 자동 저장 흐름을 그대로 탄다 */
+  const importProposals = () => {
+    if (!sheet) return;
+    const r = importPreviousProposals(contentRef.current, sheet.previous);
+    if (r.imported === 0) {
+      showToast("목표 표에 빈 자리가 없어 불러오지 못했습니다.");
+      return;
+    }
+    handleChange(r.content);
+    showToast(`목표 ${r.imported}개를 불러왔습니다.`);
+  };
+
   const canEdit = !!sheet?.access.canEdit;
+  const pending = canEdit && sheet ? pendingProposals(content, sheet.previous) : [];
   const previewErrors = previewOpen ? validateForSubmit(content) : [];
 
   // ── 상태 띠 ──
@@ -376,7 +401,7 @@ export default function MyPerformancePage() {
             내 성과
             <PerfExampleBadge />
           </h1>
-          <p className="text-sm text-gray-500 mt-0.5">분기별 업무 성과를 작성하고 제출합니다</p>
+          <p className="text-sm text-gray-500 mt-0.5">분기 초 목표 설정 → 분기 말 성과 작성 → 면담에서 확인</p>
         </div>
         {canEdit && (
           <div className="text-xs pt-2 shrink-0">
@@ -439,7 +464,26 @@ export default function MyPerformancePage() {
             sheet && (
               <div className={`space-y-4 ${sheetLoading ? "opacity-60 pointer-events-none" : ""}`}>
                 {renderBand()}
-                <PerfSheetForm content={content} onChange={canEdit ? handleChange : undefined} readOnly={!canEdit} />
+                {pending.length > 0 && sheet.previous && (
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-3 bg-sky-50 border border-sky-200 rounded-2xl px-4 py-3">
+                    <p className="flex-1 text-sm text-sky-800">
+                      {sheet.previous.label}에 제안한 다음 분기 목표 {pending.length}개가 있습니다.
+                    </p>
+                    <button
+                      onClick={importProposals}
+                      className="shrink-0 inline-flex items-center justify-center gap-1.5 bg-white border border-sky-300 text-sky-700 text-sm font-semibold px-4 py-2 rounded-xl hover:bg-sky-100"
+                    >
+                      <Download size={14} />이번 분기 목표로 불러오기
+                    </button>
+                  </div>
+                )}
+                <PerfSheetForm
+                  form={PERF_FORM}
+                  content={content}
+                  onChange={canEdit ? handleChange : undefined}
+                  readOnly={!canEdit}
+                  info={sheet.info}
+                />
               </div>
             )
           )}
@@ -475,7 +519,7 @@ export default function MyPerformancePage() {
                   </ul>
                 </div>
               )}
-              <PerfSheetForm content={content} readOnly />
+              <PerfSheetForm form={PERF_FORM} content={content} readOnly info={sheet.info} />
             </div>
 
             <div className="px-5 py-4 border-t border-gray-100 space-y-3">

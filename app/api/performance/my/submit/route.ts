@@ -4,7 +4,7 @@ import { Prisma } from "@/app/generated/prisma/client";
 import { requireSession } from "@/lib/auth-helpers";
 import { PERF_FORM_VERSION, sanitizeContent, validateForSubmit } from "@/lib/performance/form";
 import { getSheetAccess, isFutureQuarter, parseYearQuarter } from "@/lib/performance/rules";
-import { cycleDates, perfTodayYmd, requireEmployeeId } from "@/lib/performance/server";
+import { cycleDates, loadEmployeeProfile, perfTodayYmd, requireEmployeeId } from "@/lib/performance/server";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +27,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "아직 시작하지 않은 분기입니다." }, { status: 400 });
     }
 
+    // 제출 순간의 프로필 — profile_snapshot 에 저장 (다시 제출하면 갱신)
+    const profile = await loadEmployeeProfile(employeeId);
+
     const result = await prisma.$transaction(async (tx) => {
       const content = sanitizeContent(body?.content);
       const [sheet, cycle] = await Promise.all([
@@ -46,7 +49,8 @@ export async function POST(request: NextRequest) {
       if (!access.canSubmit) {
         return { kind: "conflict" as const, error: access.reason ?? "제출할 수 없습니다." };
       }
-      const errors = validateForSubmit(content);
+      // 받은 배열 그대로 검증 — 오류 행 번호가 화면 번호와 같게 (검증 안에서 칸별로 정리한다)
+      const errors = validateForSubmit(body?.content);
       if (errors.length > 0) return { kind: "invalid" as const, errors };
 
       const now = new Date();
@@ -54,6 +58,7 @@ export async function POST(request: NextRequest) {
       const data = {
         content: json,
         submittedContent: json,
+        profileSnapshot: { ...profile } as Prisma.InputJsonObject,
         status: "submitted",
         submittedAt: now,
         updatedAt: now,
