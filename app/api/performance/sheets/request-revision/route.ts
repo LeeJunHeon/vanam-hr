@@ -7,6 +7,7 @@ import { parseYearQuarter, quarterLabel } from "@/lib/performance/rules";
 export const dynamic = "force-dynamic";
 
 const REASON_MAX = 1000;
+const REVIEW_FINALIZED = "평가가 확정된 성과는 수정을 요청할 수 없습니다. 확정을 취소한 뒤 요청하세요.";
 
 // POST /api/performance/sheets/request-revision — 수정 요청 { employeeId, year, quarter, reason }
 export async function POST(request: NextRequest) {
@@ -32,13 +33,14 @@ export async function POST(request: NextRequest) {
     const result = await prisma.$transaction(async (tx) => {
       const sheet = await tx.perfSheet.findUnique({
         where: { employeeId_year_quarter: { employeeId, ...yq } },
-        select: { id: true },
+        select: { id: true, reviewFinalizedAt: true },
       });
       if (!sheet) return { ok: false as const, status: 404, error: "아직 제출하지 않은 성과입니다." };
+      if (sheet.reviewFinalizedAt) return { ok: false as const, status: 409, error: REVIEW_FINALIZED };
 
       const now = new Date();
       const updated = await tx.perfSheet.updateMany({
-        where: { id: sheet.id, status: "submitted" },
+        where: { id: sheet.id, status: "submitted", reviewFinalizedAt: null },
         data: {
           status: "revision",
           revisionReason: reason,
@@ -48,6 +50,12 @@ export async function POST(request: NextRequest) {
         },
       });
       if (updated.count === 0) {
+        // 그 사이 평가가 확정됐으면 그 사유로 알려 준다
+        const cur = await tx.perfSheet.findUnique({
+          where: { id: sheet.id },
+          select: { reviewFinalizedAt: true },
+        });
+        if (cur?.reviewFinalizedAt) return { ok: false as const, status: 409, error: REVIEW_FINALIZED };
         return {
           ok: false as const,
           status: 409,

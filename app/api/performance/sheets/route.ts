@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth-helpers";
-import { sanitizeContent } from "@/lib/performance/form";
+import { PERF_REVIEW_FORM, sanitizeContent } from "@/lib/performance/form";
 import { parseYearQuarter, quarterLabel } from "@/lib/performance/rules";
-import { buildPerfInfo, pickProfile } from "@/lib/performance/server";
+import { buildPerfInfo, pickProfile, sessionEmployeeId } from "@/lib/performance/server";
 
 export const dynamic = "force-dynamic";
 
 // GET /api/performance/sheets?employeeId=&year=&quarter= — 관리자 열람 (마지막 제출본만).
 // ⚠ 작성 중인 content 는 어떤 경우에도 내보내지 않는다 — submitted_content 만.
+// review 는 04 면담 및 평가 기록 (관리자 전용).
 export async function GET(request: NextRequest) {
   try {
     const r = await requireAdmin();
@@ -30,6 +31,11 @@ export async function GET(request: NextRequest) {
         revisionReason: true,
         revisionRequestedAt: true,
         profileSnapshot: true,
+        reviewContent: true,
+        reviewUpdatedAt: true,
+        reviewFinalizedAt: true,
+        reviewUpdatedBy: { select: { name: true } },
+        reviewFinalizedBy: { select: { name: true } },
         employee: {
           select: { name: true, department: { select: { name: true } }, position: { select: { name: true } } },
         },
@@ -39,11 +45,18 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "아직 제출하지 않은 성과입니다." }, { status: 404 });
     }
 
-    const history = await prisma.perfSheet.findMany({
-      where: { employeeId, submittedAt: { not: null } },
-      orderBy: [{ year: "desc" }, { quarter: "desc" }],
-      select: { year: true, quarter: true },
-    });
+    // 평가자 칸 미리 채우기용 — 로그인한 관리자 이름
+    const viewerId = sessionEmployeeId(r.session);
+    const [history, viewer] = await Promise.all([
+      prisma.perfSheet.findMany({
+        where: { employeeId, submittedAt: { not: null } },
+        orderBy: [{ year: "desc" }, { quarter: "desc" }],
+        select: { year: true, quarter: true },
+      }),
+      viewerId != null
+        ? prisma.employee.findUnique({ where: { id: viewerId }, select: { name: true } })
+        : Promise.resolve(null),
+    ]);
 
     const profile = pickProfile(sheet.status, sheet.profileSnapshot, {
       name: sheet.employee.name,
@@ -60,6 +73,14 @@ export async function GET(request: NextRequest) {
       revisionRequestedAt: sheet.revisionRequestedAt?.toISOString() ?? null,
       content: sanitizeContent(sheet.submittedContent),
       info: buildPerfInfo(profile, yq),
+      review: {
+        content: sanitizeContent(sheet.reviewContent, PERF_REVIEW_FORM),
+        updatedAt: sheet.reviewUpdatedAt?.toISOString() ?? null,
+        updatedByName: sheet.reviewUpdatedBy?.name ?? null,
+        finalizedAt: sheet.reviewFinalizedAt?.toISOString() ?? null,
+        finalizedByName: sheet.reviewFinalizedBy?.name ?? null,
+      },
+      viewerName: viewer?.name ?? r.session.user.name ?? "",
       history: history.map((h) => ({
         year: h.year,
         quarter: h.quarter,

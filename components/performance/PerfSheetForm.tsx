@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment } from "react";
+import { Fragment, type ReactNode } from "react";
 import { ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
 import AutoTextarea from "@/components/performance/AutoTextarea";
 import {
@@ -555,6 +555,7 @@ export default function PerfSheetForm({
   onChange,
   readOnly,
   info,
+  titleAside,
 }: {
   form?: PerfForm;
   content: PerfContent;
@@ -562,6 +563,8 @@ export default function PerfSheetForm({
   readOnly: boolean;
   /** info 칸 값 (직원명·부서·직급·평가기간·평가분기) */
   info?: PerfInfo;
+  /** 부분 제목 옆에 붙일 표시 (예: 04 의 "관리자 전용") */
+  titleAside?: ReactNode;
 }) {
   const ro = readOnly || !onChange;
   const setSection = (key: string, value: PerfRow[] | PerfRow) => onChange?.({ ...content, [key]: value });
@@ -577,11 +580,12 @@ export default function PerfSheetForm({
       {form.map((part) => (
         <div key={part.key} className="space-y-3">
           <div>
-            <h2 className="flex items-center gap-2 text-base font-bold text-gray-900">
+            <h2 className="flex flex-wrap items-center gap-2 text-base font-bold text-gray-900">
               <span className="inline-flex items-center justify-center px-1.5 py-0.5 rounded-md bg-gray-900 text-white text-[11px] font-bold tabular-nums">
                 {part.no}
               </span>
               {part.title}
+              {titleAside}
             </h2>
             {part.intro && !ro && <p className="text-xs text-gray-500 mt-1">{part.intro}</p>}
           </div>

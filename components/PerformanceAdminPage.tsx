@@ -3,15 +3,20 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Loader2, TrendingUp, X, Plus, Settings, ChevronLeft, ChevronRight, Lock } from "lucide-react";
 import PerfSheetForm, { PerfExampleBadge, PerfStatusBadge } from "@/components/performance/PerfSheetForm";
+import PerfReviewPanel, { type PerfReviewData } from "@/components/performance/PerfReviewPanel";
 import type { PerfContent, PerfInfo } from "@/lib/performance/form";
 import {
   addDaysYmd,
   cycleProgressLabel,
   formatKstShort,
   quarterKey,
+  REVIEW_STATUS_META,
   type CycleState,
+  type ReviewStatus,
   type SheetStatus,
 } from "@/lib/performance/rules";
+
+const REVIEW_LEAVE_CONFIRM = "저장하지 않은 면담 기록이 있습니다. 저장하지 않고 이동할까요?";
 
 interface CycleItem {
   id: number;
@@ -46,6 +51,8 @@ interface StatusRow {
   status: SheetStatus;
   submittedAt: string | null;
   hasSubmitted: boolean;
+  /** 04 면담 기록 상태 (내용은 오지 않는다) */
+  reviewStatus: ReviewStatus;
 }
 
 interface SheetView {
@@ -57,6 +64,10 @@ interface SheetView {
   revisionRequestedAt: string | null;
   content: PerfContent;
   info: PerfInfo;
+  /** 04 면담 및 평가 기록 (관리자 전용) */
+  review: PerfReviewData;
+  /** 로그인한 관리자 이름 — 평가자 칸 미리 채우기 */
+  viewerName: string;
   history: { year: number; quarter: number; label: string }[];
 }
 
@@ -81,6 +92,10 @@ export default function PerformanceAdminPage() {
   const [sheetLoading, setSheetLoading] = useState(false);
   const [sheetError, setSheetError] = useState("");
   const sheetReq = useRef(0);
+  // 불러올 때마다 +1 — 04 패널을 새로 마운트해 편집 상태를 초기화
+  const [sheetVersion, setSheetVersion] = useState(0);
+  // 04 패널에 저장하지 않은 변경이 있는지 (이동·창 닫기 확인)
+  const reviewDirtyRef = useRef(false);
 
   const [cycleModal, setCycleModal] = useState<"create" | "edit" | null>(null);
   const [revisionOpen, setRevisionOpen] = useState(false);
@@ -159,7 +174,9 @@ export default function PerformanceAdminPage() {
         setSheetError(data.error ?? "성과를 불러오지 못했습니다.");
         return;
       }
+      reviewDirtyRef.current = false;
       setSheet(data);
+      setSheetVersion((v) => v + 1);
     } catch {
       if (req === sheetReq.current) setSheetError("네트워크 오류로 성과를 불러오지 못했습니다.");
     } finally {
@@ -171,10 +188,29 @@ export default function PerformanceAdminPage() {
     loadCycles();
   }, [loadCycles]);
 
+  // 저장하지 않은 04 변경이 있을 때만 창 닫기·새로고침 경고
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!reviewDirtyRef.current) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
+  /** 저장하지 않은 04 변경이 있으면 이동 전에 확인 — 이동해도 되면 true */
+  const confirmLeave = () => {
+    if (reviewDirtyRef.current && !window.confirm(REVIEW_LEAVE_CONFIRM)) return false;
+    reviewDirtyRef.current = false;
+    return true;
+  };
+
   const submittedRows = useMemo(() => rows.filter((r) => r.hasSubmitted), [rows]);
 
   const openEmployee = (employeeId: number) => {
     if (!cycle) return;
+    if (!confirmLeave()) return;
     setViewEmpId(employeeId);
     setViewQuarter({ year: cycle.year, quarter: cycle.quarter });
     const row = rows.find((r) => r.employeeId === employeeId);
@@ -189,6 +225,7 @@ export default function PerformanceAdminPage() {
   };
 
   const closeViewer = () => {
+    if (!confirmLeave()) return;
     sheetReq.current++;
     setViewEmpId(null);
     setSheet(null);
@@ -204,6 +241,7 @@ export default function PerformanceAdminPage() {
     if (viewEmpId == null || !sheet) return;
     const h = sheet.history.find((x) => quarterKey(x.year, x.quarter) === key);
     if (!h) return;
+    if (!confirmLeave()) return;
     setViewQuarter({ year: h.year, quarter: h.quarter });
     loadSheet(viewEmpId, h.year, h.quarter);
   };
@@ -294,21 +332,49 @@ export default function PerformanceAdminPage() {
 
               <PerfSheetForm content={sheet.content} readOnly info={sheet.info} />
 
-              {sheet.status === "submitted" && (
-                <div className="flex justify-end">
-                  <button
-                    onClick={() => setRevisionOpen(true)}
-                    className="px-4 py-2.5 bg-white border border-purple-200 text-purple-700 rounded-xl text-sm font-semibold hover:bg-purple-50"
-                  >
-                    수정 요청
-                  </button>
-                </div>
+              {sheet.status === "submitted" &&
+                (sheet.review.finalizedAt ? (
+                  <p className="text-right text-xs text-gray-400">
+                    평가가 확정되어 수정 요청을 보낼 수 없습니다.
+                  </p>
+                ) : (
+                  <div className="flex justify-end">
+                    <button
+                      onClick={() => setRevisionOpen(true)}
+                      className="px-4 py-2.5 bg-white border border-purple-200 text-purple-700 rounded-xl text-sm font-semibold hover:bg-purple-50"
+                    >
+                      수정 요청
+                    </button>
+                  </div>
+                ))}
+
+              {viewEmpId != null && viewQuarter && (
+                <PerfReviewPanel
+                  key={sheetVersion}
+                  employeeId={viewEmpId}
+                  year={viewQuarter.year}
+                  quarter={viewQuarter.quarter}
+                  review={sheet.review}
+                  viewerName={sheet.viewerName}
+                  dirtyRef={reviewDirtyRef}
+                  onChanged={afterReviewChange}
+                  onReload={() => loadSheet(viewEmpId, viewQuarter.year, viewQuarter.quarter)}
+                  showToast={showToast}
+                />
               )}
             </div>
           )
         )}
       </div>
     );
+  };
+
+  /** 04 저장·확정·확정 취소 뒤 — 목록 배지와 열람 내용 다시 불러오기 */
+  const afterReviewChange = async () => {
+    const tasks: Promise<unknown>[] = [];
+    if (cycleId != null) tasks.push(loadRows(cycleId));
+    if (viewEmpId != null && viewQuarter) tasks.push(loadSheet(viewEmpId, viewQuarter.year, viewQuarter.quarter));
+    await Promise.all(tasks);
   };
 
   const afterRevision = async () => {
@@ -341,7 +407,9 @@ export default function PerformanceAdminPage() {
           <div className="flex flex-wrap items-center gap-2">
             <select
               value={cycleId ?? ""}
-              onChange={(e) => selectCycle(Number(e.target.value))}
+              onChange={(e) => {
+                if (confirmLeave()) selectCycle(Number(e.target.value));
+              }}
               className="px-3 py-2 border border-gray-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-200"
             >
               {cycles.map((c) => (
@@ -416,6 +484,15 @@ export default function PerformanceAdminPage() {
                           {r.name}
                         </span>
                         <PerfStatusBadge status={r.status} />
+                        {r.reviewStatus !== "none" && (
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+                              REVIEW_STATUS_META[r.reviewStatus].badgeClass
+                            }`}
+                          >
+                            {REVIEW_STATUS_META[r.reviewStatus].label}
+                          </span>
+                        )}
                       </div>
                       {r.submittedAt && (
                         <p className="text-[11px] text-gray-400 mt-0.5">제출 {formatKstShort(r.submittedAt)}</p>

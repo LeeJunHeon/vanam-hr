@@ -314,6 +314,54 @@ export const PERF_FORM: PerfForm = [
   },
 ];
 
+// ── 04 면담 및 평가 기록 — 상급자·CEO(관리자)가 쓰고 관리자만 본다 (perf_sheets.review_content) ──
+// 평가 확정일은 칸으로 두지 않고 확정 시각(review_finalized_at)을 보여 준다.
+export const PERF_REVIEW_FORM: PerfForm = [
+  {
+    key: "review",
+    no: "04",
+    title: "면담 및 평가 기록",
+    intro: "상급자·CEO 작성 · 증빙을 확인하고 합의 목표와 회사의 지원사항을 기록합니다. 비공개 인사 평정은 별도 관리하세요.",
+    notice: "※ 사전에 합의되지 않은 목표로 소급 평가하지 않습니다. 등급은 성과 검증과 직원 의견 확인 후 확정합니다.",
+    sections: [
+      {
+        kind: "fields",
+        key: "meeting",
+        columns: 3,
+        fields: [
+          { key: "meetingDate", label: "면담일", kind: "date", required: true },
+          { key: "evaluator", label: "평가자", kind: "text", required: true, maxLength: 50 },
+          {
+            key: "grade",
+            label: "종합평가 (선택)",
+            kind: "select",
+            options: ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D"],
+          },
+        ],
+      },
+      {
+        kind: "fields",
+        key: "notes",
+        help: "작성 순서: 성과 확인 → 기대 수준과의 차이 → 직원 의견 → 다음 분기 목표 → 회사 지원사항 합의",
+        columns: 1,
+        fields: [
+          { key: "strengths", label: "1. 확인된 주요 성과와 강점", kind: "textarea", required: true },
+          { key: "improvements", label: "2. 개선이 필요한 부분과 역할별 기대 수준", kind: "textarea" },
+          { key: "employeeView", label: "3. 직원 의견 및 평가와 다른 견해", kind: "textarea" },
+          { key: "agreedGoals", label: "4. 합의한 다음 분기 핵심 목표와 점검 기준", kind: "textarea", required: true },
+          { key: "support", label: "5. 회사가 지원하기로 한 사항 (담당자 / 기한 포함)", kind: "textarea" },
+        ],
+      },
+      {
+        kind: "fields",
+        key: "followUp",
+        columns: 3,
+        fields: [{ key: "midCheckDate", label: "중간점검 예정일", kind: "date" }],
+      },
+    ],
+  },
+];
+
 // ── 공용 함수 ──
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

@@ -60,6 +60,12 @@ export function formatKstShort(iso: string): string {
   return `${p.month}/${p.day} ${p.hh}:${p.mm}`;
 }
 
+/** 서버 시각(ISO) → KST "YYYY.MM.DD" */
+export function formatKstDateDot(iso: string): string {
+  const d = new Date(new Date(iso).getTime() + 9 * 3600000);
+  return d.toISOString().slice(0, 10).replace(/-/g, ".");
+}
+
 /** 서버 시각(ISO) → KST "HH:mm" */
 export function formatKstTime(iso: string): string {
   const p = kstParts(iso);
@@ -230,4 +236,20 @@ export function getSheetAccess(args: {
     return { canEdit: true, canSubmit: false, reason: "이번 회차 제출 대상이 아닙니다." };
   }
   return { canEdit: true, canSubmit: true, reason: null };
+}
+
+// ── 04 면담 및 평가 기록 상태 (관리자 화면 전용 — 직원 API·화면에는 내보내지 않는다) ──
+
+export type ReviewStatus = "none" | "draft" | "final";
+
+/** 대상자 목록 배지 — none 은 표시 없음 */
+export const REVIEW_STATUS_META: Record<Exclude<ReviewStatus, "none">, { label: string; badgeClass: string }> = {
+  draft: { label: "면담 작성 중", badgeClass: "bg-sky-50 text-sky-700" },
+  final: { label: "평가 확정", badgeClass: "bg-indigo-50 text-indigo-700" },
+};
+
+/** 확정됨 → final / 내용 있음 → draft / 그 외 none */
+export function reviewStatusOf(hasContent: boolean, finalized: boolean): ReviewStatus {
+  if (finalized) return "final";
+  return hasContent ? "draft" : "none";
 }

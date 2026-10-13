@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth-helpers";
-import { hasAnyContent } from "@/lib/performance/form";
-import { effectiveSheetStatus } from "@/lib/performance/rules";
+import { PERF_REVIEW_FORM, hasAnyContent } from "@/lib/performance/form";
+import { effectiveSheetStatus, reviewStatusOf } from "@/lib/performance/rules";
 import { EMPLOYEE_ORDER } from "@/lib/performance/server";
 
 export const dynamic = "force-dynamic";
 
 // GET /api/performance/cycles/[id]/status — 대상자별 제출 현황.
-// ⚠ 성과 내용(content)은 절대 포함하지 않는다 (상태 판정에만 쓴다).
+// ⚠ 성과 내용(content)·04 면담 기록 내용은 절대 포함하지 않는다 (상태 판정에만 쓴다).
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -37,7 +37,14 @@ export async function GET(
           quarter: cycle.quarter,
           employeeId: { in: cycle.targetEmployeeIds },
         },
-        select: { employeeId: true, status: true, content: true, submittedAt: true },
+        select: {
+          employeeId: true,
+          status: true,
+          content: true,
+          submittedAt: true,
+          reviewContent: true,
+          reviewFinalizedAt: true,
+        },
       }),
     ]);
     const sheetMap = new Map(sheets.map((s) => [s.employeeId, s]));
@@ -52,6 +59,10 @@ export async function GET(
           status: effectiveSheetStatus(s?.status, hasAnyContent(s?.content)),
           submittedAt: s?.submittedAt?.toISOString() ?? null,
           hasSubmitted: s?.submittedAt != null,
+          reviewStatus: reviewStatusOf(
+            hasAnyContent(s?.reviewContent, PERF_REVIEW_FORM),
+            s?.reviewFinalizedAt != null
+          ),
         };
       }),
     });

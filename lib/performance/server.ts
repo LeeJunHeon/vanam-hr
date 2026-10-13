@@ -2,12 +2,14 @@
 import { NextResponse } from "next/server";
 import type { Session } from "next-auth";
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@/app/generated/prisma/client";
 import { kstTodayYmd } from "@/lib/kst-date";
 import type { PerfInfo } from "@/lib/performance/form";
 import {
   formatYmdDot,
   getCycleState,
   getDDay,
+  parseYearQuarter,
   quarterEndYmd,
   quarterLabel,
   quarterStartYmd,
@@ -138,4 +140,96 @@ export function buildPerfInfo(profile: PerfProfile, yq: YearQuarter): PerfInfo {
     period: `${formatYmdDot(quarterStartYmd(yq))} ~ ${formatYmdDot(quarterEndYmd(yq))}`,
     quarter: quarterLabel(yq.year, yq.quarter),
   };
+}
+
+// ── 04 면담 및 평가 기록 (관리자 전용) ──
+
+const REVIEW_FINALIZED = "평가가 확정된 기록입니다. 확정을 취소한 뒤 수정하세요.";
+const REVIEW_CONFLICT = "다른 관리자가 먼저 저장했습니다. 다시 불러온 뒤 저장하세요.";
+
+/** 관리자 세션의 직원 id (없으면 null) */
+export function sessionEmployeeId(session: Session): number | null {
+  const id = session.user.employeeId;
+  return Number.isInteger(id) ? (id as number) : null;
+}
+
+/** 04 API 바디의 { employeeId, year, quarter } 검증 */
+export function parseReviewTarget(body: unknown): { employeeId: number; yq: YearQuarter } | null {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const employeeId = Number(b.employeeId);
+  const yq = parseYearQuarter(b.year, b.quarter);
+  if (!Number.isInteger(employeeId) || employeeId <= 0 || !yq) return null;
+  return { employeeId, yq };
+}
+
+/** baseUpdatedAt — 처음 저장이면 null, 아니면 받은 시각. 형식이 틀리면 undefined */
+export function parseBaseUpdatedAt(raw: unknown): Date | null | undefined {
+  if (raw == null || raw === "") return null;
+  if (typeof raw !== "string") return undefined;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+export type ReviewWriteResult =
+  | { ok: true; updatedAt: Date }
+  | { ok: false; status: number; error: string; code?: "finalized" | "conflict" };
+
+/**
+ * 04 기록 저장 (finalize 면 확정까지 한 번에).
+ * 제출 이력이 있고, 미확정이고, review_updated_at 이 baseUpdatedAt 과 같을 때만 쓰는 조건부 update —
+ * 다른 관리자가 그 사이 저장했으면 덮어쓰지 않고 409.
+ */
+export async function writeReview(args: {
+  employeeId: number;
+  yq: YearQuarter;
+  content: Prisma.InputJsonObject;
+  baseUpdatedAt: Date | null;
+  actorId: number | null;
+  finalize: boolean;
+}): Promise<ReviewWriteResult> {
+  const { employeeId, yq, content, baseUpdatedAt, actorId, finalize } = args;
+  return prisma.$transaction(async (tx) => {
+    const sheet = await tx.perfSheet.findUnique({
+      where: { employeeId_year_quarter: { employeeId, ...yq } },
+      select: { id: true, submittedAt: true, reviewFinalizedAt: true },
+    });
+    if (!sheet || !sheet.submittedAt) {
+      return { ok: false as const, status: 404, error: "아직 제출하지 않은 성과입니다." };
+    }
+    if (sheet.reviewFinalizedAt) {
+      return { ok: false as const, status: 409, error: REVIEW_FINALIZED, code: "finalized" as const };
+    }
+
+    const now = new Date();
+    const updated = await tx.perfSheet.updateMany({
+      where: {
+        id: sheet.id,
+        submittedAt: { not: null },
+        reviewFinalizedAt: null,
+        reviewUpdatedAt: baseUpdatedAt,
+      },
+      data: {
+        reviewContent: content,
+        reviewUpdatedAt: now,
+        reviewUpdatedById: actorId,
+        ...(finalize ? { reviewFinalizedAt: now, reviewFinalizedById: actorId } : {}),
+      },
+    });
+    if (updated.count === 0) {
+      // 그 사이 확정됐는지, 다른 관리자가 저장했는지 구분해 알려 준다
+      const cur = await tx.perfSheet.findUnique({
+        where: { id: sheet.id },
+        select: { reviewFinalizedAt: true },
+      });
+      return cur?.reviewFinalizedAt
+        ? { ok: false as const, status: 409, error: REVIEW_FINALIZED, code: "finalized" as const }
+        : { ok: false as const, status: 409, error: REVIEW_CONFLICT, code: "conflict" as const };
+    }
+    if (finalize) {
+      await tx.perfSheetLog.create({
+        data: { sheetId: sheet.id, action: "review_finalize", actorEmployeeId: actorId },
+      });
+    }
+    return { ok: true as const, updatedAt: now };
+  });
 }

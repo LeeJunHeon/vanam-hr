@@ -236,6 +236,8 @@ model Employee {
   perfSheets             PerfSheet[]    @relation("PerfSheetEmployee")
   perfRevisionsRequested PerfSheet[]    @relation("PerfSheetRevisionRequestedBy")
   perfSheetLogs          PerfSheetLog[] @relation("PerfSheetLogActor")
+  perfReviewsUpdated     PerfSheet[]    @relation("PerfSheetReviewUpdatedBy")
+  perfReviewsFinalized   PerfSheet[]    @relation("PerfSheetReviewFinalizedBy")
 
   @@index([isActive], map: "idx_employees_active")
   @@index([departmentId], map: "idx_employees_department")
@@ -778,11 +780,19 @@ model PerfSheet {
   revisionRequestedAt   DateTime? @map("revision_requested_at") @db.Timestamptz(6)
   revisionRequestedById Int?      @map("revision_requested_by")
   profileSnapshot       Json?     @map("profile_snapshot")
+  // 04 면담 및 평가 기록 — 관리자 전용 (직원 API 는 select 하지 않는다)
+  reviewContent         Json?     @map("review_content")
+  reviewUpdatedAt       DateTime? @map("review_updated_at") @db.Timestamptz(6)
+  reviewUpdatedById     Int?      @map("review_updated_by")
+  reviewFinalizedAt     DateTime? @map("review_finalized_at") @db.Timestamptz(6)
+  reviewFinalizedById   Int?      @map("review_finalized_by")
   createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt             DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
 
   employee            Employee       @relation("PerfSheetEmployee", fields: [employeeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   revisionRequestedBy Employee?      @relation("PerfSheetRevisionRequestedBy", fields: [revisionRequestedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reviewUpdatedBy     Employee?      @relation("PerfSheetReviewUpdatedBy", fields: [reviewUpdatedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reviewFinalizedBy   Employee?      @relation("PerfSheetReviewFinalizedBy", fields: [reviewFinalizedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   logs                PerfSheetLog[]
 
   @@unique([employeeId, year, quarter], map: "uk_perf_sheets_emp_period")
@@ -791,7 +801,7 @@ model PerfSheet {
   @@schema("hr")
 }
 
-// 성과표 이력 (submit / resubmit / request_revision)
+// 성과표 이력 (submit / resubmit / request_revision / review_finalize / review_unfinalize)
 model PerfSheetLog {
   id              Int      @id @default(autoincrement())
   sheetId         Int      @map("sheet_id")
