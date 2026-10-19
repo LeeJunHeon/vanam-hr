@@ -1,4 +1,4 @@
-import nodemailer from "nodemailer";
+import nodemailer, { type Transporter } from "nodemailer";
 
 // SMTP 설정(.env). 미설정이면 발송 스킵(앱 알림 등 본업은 정상).
 const SMTP_HOST = process.env.SMTP_HOST || "";
@@ -7,9 +7,9 @@ const SMTP_USER = process.env.SMTP_USER || "";
 const SMTP_PASSWORD = process.env.SMTP_PASSWORD || "";
 const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
 
-let transporter: nodemailer.Transporter | null = null;
+let transporter: Transporter | null = null;
 
-function getTransporter(): nodemailer.Transporter | null {
+function getTransporter(): Transporter | null {
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASSWORD) return null; // 미설정 → 스킵
   if (!transporter) {
     transporter = nodemailer.createTransport({
