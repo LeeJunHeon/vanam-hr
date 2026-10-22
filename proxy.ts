@@ -74,7 +74,11 @@ export default auth((req: NextRequest & { auth: any }) => {
 });
 
 export const config = {
+  // basePath 를 쓰면 Next 가 matcher 앞에 basePath 를 붙여 아래 정규식이 "/<앱경로>/(...)" 가 되어
+  // 앱 첫 화면("/<앱경로>")에는 proxy 가 돌지 않는다. "/" 는 Next 가 루트 전용 패턴
+  // (루트 + RSC 전송 형태)으로 따로 처리하므로, 넣어야 첫 화면도 인증 검사를 받는다.
   matcher: [
+    "/",
     "/api/((?!auth).*)",
     "/((?!_next/static|_next/image|favicon.ico).*)",
   ],
