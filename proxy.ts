@@ -2,16 +2,13 @@ import NextAuth from "next-auth";
 import { authConfig } from "./auth.config";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { DEV_AUTH_BYPASS } from "./lib/dev-auth-bypass";
 
 // Edge Runtime용 — Prisma 미포함 authConfig만 사용
 const { auth } = NextAuth(authConfig);
 
 const isLocal = !process.env.NEXTAUTH_URL ||
   process.env.NEXTAUTH_URL.includes("localhost");
-
-// 로컬 UI 확인용 인증 우회 (DISABLE_AUTH=true 설정 시 활성)
-// 운영에서는 절대 활성화하지 말 것
-const disableAuth = process.env.DISABLE_AUTH === "true";
 
 export default auth((req: NextRequest & { auth: any }) => {
   const __basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
@@ -20,8 +17,8 @@ export default auth((req: NextRequest & { auth: any }) => {
       ? req.nextUrl.pathname.slice(__basePath.length) || "/"
       : req.nextUrl.pathname;
 
-  // ⚠️ 로컬 UI 확인 모드: 모든 요청 통과
-  if (disableAuth) return NextResponse.next();
+  // ⚠️ 로컬 UI 확인 모드: 모든 요청 통과 (개발 모드 + DISABLE_AUTH=true 일 때만, lib/dev-auth-bypass.ts)
+  if (DEV_AUTH_BYPASS) return NextResponse.next();
 
   // /api/auth/* 는 next-auth 내부 — 항상 허용
   if (pathname.startsWith("/api/auth")) return NextResponse.next();

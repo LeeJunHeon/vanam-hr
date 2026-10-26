@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server";
 import type { Session } from "next-auth";
 import { auth } from "@/auth";
-
-// 로컬 UI 확인용 인증 우회 (proxy.ts와 동일 패턴)
-// DISABLE_AUTH=true 일 때만 적용, 운영에서는 절대 활성화하지 말 것.
-const DISABLE_AUTH = process.env.DISABLE_AUTH === "true";
+// 로컬 UI 확인용 인증 우회 (proxy.ts와 동일 판정). 개발 모드 + DISABLE_AUTH=true 일 때만 켜진다.
+import { DEV_AUTH_BYPASS } from "@/lib/dev-auth-bypass";
 
 /**
  * 로컬 우회 모드에서 사용할 가짜 세션.
@@ -41,7 +39,7 @@ export async function requireSession(): Promise<
   | { ok: true; session: Session }
   | { ok: false; response: NextResponse }
 > {
-  if (DISABLE_AUTH) {
+  if (DEV_AUTH_BYPASS) {
     return { ok: true, session: makeDevSession() };
   }
   const session = await auth();
