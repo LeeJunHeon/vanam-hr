@@ -104,8 +104,9 @@ export default function Sidebar({
         <div className="px-5 py-5 border-b border-gray-100">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center">
-                <Users size={18} className="text-white" />
+              {/* 포털 lib/portal-apps.ts 와 같은 값(아이콘·iconBgColor·iconColor, 32px 상자·아이콘 16px·strokeWidth 1.8) — 바꿀 때 같이 바꿀 것 */}
+              <div className="w-8 h-8 bg-[#faf5ff] rounded-lg flex items-center justify-center">
+                <Calendar size={16} color="#9333ea" strokeWidth={1.8} />
               </div>
               <div>
                 <h1 className="text-sm font-bold text-gray-900">인사 관리</h1>

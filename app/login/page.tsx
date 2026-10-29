@@ -1,16 +1,16 @@
 "use client";
 
 import { signIn } from "next-auth/react";
-import { LayoutGrid } from "lucide-react";
+import { Calendar } from "lucide-react";
 
 export default function LoginPage() {
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-lg w-full max-w-sm p-8 space-y-6">
-        {/* 로고 */}
+        {/* 로고 — 아이콘·색은 포털 lib/portal-apps.ts 와 같은 값(Calendar·#faf5ff·#9333ea), 바꿀 때 같이 바꿀 것 */}
         <div className="flex flex-col items-center gap-3">
-          <div className="w-14 h-14 bg-blue-500 rounded-2xl flex items-center justify-center">
-            <LayoutGrid size={28} className="text-white" />
+          <div className="w-14 h-14 bg-[#faf5ff] rounded-2xl flex items-center justify-center">
+            <Calendar size={28} color="#9333ea" strokeWidth={1.8} />
           </div>
           <div className="text-center">
             <h1 className="text-xl font-bold text-gray-900">VanaM 인사 관리</h1>
