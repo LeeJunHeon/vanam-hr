@@ -1,5 +1,9 @@
 services:
   nextjs:
+    # GitHub Actions 가 올린 이미지를 deploy 스크립트가 :deployed 로 태그한다(compose 가 스스로 받지 않음).
+    # build 는 비상용(sudo ./deploy*.sh --build)으로 남겨 둔다
+    image: ghcr.io/leejunheon/hr-web:deployed
+    pull_policy: never
     build:
       context: .
       dockerfile: Dockerfile
@@ -40,6 +44,10 @@ services:
       - vanam-db-net
 
   poller:
+    # GitHub Actions 가 올린 이미지를 deploy 스크립트가 :deployed 로 태그한다(compose 가 스스로 받지 않음).
+    # build 는 비상용(sudo ./deploy*.sh --build)으로 남겨 둔다
+    image: ghcr.io/leejunheon/hr-poller:deployed
+    pull_policy: never
     build:
       context: ./poller
       dockerfile: Dockerfile
@@ -70,6 +78,10 @@ services:
       - ./poller/logs:/app/logs
 
   aggregator:
+    # GitHub Actions 가 올린 이미지를 deploy 스크립트가 :deployed 로 태그한다(compose 가 스스로 받지 않음).
+    # build 는 비상용(sudo ./deploy*.sh --build)으로 남겨 둔다
+    image: ghcr.io/leejunheon/hr-aggregator:deployed
+    pull_policy: never
     build:
       context: ./aggregator
       dockerfile: Dockerfile
@@ -95,6 +107,10 @@ services:
       - vanam-db-net
 
   calendar-syncer:
+    # GitHub Actions 가 올린 이미지를 deploy 스크립트가 :deployed 로 태그한다(compose 가 스스로 받지 않음).
+    # build 는 비상용(sudo ./deploy*.sh --build)으로 남겨 둔다
+    image: ghcr.io/leejunheon/hr-calendar-syncer:deployed
+    pull_policy: never
     build:
       context: ./calendar-syncer
       dockerfile: Dockerfile

@@ -6,3 +6,9 @@ node_modules
 .git
 *.md
 Dockerfile
+
+# 비밀값·배포 기록·배포 스크립트 — 이미지에 넣지 않는다
+.env.*
+.deploy-state
+scripts
+.github

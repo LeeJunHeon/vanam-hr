@@ -1,0 +1,7 @@
+# 이 폴더만 빌드 컨텍스트다(docker-compose.yml build.context). 비밀값·로그는 이미지에 넣지 않는다
+.env
+.env.*
+logs
+*.log
+__pycache__
+secrets
