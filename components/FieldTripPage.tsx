@@ -672,7 +672,7 @@ export default function FieldTripPage() {
                   <button
                     key={`t-${ev.id}`}
                     onClick={() => setOpenEventId(ev.id)}
-                    className="text-left"
+                    className="text-left flex h-full w-full"
                   >
                     <TripEventCard event={ev} today={today} />
                   </button>
@@ -792,7 +792,7 @@ function TripEventCard({
     badgeCls = "bg-blue-100 text-blue-700";
   }
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5 hover:shadow-md hover:border-blue-200 transition-all">
+    <div className="h-full w-full bg-white rounded-2xl border border-gray-100 p-4 sm:p-5 hover:shadow-md hover:border-blue-200 transition-all">
       <div className="flex items-start justify-between gap-2">
         <h3 className="text-base font-bold text-gray-900 truncate flex-1">
           {event.name}
@@ -863,7 +863,7 @@ function ExternalWorkCard({
   const co = hhmm(item.correctedCheckOut);
   const timeLabel = ci && co ? `${ci}~${co}` : "종일";
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
+    <div className="h-full w-full bg-white rounded-2xl border border-gray-100 p-4 sm:p-5">
       <div className="flex items-start justify-between gap-2">
         <h3 className="text-base font-bold text-gray-900 truncate flex-1">
           <span className="inline-flex items-center gap-1.5">
