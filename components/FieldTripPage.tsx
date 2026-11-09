@@ -2533,15 +2533,13 @@ function DatesPicker({
                       <span className="w-7 shrink-0 text-[11px] font-semibold text-gray-500">
                         근태
                       </span>
-                      {/* 선택 범위: 시작 < 종료. 시작을 고르면 종료 창을 이어서 연다 */}
+                      {/* 시작은 자유, 종료가 시작을 따라간다: 시작이 종료 이상이 되면 updateRow 가 종료를 비우고,
+                          이어서 열리는 종료 창에서 다시 고른다. 종료는 시작보다 뒤만 고를 수 있다. */}
                       <TimePicker
                         ref={pickerRef(row.attendDate, "startTime")}
                         value={row.startTime}
                         onChange={(val) =>
                           updateRow(row.attendDate, { startTime: val })
-                        }
-                        maxTime={
-                          row.endTime ? addMinutesHhmm(row.endTime, -1) : undefined
                         }
                         onComplete={() => openPicker(row.attendDate, "endTime")}
                         placeholder="시작"
@@ -2609,7 +2607,8 @@ function DatesPicker({
                         <span className="w-7 shrink-0 text-[11px] font-semibold text-gray-500">
                           미팅
                         </span>
-                        {/* 선택 범위: 근태 시작 <= 미팅 시작 < 미팅 종료 <= 근태 종료 */}
+                        {/* 미팅 시작은 근태 범위 안에서 자유(미팅 종료에는 묶지 않는다) — 미팅 종료 이상이 되면
+                            updateRow 가 미팅 종료를 비우고 종료 창이 열린다. 미팅 종료: 미팅 시작 < 종료 <= 근태 종료 */}
                         <TimePicker
                           ref={pickerRef(row.attendDate, "meetingStartTime")}
                           value={row.meetingStartTime}
@@ -2617,10 +2616,7 @@ function DatesPicker({
                             updateRow(row.attendDate, { meetingStartTime: val })
                           }
                           minTime={row.startTime}
-                          maxTime={addMinutesHhmm(
-                            row.meetingEndTime || row.endTime,
-                            -1
-                          )}
+                          maxTime={addMinutesHhmm(row.endTime, -1)}
                           onComplete={() =>
                             openPicker(row.attendDate, "meetingEndTime")
                           }

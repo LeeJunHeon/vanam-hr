@@ -3,10 +3,9 @@ import {
   useState,
   useRef,
   useEffect,
-  useMemo,
   useCallback,
-  forwardRef,
   useImperativeHandle,
+  type Ref,
 } from "react";
 import { createPortal } from "react-dom";
 import { Clock, X } from "lucide-react";
@@ -22,8 +21,14 @@ interface TimePickerProps {
   // ── 아래는 모두 선택 옵션. 안 넘기면 기존 동작 그대로(범위 제한 없음, 분을 눌러도 창이 열린 채) ──
   minTime?: string;                // "HH:MM" 이상만 선택 가능(포함)
   maxTime?: string;                // "HH:MM" 이하만 선택 가능(포함)
-  // 넘기면: 분·빠른 선택·'확인' 클릭 시 창을 닫고 호출한다. 바깥 클릭으로 닫을 땐 부르지 않는다.
+  // 넘기면 "선택 완료 모드":
+  //  - 창이 열려 있는 동안 시·분 클릭은 내부 임시값(draft)만 바꾸고, 확정할 때 onChange 로 한 번 반영한다.
+  //  - 분·빠른 선택·'확인' 클릭 = 반영 → 창 닫기 → onComplete 호출.
+  //  - 바깥 클릭으로 닫히면 반영만 하고 onComplete 는 부르지 않는다.
+  // 안 넘기면 시·분 클릭마다 바로 onChange.
   onComplete?: () => void;
+  // 부모가 창을 열 때 쓰는 핸들. (forwardRef 로 감싸면 린트가 이 컴포넌트를 분석하지 못해 prop 으로 받는다)
+  ref?: Ref<TimePickerHandle>;
 }
 
 // 부모가 ref 로 창을 열 때 쓰는 핸들 (disabled 이면 열리지 않는다)
@@ -48,6 +53,16 @@ export function addMinutesHhmm(hhmm: string, delta: number): string {
   return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
 }
 
+// 지금 시각(분). 렌더 중이 아니라 클릭·열기 같은 이벤트에서만 부른다.
+function nowMinutes(): number {
+  const d = new Date();
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+function fromMinutes(t: number): string {
+  return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+}
+
 // "HH:MM" → 한글 보조 라벨
 function toKoreanLabel(hhmm: string): string {
   if (!hhmm) return "";
@@ -67,31 +82,25 @@ function toKoreanLabel(hhmm: string): string {
   }
 }
 
-const TimePicker = forwardRef<TimePickerHandle, TimePickerProps>(function TimePicker(
-  {
-    value,
-    onChange,
-    disabled = false,
-    placeholder = "시간 선택",
-    className = "",
-    allowMidnight = false,
-    minuteStep = 5,
-    minTime,
-    maxTime,
-    onComplete,
-  },
-  ref
-) {
+export default function TimePicker({
+  value,
+  onChange,
+  disabled = false,
+  placeholder = "시간 선택",
+  className = "",
+  allowMidnight = false,
+  minuteStep = 5,
+  minTime,
+  maxTime,
+  onComplete,
+  ref,
+}: TimePickerProps) {
   const [open, setOpen] = useState(false);
-  useImperativeHandle(
-    ref,
-    () => ({
-      open: () => {
-        if (!disabled) setOpen(true);
-      },
-    }),
-    [disabled]
-  );
+  // 선택 완료 모드(onComplete 를 넘긴 경우)에서만 쓰는 임시값. null = 창을 연 뒤 아직 바꾸지 않음(= 현재 value).
+  const deferred = !!onComplete;
+  const [draft, setDraft] = useState<string | null>(null);
+  // 창을 연 시점의 '지금'(분). '지금' 버튼 비활성 판단에 쓴다. 누르는 순간에도 다시 확인한다.
+  const [nowAtOpen, setNowAtOpen] = useState<number | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const hourScrollRef = useRef<HTMLDivElement>(null);
   const minScrollRef = useRef<HTMLDivElement>(null);
@@ -99,57 +108,84 @@ const TimePicker = forwardRef<TimePickerHandle, TimePickerProps>(function TimePi
   const dropRef = useRef<HTMLDivElement>(null);
   const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
 
+  // 창을 연다 — draft 는 현재 value 에서 시작(null)
+  const openWindow = () => {
+    if (disabled) return;
+    setDraft(null);
+    setNowAtOpen(nowMinutes());
+    setOpen(true);
+  };
+  useImperativeHandle(ref, () => ({ open: openWindow }));
+
+  // 화면에 보여 줄 값: 선택 완료 모드에서 창이 열려 있으면 draft, 아니면 value
+  const shown = deferred && open && draft !== null ? draft : value;
+
   // 현재 값 파싱 (24:00은 특수 처리)
-  const isMidnight = value === "24:00";
+  const isMidnight = shown === "24:00";
   // 선택 가능 범위(분 단위). 둘 다 없으면 제한 없음 = 기존 동작.
   const lo = toMinutes(minTime);
   const hi = toMinutes(maxTime);
-  const inRange = useCallback(
-    (t: number) => (lo === null || t >= lo) && (hi === null || t <= hi),
-    [lo, hi]
-  );
-  const minuteOptions = useMemo(
-    () => Array.from({ length: Math.ceil(60 / minuteStep) }, (_, i) => i * minuteStep),
-    [minuteStep]
+  const inRange = (t: number) => (lo === null || t >= lo) && (hi === null || t <= hi);
+  const minuteOptions = Array.from(
+    { length: Math.ceil(60 / minuteStep) },
+    (_, i) => i * minuteStep
   );
   // 그 시(h)에서 고를 수 있는 분 목록
-  const allowedMinutes = useCallback(
-    (h: number) => minuteOptions.filter((m) => inRange(h * 60 + m)),
-    [minuteOptions, inRange]
-  );
+  const allowedMinutes = (h: number) => minuteOptions.filter((m) => inRange(h * 60 + m));
 
   // 값이 비어 있을 때 기준 시각: minTime 이 있으면 그 시(고를 수 있는 분이 있는 첫 시)의 00분, 없으면 00:00.
-  const [curHour, curMin] = useMemo(() => {
-    if (!value || value === "24:00") {
-      if (lo === null) return [0, 0];
+  let curHour = 0;
+  let curMin = 0;
+  if (!shown || shown === "24:00") {
+    if (lo !== null) {
       const minHour = Math.min(Math.floor(lo / 60), 23);
+      curHour = minHour;
       for (let h = minHour; h < 24; h++) {
-        if (allowedMinutes(h).length > 0) return [h, 0];
+        if (allowedMinutes(h).length > 0) {
+          curHour = h;
+          break;
+        }
       }
-      return [minHour, 0];
     }
-    const [h, m] = value.split(":").map(Number);
-    return [isNaN(h) ? 0 : h, isNaN(m) ? 0 : m];
-  }, [value, lo, allowedMinutes]);
+  } else {
+    const [h, m] = shown.split(":").map(Number);
+    curHour = isNaN(h) ? 0 : h;
+    curMin = isNaN(m) ? 0 : m;
+  }
 
-  // onComplete 를 넘겼을 때만: 창을 닫고 부모에 선택 완료를 알린다.
-  const complete = () => {
-    if (!onComplete) return;
+  // 창을 닫는다. 선택 완료 모드에서 draft 가 value 와 다르면 먼저 반영한다.
+  const closeWindow = () => {
+    if (deferred && draft !== null && draft !== value) onChange(draft);
+    setDraft(null);
     setOpen(false);
-    onComplete();
+  };
+  // 시·분 클릭: 선택 완료 모드면 draft 만, 아니면 바로 반영
+  const setVal = (v: string) => {
+    if (deferred) setDraft(v);
+    else onChange(v);
+  };
+  // 선택 완료 모드에서 값 확정: 반영 → 닫기 → 부모에 알림
+  const commitAndComplete = (v: string) => {
+    if (v !== value) onChange(v);
+    setDraft(null);
+    setOpen(false);
+    onComplete?.();
   };
 
   // 외부 클릭 감지 — 포털로 띄운 드롭다운 내부 클릭은 닫지 않도록 wrap/drop 둘 다 체크
+  // 선택 완료 모드에서는 닫으면서 draft 를 반영한다(onComplete 는 부르지 않는다).
+  // 최신 draft·value 를 보도록 렌더마다 다시 건다(열려 있을 때만).
   useEffect(() => {
+    if (!open) return;
     const h = (e: MouseEvent) => {
       const tgt = e.target as Node;
       if (wrapRef.current?.contains(tgt)) return;
       if (dropRef.current?.contains(tgt)) return;
-      setOpen(false);
+      closeWindow();
     };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
-  }, []);
+  });
 
   // 드롭다운 위치 계산 — fixed portal이라 trigger의 viewport 좌표를 기준으로
   // 잡고, 페이지/모달 스크롤·리사이즈 때마다 재계산. 페인트 후 실측 높이로
@@ -209,60 +245,66 @@ const TimePicker = forwardRef<TimePickerHandle, TimePickerProps>(function TimePi
       if (allowed.length === 0) return;
       m = lo !== null && h * 60 + m < lo ? allowed[0] : allowed[allowed.length - 1];
     }
-    const mm = String(m).padStart(2, "0");
-    const hh = String(h).padStart(2, "0");
-    onChange(`${hh}:${mm}`);
+    setVal(fromMinutes(h * 60 + m));
   };
 
   const selectMin = (m: number) => {
-    const hh = String(curHour).padStart(2, "0");
-    const mm = String(m).padStart(2, "0");
-    onChange(`${hh}:${mm}`);
-    complete();
+    const v = fromMinutes(curHour * 60 + m);
+    if (deferred) commitAndComplete(v);
+    else onChange(v); // 기존 동작: 창은 열린 채
   };
 
-  const selectMidnight = () => {
-    onChange("24:00");
-    setOpen(false);
-    onComplete?.();
-  };
-
-  // 빠른 선택(00:00·정오) — 기존처럼 창을 닫고, onComplete 가 있으면 알린다.
+  // 빠른 선택(00:00·정오·자정) — 반영하고 창을 닫는다. onComplete 가 있으면 알린다.
   const selectQuick = (hhmm: string) => {
     onChange(hhmm);
+    setDraft(null);
     setOpen(false);
     onComplete?.();
   };
 
   const selectNow = () => {
-    const d = new Date();
-    const hh = String(d.getHours()).padStart(2, "0");
-    const mm = String(d.getMinutes()).padStart(2, "0");
-    onChange(`${hh}:${mm}`);
-    complete();
+    // 누르는 순간 기준으로 범위를 다시 확인한다(창을 연 뒤 시간이 흘렀을 수 있다)
+    const t = nowMinutes();
+    if (!inRange(t)) {
+      setNowAtOpen(t);
+      return;
+    }
+    const v = fromMinutes(t);
+    if (deferred) {
+      onChange(v);
+      setDraft(null);
+      setOpen(false);
+      onComplete?.();
+    } else {
+      onChange(v); // 기존 동작: 창은 열린 채
+    }
   };
 
-  // 빠른 선택 버튼 — 결과가 범위 밖이면 비활성. (렌더마다 다시 계산되므로 '지금'은 누르는 순간 기준과 거의 같다)
-  const now = new Date();
-  const nowAllowed = inRange(now.getHours() * 60 + now.getMinutes());
+  // 빠른 선택 버튼 — 결과가 범위 밖이면 비활성. '지금'은 창을 연 시점 기준.
+  const nowAllowed = nowAtOpen === null || inRange(nowAtOpen);
   const quickClass = (allowed: boolean, base: string) =>
     allowed ? base : "text-gray-300 cursor-not-allowed";
 
   const clearValue = (e: React.MouseEvent) => {
     e.stopPropagation();
+    setDraft(null);
     onChange("");
   };
 
   // 표시 문자열
-  const displayValue = value || "";
-  const koreanLabel = toKoreanLabel(value);
+  const displayValue = shown || "";
+  const koreanLabel = toKoreanLabel(shown);
 
   return (
     <div ref={wrapRef} className={`relative ${className}`}>
       {/* 입력 디스플레이 */}
       <div
         ref={triggerRef}
-        onClick={() => !disabled && setOpen((o) => !o)}
+        onClick={() => {
+          if (disabled) return;
+          if (open) closeWindow();
+          else openWindow();
+        }}
         className={`flex items-center gap-2 px-3 py-2 border rounded-xl bg-white text-sm transition-all select-none ${
           disabled
             ? "cursor-not-allowed opacity-50 bg-gray-50"
@@ -275,7 +317,7 @@ const TimePicker = forwardRef<TimePickerHandle, TimePickerProps>(function TimePi
       >
         <Clock size={14} className="text-gray-400 shrink-0" />
         <div className="flex-1 min-w-0">
-          {value ? (
+          {shown ? (
             <div className="flex items-baseline gap-2">
               <span className="text-gray-900 font-mono font-semibold">
                 {displayValue}
@@ -288,7 +330,7 @@ const TimePicker = forwardRef<TimePickerHandle, TimePickerProps>(function TimePi
             <span className="text-gray-400">{placeholder}</span>
           )}
         </div>
-        {value && !disabled && (
+        {shown && !disabled && (
           <button
             type="button"
             onClick={clearValue}
@@ -313,11 +355,11 @@ const TimePicker = forwardRef<TimePickerHandle, TimePickerProps>(function TimePi
           className="bg-white border border-gray-200 rounded-2xl p-3 z-[1000] w-64 shadow-xl"
         >
           {/* 한글 라벨 (선택값 표시) */}
-          {value && (
+          {shown && (
             <div className="text-center mb-2 pb-2 border-b border-gray-100">
               <div className="text-xs text-gray-500">{koreanLabel}</div>
               <div className="text-lg font-mono font-bold text-blue-600">
-                {value}
+                {shown}
               </div>
             </div>
           )}
@@ -446,7 +488,7 @@ const TimePicker = forwardRef<TimePickerHandle, TimePickerProps>(function TimePi
             {allowMidnight && (
               <button
                 type="button"
-                onClick={selectMidnight}
+                onClick={() => selectQuick("24:00")}
                 disabled={!inRange(24 * 60)}
                 className={`flex-1 text-[10px] py-1.5 rounded-lg font-semibold ${quickClass(
                   inRange(24 * 60),
@@ -461,8 +503,8 @@ const TimePicker = forwardRef<TimePickerHandle, TimePickerProps>(function TimePi
           <button
             type="button"
             onClick={() => {
-              setOpen(false);
-              onComplete?.();
+              if (deferred) commitAndComplete(draft ?? value);
+              else setOpen(false);
             }}
             className="mt-2 w-full text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-50 py-1.5 rounded-lg"
           >
@@ -473,9 +515,7 @@ const TimePicker = forwardRef<TimePickerHandle, TimePickerProps>(function TimePi
       )}
     </div>
   );
-});
-
-export default TimePicker;
+}
 
 // 외부에서 사용할 헬퍼: "24:00" → "23:59" 변환 (DB 저장 시)
 export function normalizeTimeForDb(time: string): string {
