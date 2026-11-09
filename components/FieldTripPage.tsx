@@ -20,7 +20,10 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { useCurrentEmployee } from "@/lib/useCurrentEmployee";
-import TimePicker from "@/components/TimePicker";
+import TimePicker, {
+  addMinutesHhmm,
+  type TimePickerHandle,
+} from "@/components/TimePicker";
 import TripReportModal, { type TripReportTarget } from "@/components/TripReportModal";
 import Pagination from "@/components/Pagination";
 import MyTripsPage from "@/components/MyTripsPage";
@@ -2284,17 +2287,60 @@ function DatesPicker({
     return new Set(enumerateDates(a, b).filter((d) => inRange.has(d)));
   }, [anchor, hoverYmd, inRange]);
 
-  // 행 수정. 체크를 끄거나 근태 시간이 비면 미팅 시간도 비우고 체크도 끈다.
+  // 행마다 시간 칸 4개(근태 시작·종료, 미팅 시작·종료)의 창을 열기 위한 핸들. 키 = "날짜|칸".
+  type TimeField = "startTime" | "endTime" | "meetingStartTime" | "meetingEndTime";
+  const pickerRefs = useRef(new Map<string, TimePickerHandle>());
+  const pendingOpenRef = useRef<string | null>(null);
+  const pickerRef = (ymd: string, field: TimeField) => (h: TimePickerHandle | null) => {
+    const key = `${ymd}|${field}`;
+    if (h) pickerRefs.current.set(key, h);
+    else pickerRefs.current.delete(key);
+  };
+  // 그 칸의 창을 연다. 아직 화면에 없는 칸(체크를 방금 켠 미팅 칸)은 다음 렌더 뒤에 연다.
+  const openPicker = (ymd: string, field: TimeField) => {
+    if (isLocked(ymd)) return;
+    const key = `${ymd}|${field}`;
+    const h = pickerRefs.current.get(key);
+    if (h) h.open();
+    else pendingOpenRef.current = key;
+  };
+  useEffect(() => {
+    const key = pendingOpenRef.current;
+    if (!key) return;
+    pendingOpenRef.current = null;
+    pickerRefs.current.get(key)?.open();
+  });
+
+  // 행 수정 + 값 정리(화면에서만 — 최종 검사는 validateDateRows·서버).
+  //  - 근태 종료 <= 근태 시작이면 근태 종료를 비운다.
+  //  - 체크를 끄거나 근태 시간이 비면 미팅 시간도 비우고 체크도 끈다.
+  //  - 근태 범위(시작 이상, 종료 이하)를 벗어난 미팅 값은 그 값만 비운다(체크는 유지).
+  //  - 미팅 종료 <= 미팅 시작이면 미팅 종료를 비운다.
   const updateRow = (ymd: string, patch: Partial<DatePayloadRow>) => {
     if (isLocked(ymd)) return;
     onChange(
       value.map((v) => {
         if (v.attendDate !== ymd) return v;
         const next = { ...v, ...patch };
+        if (next.startTime && next.endTime && next.endTime <= next.startTime) {
+          next.endTime = "";
+        }
         if (!next.meetingOn || !next.startTime || !next.endTime) {
           next.meetingOn = false;
           next.meetingStartTime = "";
           next.meetingEndTime = "";
+        } else {
+          const outside = (t: string) =>
+            t !== "" && (t < next.startTime || t > next.endTime);
+          if (outside(next.meetingStartTime)) next.meetingStartTime = "";
+          if (outside(next.meetingEndTime)) next.meetingEndTime = "";
+          if (
+            next.meetingStartTime &&
+            next.meetingEndTime &&
+            next.meetingEndTime <= next.meetingStartTime
+          ) {
+            next.meetingEndTime = "";
+          }
         }
         return next;
       })
@@ -2487,21 +2533,32 @@ function DatesPicker({
                       <span className="w-7 shrink-0 text-[11px] font-semibold text-gray-500">
                         근태
                       </span>
+                      {/* 선택 범위: 시작 < 종료. 시작을 고르면 종료 창을 이어서 연다 */}
                       <TimePicker
+                        ref={pickerRef(row.attendDate, "startTime")}
                         value={row.startTime}
                         onChange={(val) =>
                           updateRow(row.attendDate, { startTime: val })
                         }
+                        maxTime={
+                          row.endTime ? addMinutesHhmm(row.endTime, -1) : undefined
+                        }
+                        onComplete={() => openPicker(row.attendDate, "endTime")}
                         placeholder="시작"
                         className="w-[120px]"
                         disabled={locked}
                       />
                       <span className="text-xs text-gray-400">~</span>
                       <TimePicker
+                        ref={pickerRef(row.attendDate, "endTime")}
                         value={row.endTime}
                         onChange={(val) =>
                           updateRow(row.attendDate, { endTime: val })
                         }
+                        minTime={
+                          row.startTime ? addMinutesHhmm(row.startTime, 1) : undefined
+                        }
+                        onComplete={() => {}}
                         placeholder="종료"
                         className="w-[120px]"
                         disabled={locked}
@@ -2529,9 +2586,13 @@ function DatesPicker({
                       type="checkbox"
                       checked={row.meetingOn}
                       disabled={!canMeeting || locked}
-                      onChange={(e) =>
-                        updateRow(row.attendDate, { meetingOn: e.target.checked })
-                      }
+                      onChange={(e) => {
+                        updateRow(row.attendDate, { meetingOn: e.target.checked });
+                        // 체크를 켜면 미팅 시작 창을 바로 연다
+                        if (e.target.checked) {
+                          openPicker(row.attendDate, "meetingStartTime");
+                        }
+                      }}
                       className="h-3.5 w-3.5 rounded border-gray-300 accent-blue-600 disabled:cursor-not-allowed"
                     />
                     실제 미팅 시간 따로 입력
@@ -2548,10 +2609,20 @@ function DatesPicker({
                         <span className="w-7 shrink-0 text-[11px] font-semibold text-gray-500">
                           미팅
                         </span>
+                        {/* 선택 범위: 근태 시작 <= 미팅 시작 < 미팅 종료 <= 근태 종료 */}
                         <TimePicker
+                          ref={pickerRef(row.attendDate, "meetingStartTime")}
                           value={row.meetingStartTime}
                           onChange={(val) =>
                             updateRow(row.attendDate, { meetingStartTime: val })
+                          }
+                          minTime={row.startTime}
+                          maxTime={addMinutesHhmm(
+                            row.meetingEndTime || row.endTime,
+                            -1
+                          )}
+                          onComplete={() =>
+                            openPicker(row.attendDate, "meetingEndTime")
                           }
                           placeholder="시작"
                           className="w-[120px]"
@@ -2559,10 +2630,17 @@ function DatesPicker({
                         />
                         <span className="text-xs text-gray-400">~</span>
                         <TimePicker
+                          ref={pickerRef(row.attendDate, "meetingEndTime")}
                           value={row.meetingEndTime}
                           onChange={(val) =>
                             updateRow(row.attendDate, { meetingEndTime: val })
                           }
+                          minTime={addMinutesHhmm(
+                            row.meetingStartTime || row.startTime,
+                            1
+                          )}
+                          maxTime={row.endTime}
+                          onComplete={() => {}}
                           placeholder="종료"
                           className="w-[120px]"
                           disabled={locked}

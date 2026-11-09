@@ -1,5 +1,13 @@
 "use client";
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useMemo,
+  useCallback,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
 import { createPortal } from "react-dom";
 import { Clock, X } from "lucide-react";
 
@@ -11,6 +19,33 @@ interface TimePickerProps {
   className?: string;
   allowMidnight?: boolean;         // true면 "24:00" 빠른 선택 버튼 노출 (시프트 종료용)
   minuteStep?: number;             // 분 휠 간격(기본 5). 1이면 1분 단위
+  // ── 아래는 모두 선택 옵션. 안 넘기면 기존 동작 그대로(범위 제한 없음, 분을 눌러도 창이 열린 채) ──
+  minTime?: string;                // "HH:MM" 이상만 선택 가능(포함)
+  maxTime?: string;                // "HH:MM" 이하만 선택 가능(포함)
+  // 넘기면: 분·빠른 선택·'확인' 클릭 시 창을 닫고 호출한다. 바깥 클릭으로 닫을 땐 부르지 않는다.
+  onComplete?: () => void;
+}
+
+// 부모가 ref 로 창을 열 때 쓰는 핸들 (disabled 이면 열리지 않는다)
+export interface TimePickerHandle {
+  open: () => void;
+}
+
+// "HH:MM" → 분(0~1439, "24:00" 은 1440). 비었거나 형식이 틀리면 null.
+function toMinutes(hhmm: string | undefined): number | null {
+  if (!hhmm) return null;
+  const [h, m] = hhmm.split(":").map(Number);
+  if (isNaN(h) || isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+// "HH:MM" 에 분을 더하거나 뺀다(delta 음수 가능). 결과는 00:00~23:59 로 자른다.
+// 형식이 틀리면 받은 값을 그대로 돌려준다.
+export function addMinutesHhmm(hhmm: string, delta: number): string {
+  const base = toMinutes(hhmm);
+  if (base === null) return hhmm;
+  const t = Math.min(Math.max(base + delta, 0), 23 * 60 + 59);
+  return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
 }
 
 // "HH:MM" → 한글 보조 라벨
@@ -32,16 +67,31 @@ function toKoreanLabel(hhmm: string): string {
   }
 }
 
-export default function TimePicker({
-  value,
-  onChange,
-  disabled = false,
-  placeholder = "시간 선택",
-  className = "",
-  allowMidnight = false,
-  minuteStep = 5,
-}: TimePickerProps) {
+const TimePicker = forwardRef<TimePickerHandle, TimePickerProps>(function TimePicker(
+  {
+    value,
+    onChange,
+    disabled = false,
+    placeholder = "시간 선택",
+    className = "",
+    allowMidnight = false,
+    minuteStep = 5,
+    minTime,
+    maxTime,
+    onComplete,
+  },
+  ref
+) {
   const [open, setOpen] = useState(false);
+  useImperativeHandle(
+    ref,
+    () => ({
+      open: () => {
+        if (!disabled) setOpen(true);
+      },
+    }),
+    [disabled]
+  );
   const wrapRef = useRef<HTMLDivElement>(null);
   const hourScrollRef = useRef<HTMLDivElement>(null);
   const minScrollRef = useRef<HTMLDivElement>(null);
@@ -51,11 +101,43 @@ export default function TimePicker({
 
   // 현재 값 파싱 (24:00은 특수 처리)
   const isMidnight = value === "24:00";
+  // 선택 가능 범위(분 단위). 둘 다 없으면 제한 없음 = 기존 동작.
+  const lo = toMinutes(minTime);
+  const hi = toMinutes(maxTime);
+  const inRange = useCallback(
+    (t: number) => (lo === null || t >= lo) && (hi === null || t <= hi),
+    [lo, hi]
+  );
+  const minuteOptions = useMemo(
+    () => Array.from({ length: Math.ceil(60 / minuteStep) }, (_, i) => i * minuteStep),
+    [minuteStep]
+  );
+  // 그 시(h)에서 고를 수 있는 분 목록
+  const allowedMinutes = useCallback(
+    (h: number) => minuteOptions.filter((m) => inRange(h * 60 + m)),
+    [minuteOptions, inRange]
+  );
+
+  // 값이 비어 있을 때 기준 시각: minTime 이 있으면 그 시(고를 수 있는 분이 있는 첫 시)의 00분, 없으면 00:00.
   const [curHour, curMin] = useMemo(() => {
-    if (!value || value === "24:00") return [0, 0];
+    if (!value || value === "24:00") {
+      if (lo === null) return [0, 0];
+      const minHour = Math.min(Math.floor(lo / 60), 23);
+      for (let h = minHour; h < 24; h++) {
+        if (allowedMinutes(h).length > 0) return [h, 0];
+      }
+      return [minHour, 0];
+    }
     const [h, m] = value.split(":").map(Number);
     return [isNaN(h) ? 0 : h, isNaN(m) ? 0 : m];
-  }, [value]);
+  }, [value, lo, allowedMinutes]);
+
+  // onComplete 를 넘겼을 때만: 창을 닫고 부모에 선택 완료를 알린다.
+  const complete = () => {
+    if (!onComplete) return;
+    setOpen(false);
+    onComplete();
+  };
 
   // 외부 클릭 감지 — 포털로 띄운 드롭다운 내부 클릭은 닫지 않도록 wrap/drop 둘 다 체크
   useEffect(() => {
@@ -119,7 +201,15 @@ export default function TimePicker({
   }, [open, curHour, curMin, isMidnight, minuteStep]);
 
   const selectHour = (h: number) => {
-    const mm = String(curMin).padStart(2, "0");
+    // "그 시:현재 분" 이 범위 밖이면 그 시 안에서 가장 가까운 허용 분으로 맞춘다
+    // (min 쪽이면 가장 작은 허용 분, max 쪽이면 가장 큰 허용 분). 범위가 없으면 항상 그대로.
+    let m = curMin;
+    if (!inRange(h * 60 + m)) {
+      const allowed = allowedMinutes(h);
+      if (allowed.length === 0) return;
+      m = lo !== null && h * 60 + m < lo ? allowed[0] : allowed[allowed.length - 1];
+    }
+    const mm = String(m).padStart(2, "0");
     const hh = String(h).padStart(2, "0");
     onChange(`${hh}:${mm}`);
   };
@@ -128,11 +218,20 @@ export default function TimePicker({
     const hh = String(curHour).padStart(2, "0");
     const mm = String(m).padStart(2, "0");
     onChange(`${hh}:${mm}`);
+    complete();
   };
 
   const selectMidnight = () => {
     onChange("24:00");
     setOpen(false);
+    onComplete?.();
+  };
+
+  // 빠른 선택(00:00·정오) — 기존처럼 창을 닫고, onComplete 가 있으면 알린다.
+  const selectQuick = (hhmm: string) => {
+    onChange(hhmm);
+    setOpen(false);
+    onComplete?.();
   };
 
   const selectNow = () => {
@@ -140,7 +239,14 @@ export default function TimePicker({
     const hh = String(d.getHours()).padStart(2, "0");
     const mm = String(d.getMinutes()).padStart(2, "0");
     onChange(`${hh}:${mm}`);
+    complete();
   };
+
+  // 빠른 선택 버튼 — 결과가 범위 밖이면 비활성. (렌더마다 다시 계산되므로 '지금'은 누르는 순간 기준과 거의 같다)
+  const now = new Date();
+  const nowAllowed = inRange(now.getHours() * 60 + now.getMinutes());
+  const quickClass = (allowed: boolean, base: string) =>
+    allowed ? base : "text-gray-300 cursor-not-allowed";
 
   const clearValue = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -227,21 +333,28 @@ export default function TimePicker({
                   className="h-40 overflow-y-auto border border-gray-100 rounded-lg"
                   style={{ scrollSnapType: "y mandatory" }}
                 >
-                  {Array.from({ length: 24 }, (_, i) => (
-                    <button
-                      key={i}
-                      type="button"
-                      onClick={() => selectHour(i)}
-                      style={{ scrollSnapAlign: "center" }}
-                      className={`w-full h-8 text-sm font-mono transition-colors ${
-                        i === curHour
-                          ? "bg-blue-500 text-white font-bold"
-                          : "text-gray-700 hover:bg-blue-50"
-                      }`}
-                    >
-                      {String(i).padStart(2, "0")}
-                    </button>
-                  ))}
+                  {Array.from({ length: 24 }, (_, i) => {
+                    // 그 시에 고를 수 있는 분이 하나도 없으면 회색·클릭 불가
+                    const enabled = allowedMinutes(i).length > 0;
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => selectHour(i)}
+                        disabled={!enabled}
+                        style={{ scrollSnapAlign: "center" }}
+                        className={`w-full h-8 text-sm font-mono transition-colors ${
+                          !enabled
+                            ? "text-gray-300 cursor-not-allowed"
+                            : i === curHour
+                            ? "bg-blue-500 text-white font-bold"
+                            : "text-gray-700 hover:bg-blue-50"
+                        }`}
+                      >
+                        {String(i).padStart(2, "0")}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -253,21 +366,28 @@ export default function TimePicker({
                   className="h-40 overflow-y-auto border border-gray-100 rounded-lg"
                   style={{ scrollSnapType: "y mandatory" }}
                 >
-                  {Array.from({ length: Math.ceil(60 / minuteStep) }, (_, i) => i * minuteStep).map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => selectMin(m)}
-                      style={{ scrollSnapAlign: "center" }}
-                      className={`w-full h-8 text-sm font-mono transition-colors ${
-                        m === curMin
-                          ? "bg-blue-500 text-white font-bold"
-                          : "text-gray-700 hover:bg-blue-50"
-                      }`}
-                    >
-                      {String(m).padStart(2, "0")}
-                    </button>
-                  ))}
+                  {minuteOptions.map((m) => {
+                    // 범위 밖 분은 회색·클릭 불가
+                    const enabled = inRange(curHour * 60 + m);
+                    return (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => selectMin(m)}
+                        disabled={!enabled}
+                        style={{ scrollSnapAlign: "center" }}
+                        className={`w-full h-8 text-sm font-mono transition-colors ${
+                          !enabled
+                            ? "text-gray-300 cursor-not-allowed"
+                            : m === curMin
+                            ? "bg-blue-500 text-white font-bold"
+                            : "text-gray-700 hover:bg-blue-50"
+                        }`}
+                      >
+                        {String(m).padStart(2, "0")}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -293,27 +413,33 @@ export default function TimePicker({
             <button
               type="button"
               onClick={selectNow}
-              className="flex-1 text-[10px] text-gray-500 hover:text-blue-500 hover:bg-blue-50 py-1.5 rounded-lg"
+              disabled={!nowAllowed}
+              className={`flex-1 text-[10px] py-1.5 rounded-lg ${quickClass(
+                nowAllowed,
+                "text-gray-500 hover:text-blue-500 hover:bg-blue-50"
+              )}`}
             >
               지금
             </button>
             <button
               type="button"
-              onClick={() => {
-                onChange("00:00");
-                setOpen(false);
-              }}
-              className="flex-1 text-[10px] text-gray-500 hover:text-blue-500 hover:bg-blue-50 py-1.5 rounded-lg"
+              onClick={() => selectQuick("00:00")}
+              disabled={!inRange(0)}
+              className={`flex-1 text-[10px] py-1.5 rounded-lg ${quickClass(
+                inRange(0),
+                "text-gray-500 hover:text-blue-500 hover:bg-blue-50"
+              )}`}
             >
               00:00
             </button>
             <button
               type="button"
-              onClick={() => {
-                onChange("12:00");
-                setOpen(false);
-              }}
-              className="flex-1 text-[10px] text-gray-500 hover:text-blue-500 hover:bg-blue-50 py-1.5 rounded-lg"
+              onClick={() => selectQuick("12:00")}
+              disabled={!inRange(12 * 60)}
+              className={`flex-1 text-[10px] py-1.5 rounded-lg ${quickClass(
+                inRange(12 * 60),
+                "text-gray-500 hover:text-blue-500 hover:bg-blue-50"
+              )}`}
             >
               정오
             </button>
@@ -321,7 +447,11 @@ export default function TimePicker({
               <button
                 type="button"
                 onClick={selectMidnight}
-                className="flex-1 text-[10px] text-purple-600 hover:text-purple-700 hover:bg-purple-50 py-1.5 rounded-lg font-semibold"
+                disabled={!inRange(24 * 60)}
+                className={`flex-1 text-[10px] py-1.5 rounded-lg font-semibold ${quickClass(
+                  inRange(24 * 60),
+                  "text-purple-600 hover:text-purple-700 hover:bg-purple-50"
+                )}`}
               >
                 자정
               </button>
@@ -330,7 +460,10 @@ export default function TimePicker({
 
           <button
             type="button"
-            onClick={() => setOpen(false)}
+            onClick={() => {
+              setOpen(false);
+              onComplete?.();
+            }}
             className="mt-2 w-full text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-50 py-1.5 rounded-lg"
           >
             확인
@@ -340,7 +473,9 @@ export default function TimePicker({
       )}
     </div>
   );
-}
+});
+
+export default TimePicker;
 
 // 외부에서 사용할 헬퍼: "24:00" → "23:59" 변환 (DB 저장 시)
 export function normalizeTimeForDb(time: string): string {
