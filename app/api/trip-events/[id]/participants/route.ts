@@ -3,13 +3,14 @@ import { requireSession } from "@/lib/auth-helpers";
 import { prisma } from "@/lib/prisma";
 import {
   parseDatesArray,
+  type ParsedDate,
   computeApprovalStatus,
 } from "@/lib/trip-helpers";
 import { createNotifications } from "@/lib/notify";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: 타인 초대.
 // POST /api/trip-events/[id]/participants
-// body: { employeeId: number, dates?: [{ attendDate, startTime?, endTime? }] }
+// body: { employeeId: number, dates?: [{ attendDate, startTime?, endTime?, meetingStartTime?, meetingEndTime? }] }
 //
 // 권한: 로그인한 모든 사용자(이벤트 생성자/admin/직원 누구나). 이벤트 status='active'일 때만.
 // 결재 규칙: 요청자 role이 admin/ceo → approval_status='not_required',
@@ -107,7 +108,7 @@ export async function POST(
     }
 
     // 날짜 검증 (있는 경우만 — 초대는 날짜 미지정 허용)
-    let parsedDates: { attendDate: Date; startTime: Date | null; endTime: Date | null }[] = [];
+    let parsedDates: ParsedDate[] = [];
     if (dates !== undefined && dates !== null) {
       const r = parseDatesArray(dates, ev.startDate, ev.endDate);
       if (!r.ok) {
@@ -135,6 +136,8 @@ export async function POST(
             attendDate: d.attendDate,
             startTime: d.startTime,
             endTime: d.endTime,
+            meetingStartTime: d.meetingStartTime,
+            meetingEndTime: d.meetingEndTime,
           })),
         });
       }

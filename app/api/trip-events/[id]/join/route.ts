@@ -14,7 +14,7 @@ import { resolveTripParticipantApprovers } from "@/lib/approval-resolver";
 
 // 그룹 출장(Field Trip) Phase 7 2단계: self-join.
 // POST /api/trip-events/[id]/join
-// body: { dates: [{ attendDate, startTime?, endTime? }] }  // 1개 이상 필수
+// body: { dates: [{ attendDate, startTime?, endTime?, meetingStartTime?, meetingEndTime? }] }  // 1개 이상 필수
 //
 // 권한: 로그인 본인. 이벤트 status='active'일 때만.
 // 결재 규칙: invite_status='accepted'(즉시 수락), approval_status는 본인 role 기준
@@ -132,6 +132,8 @@ export async function POST(
           attendDate: d.attendDate,
           startTime: d.startTime,
           endTime: d.endTime,
+          meetingStartTime: d.meetingStartTime,
+          meetingEndTime: d.meetingEndTime,
         })),
       });
       return p;

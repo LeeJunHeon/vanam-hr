@@ -62,6 +62,8 @@ function buildTripItem(
       attendDate: Date;
       startTime: Date | null;
       endTime: Date | null;
+      meetingStartTime: Date | null;
+      meetingEndTime: Date | null;
     }>;
     tripEvent: {
       id: number;
@@ -139,6 +141,8 @@ function buildTripItem(
         attendDate: d.attendDate.toISOString().split("T")[0],
         startTime: hhmmFromTime(d.startTime),
         endTime: hhmmFromTime(d.endTime),
+        meetingStartTime: hhmmFromTime(d.meetingStartTime),
+        meetingEndTime: hhmmFromTime(d.meetingEndTime),
       })),
     })),
     // history 카드용 처리 시각 (가장 최근)
@@ -469,6 +473,8 @@ export async function GET(request: NextRequest) {
               attendDate: true,
               startTime: true,
               endTime: true,
+              meetingStartTime: true,
+              meetingEndTime: true,
             },
           },
           tripEvent: {
@@ -522,7 +528,10 @@ export async function GET(request: NextRequest) {
               },
               dates: {
                 orderBy: [{ attendDate: "asc" }],
-                select: { attendDate: true, startTime: true, endTime: true },
+                select: {
+                  attendDate: true, startTime: true, endTime: true,
+                  meetingStartTime: true, meetingEndTime: true,
+                },
               },
             },
             orderBy: [{ createdAt: "asc" }],
@@ -543,6 +552,8 @@ export async function GET(request: NextRequest) {
         attendDate: d.attendDate.toISOString().split("T")[0],
         startTime: hhmmFromTime(d.startTime),
         endTime: hhmmFromTime(d.endTime),
+        meetingStartTime: hhmmFromTime(d.meetingStartTime),
+        meetingEndTime: hhmmFromTime(d.meetingEndTime),
       })),
       // 정렬용 — 초대 생성 시각.
       requestedAt: p.createdAt.toISOString(),

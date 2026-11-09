@@ -608,12 +608,15 @@ model TripParticipant {
 
 // 출장 참가자별 실제 참가일자 (이벤트 기간 중 본인이 실제 가는 날짜 N개)
 // startTime/endTime: 선택 입력. 둘 다 NULL이면 종일. (DB에 이미 추가되어 있음)
+// meetingStartTime/meetingEndTime: 실제 미팅 시각(선택). 근태=start/end(이동 포함), 캘린더=미팅 우선(없으면 start/end).
 model TripParticipantDate {
   id                  Int       @id @default(autoincrement())
   tripParticipantId   Int       @map("trip_participant_id")
   attendDate          DateTime  @map("attend_date") @db.Date
   startTime           DateTime? @map("start_time") @db.Time(6)
   endTime             DateTime? @map("end_time") @db.Time(6)
+  meetingStartTime    DateTime? @map("meeting_start_time") @db.Time(6)
+  meetingEndTime      DateTime? @map("meeting_end_time") @db.Time(6)
   calendarEventId     String?   @map("calendar_event_id") @db.VarChar(255)
   attendanceRequestId Int?      @map("attendance_request_id")
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)

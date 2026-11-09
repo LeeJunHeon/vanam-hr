@@ -1,6 +1,7 @@
 import type { Prisma } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { createNotifications } from "@/lib/notify";
+import { validateTripMeetingTime } from "@/lib/trip-dates";
 
 // 그룹 출장(Field Trip) API 공용 헬퍼.
 // Phase 7 2단계 — 참석자 관리 라우트들이 공유.
@@ -29,11 +30,15 @@ export interface ParsedDate {
   attendDate: Date;
   startTime: Date | null;
   endTime: Date | null;
+  // 실제 미팅 시각(선택). 캘린더 표시용 — 근태는 startTime/endTime 을 쓴다.
+  meetingStartTime: Date | null;
+  meetingEndTime: Date | null;
 }
 
 // dates 배열 → ParsedDate[] 또는 에러 문자열.
 // - 모든 attendDate는 [eventStart, eventEnd] 이내여야 함.
 // - startTime/endTime 둘 다 있으면 start < end.
+// - meetingStartTime/meetingEndTime("HH:MM", 선택)은 lib/trip-dates validateTripMeetingTime 규칙(화면과 공용).
 // - 항목 1개라도 검증 실패 시 즉시 에러 반환.
 export function parseDatesArray(
   raw: unknown,
@@ -91,7 +96,31 @@ export function parseDatesArray(
       };
     }
 
-    out.push({ attendDate: d, startTime, endTime });
+    // 미팅 시간(선택) — 형식은 startTime 과 같은 방식, 나머지 규칙은 화면과 같은 공용 함수.
+    const hasMeetingStart =
+      r.meetingStartTime !== undefined && r.meetingStartTime !== null && r.meetingStartTime !== "";
+    const meetingStartTime = hasMeetingStart ? parseHhmm(r.meetingStartTime) : null;
+    if (hasMeetingStart && meetingStartTime === null) {
+      return { ok: false, error: "meetingStartTime 형식이 잘못되었습니다 (HH:MM)." };
+    }
+    const hasMeetingEnd =
+      r.meetingEndTime !== undefined && r.meetingEndTime !== null && r.meetingEndTime !== "";
+    const meetingEndTime = hasMeetingEnd ? parseHhmm(r.meetingEndTime) : null;
+    if (hasMeetingEnd && meetingEndTime === null) {
+      return { ok: false, error: "meetingEndTime 형식이 잘못되었습니다 (HH:MM)." };
+    }
+    const hm = (t: Date | null) => (t ? t.toISOString().slice(11, 16) : null);
+    const meetingError = validateTripMeetingTime({
+      startTime: hm(startTime),
+      endTime: hm(endTime),
+      meetingStartTime: hm(meetingStartTime),
+      meetingEndTime: hm(meetingEndTime),
+    });
+    if (meetingError) {
+      return { ok: false, error: `${ymd}: ${meetingError}` };
+    }
+
+    out.push({ attendDate: d, startTime, endTime, meetingStartTime, meetingEndTime });
   }
   return { ok: true, dates: out };
 }

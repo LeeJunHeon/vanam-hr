@@ -3,6 +3,7 @@ import { requireSession, isAdminSession } from "@/lib/auth-helpers";
 import { prisma } from "@/lib/prisma";
 import {
   parseDatesArray,
+  type ParsedDate,
   checkInviteResponse,
   notifyTripApprovalRequested,
 } from "@/lib/trip-helpers";
@@ -142,7 +143,7 @@ export async function PATCH(
 
     // ── accept / update_dates: 둘 다 날짜 교체 흐름 공유 ──
     // body.dates가 오면 그것으로 교체. 없으면 기존 dates 유지(accept만 해당).
-    let parsedDates: { attendDate: Date; startTime: Date | null; endTime: Date | null }[] | null = null;
+    let parsedDates: ParsedDate[] | null = null;
     if (dates !== undefined && dates !== null) {
       const r = parseDatesArray(
         dates,
@@ -203,7 +204,7 @@ export async function PATCH(
 
     // 날짜 교체 + 참여 상태 저장 — 한 트랜잭션.
     //  - update_dates: 지난 날짜는 그대로여야 하고(다르면 400) 오늘 이후만 반영(replaceParticipantDates "update").
-    //    승인된 참석은 날짜를 빼기만 하면 승인 유지, 추가·시각 변경이면 결재 대기로 되돌림.
+    //    승인된 참석은 날짜를 빼거나 미팅 시각만 바꾸면 승인 유지, 추가·근태 시각 변경이면 결재 대기로 되돌림.
     //  - accept: dates 가 오면 전체 교체("initial"), 안 오면 기존 날짜 유지.
     const txResult = await prisma.$transaction(async (tx) => {
       let removedCalendarEventIds: string[] = [];

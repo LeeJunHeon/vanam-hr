@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Plane,
   Globe,
@@ -25,7 +25,11 @@ import TripReportModal, { type TripReportTarget } from "@/components/TripReportM
 import Pagination from "@/components/Pagination";
 import MyTripsPage from "@/components/MyTripsPage";
 import { buildMemoHeader, extractMemoHeader, extractMemoNotes, composeMemo } from "@/lib/calendar-memo";
-import { groupConsecutiveTripDates, tripDateGroupLabel } from "@/lib/trip-dates";
+import {
+  groupConsecutiveTripDates,
+  tripDateGroupLabel,
+  validateTripMeetingTime,
+} from "@/lib/trip-dates";
 
 // Phase 7 2단계: 출장 관리 페이지 — 이벤트 + 참석자(초대/self-join/수락/거절/날짜수정/제거).
 // 결재 처리(approve/reject)와 캘린더/근태 반영은 3·4단계.
@@ -69,8 +73,10 @@ interface ExternalRow {
 interface ParticipantDate {
   id: number;
   attendDate: string; // YYYY-MM-DD
-  startTime: string | null; // HH:MM
+  startTime: string | null; // HH:MM (근태 — 이동 포함)
   endTime: string | null;
+  meetingStartTime: string | null; // HH:MM (실제 미팅 — 캘린더 표시용, 없으면 null)
+  meetingEndTime: string | null;
   calendarEventId: string | null;
   attendanceRequestId: number | null;
 }
@@ -1528,7 +1534,7 @@ function TripDetailModal({
           warningText={
             selfActionMode === "update" &&
             myParticipant.approvalStatus === "approved"
-              ? "이미 승인된 참석입니다. 날짜를 빼기만 하면 승인이 유지되고, 날짜를 추가하거나 시간을 바꾸면 결재가 다시 필요합니다."
+              ? "이미 승인된 참석입니다. 날짜를 빼거나 미팅 시간만 바꾸면 승인이 유지되고, 날짜를 추가하거나 근태 시간을 바꾸면 결재가 다시 필요합니다."
               : null
           }
           onClose={() => setSelfActionMode(null)}
@@ -1722,16 +1728,17 @@ function InviteModal({
   // 초대 모달의 날짜 기본값 = 주최자(생성자)의 참가 일정 복사.
   // 주최자가 아직 참석자가 아니거나 dates가 없으면 빈 배열(기존과 동일).
   // 사용자가 수정/제거 가능, 비우고도 초대 가능(requireAtLeastOne=false).
-  const [datesPayload, setDatesPayload] = useState<DatePayloadRow[]>(() => {
+  const {
+    rows: datesPayload,
+    setRows: setDatesPayload,
+    rowErrors,
+    validate: validateRows,
+  } = useDateRows(() => {
     const creator = event.participants.find(
       (p) => p.employeeId === event.createdById
     );
-    const src = creator?.dates ?? [];
-    return src.map((d) => ({
-      attendDate: d.attendDate,
-      startTime: d.startTime ?? "",
-      endTime: d.endTime ?? "",
-    }));
+    // 주최자 일정 복사 — 미팅 시간 포함
+    return (creator?.dates ?? []).map(dateRowFrom);
   });
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1774,6 +1781,7 @@ function InviteModal({
       setErr("직원을 선택하세요.");
       return;
     }
+    if (!validateRows()) return;
     setSubmitting(true);
     setErr(null);
     try {
@@ -1784,7 +1792,10 @@ function InviteModal({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             employeeId: selectedEmpId,
-            dates: datesPayload.length > 0 ? datesPayload : undefined,
+            dates:
+              datesPayload.length > 0
+                ? dateRowsToApiPayload(datesPayload)
+                : undefined,
           }),
         }
       );
@@ -1862,6 +1873,7 @@ function InviteModal({
           event={event}
           value={datesPayload}
           onChange={setDatesPayload}
+          rowErrors={rowErrors}
           requireAtLeastOne={false}
           helpText="주최자 일정으로 기본 채워졌습니다. 날짜·시간을 수정하거나, 비우고 초대하면 참석자가 수락 시 직접 입력합니다."
         />
@@ -1906,13 +1918,12 @@ export function DatesModal({
   onClose: () => void;
   onSubmit: (datesPayload: ApiDatePayload[]) => Promise<string | null>;
 }) {
-  const [datesPayload, setDatesPayload] = useState<DatePayloadRow[]>(() =>
-    initialDates.map((d) => ({
-      attendDate: d.attendDate,
-      startTime: d.startTime ?? "",
-      endTime: d.endTime ?? "",
-    }))
-  );
+  const {
+    rows: datesPayload,
+    setRows: setDatesPayload,
+    rowErrors,
+    validate: validateRows,
+  } = useDateRows(() => initialDates.map(dateRowFrom));
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -1921,6 +1932,8 @@ export function DatesModal({
       setErr("참여 날짜를 1개 이상 선택하세요.");
       return;
     }
+    // 미팅 시간 검사 — 오류는 해당 행 아래에 표시되고 제출하지 않는다
+    if (!validateRows()) return;
     if (
       warnPastDates &&
       !confirmPastTripDates(
@@ -1932,12 +1945,7 @@ export function DatesModal({
     setSubmitting(true);
     setErr(null);
     try {
-      const payload = datesPayload.map((d) => ({
-        attendDate: d.attendDate,
-        startTime: d.startTime || undefined,
-        endTime: d.endTime || undefined,
-      }));
-      const e = await onSubmit(payload);
+      const e = await onSubmit(dateRowsToApiPayload(datesPayload));
       if (e) setErr(e);
     } finally {
       setSubmitting(false);
@@ -1950,6 +1958,7 @@ export function DatesModal({
         event={event}
         value={datesPayload}
         onChange={setDatesPayload}
+        rowErrors={rowErrors}
         requireAtLeastOne={requireAtLeastOne}
         lockPastBefore={lockPastBefore}
       />
@@ -1975,23 +1984,113 @@ export function DatesModal({
 // UI 내부 상태(빈 문자열로 비어있음 표현)와 API payload(undefined로 비어있음 표현)를 분리.
 interface DatePayloadRow {
   attendDate: string;
-  startTime: string; // "" if blank
+  startTime: string; // 근태 시작. "" if blank
   endTime: string;
+  meetingOn: boolean; // "실제 미팅 시간 따로 입력" 체크 여부
+  meetingStartTime: string; // "" if blank
+  meetingEndTime: string;
 }
 export interface ApiDatePayload {
   attendDate: string;
   startTime?: string;
   endTime?: string;
+  meetingStartTime?: string;
+  meetingEndTime?: string;
+}
+
+function emptyDateRow(attendDate: string): DatePayloadRow {
+  return {
+    attendDate,
+    startTime: "",
+    endTime: "",
+    meetingOn: false,
+    meetingStartTime: "",
+    meetingEndTime: "",
+  };
+}
+
+// 저장된 날짜 → 행 상태. 미팅 시간이 있으면 체크된 상태로 시작.
+function dateRowFrom(d: {
+  attendDate: string;
+  startTime: string | null;
+  endTime: string | null;
+  meetingStartTime?: string | null;
+  meetingEndTime?: string | null;
+}): DatePayloadRow {
+  const meetingStartTime = d.meetingStartTime ?? "";
+  const meetingEndTime = d.meetingEndTime ?? "";
+  return {
+    attendDate: d.attendDate,
+    startTime: d.startTime ?? "",
+    endTime: d.endTime ?? "",
+    meetingOn: meetingStartTime !== "" || meetingEndTime !== "",
+    meetingStartTime,
+    meetingEndTime,
+  };
+}
+
+// 행 상태 → API payload. DatesModal·InviteModal 공용.
+// 체크가 꺼져 있으면 미팅 필드를 보내지 않는다. "" 은 undefined.
+function dateRowsToApiPayload(rows: DatePayloadRow[]): ApiDatePayload[] {
+  return rows.map((d) => ({
+    attendDate: d.attendDate,
+    startTime: d.startTime || undefined,
+    endTime: d.endTime || undefined,
+    ...(d.meetingOn
+      ? {
+          meetingStartTime: d.meetingStartTime || undefined,
+          meetingEndTime: d.meetingEndTime || undefined,
+        }
+      : {}),
+  }));
+}
+
+// 제출 전 행 검사 — 서버(parseDatesArray)와 같은 lib/trip-dates validateTripMeetingTime.
+// 반환: 날짜 → 오류 문구 (오류 없는 날짜는 없음).
+function validateDateRows(rows: DatePayloadRow[]): Record<string, string> {
+  const errors: Record<string, string> = {};
+  for (const d of rows) {
+    if (!d.meetingOn) continue;
+    const e = validateTripMeetingTime(d);
+    if (e) errors[d.attendDate] = e;
+  }
+  return errors;
+}
+
+// 날짜 행 상태 + 행별 오류. DatesModal·InviteModal 공용.
+// 행을 고치거나 지우면 그 행의 오류는 지운다.
+function useDateRows(init: () => DatePayloadRow[]) {
+  const [rows, setRowsRaw] = useState<DatePayloadRow[]>(init);
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  const setRows = (next: DatePayloadRow[]) => {
+    const prevBy = new Map(rows.map((r) => [r.attendDate, r]));
+    const nextBy = new Map(next.map((r) => [r.attendDate, r]));
+    setRowErrors((errs) => {
+      const kept: Record<string, string> = {};
+      for (const [ymd, msg] of Object.entries(errs)) {
+        if (nextBy.get(ymd) === prevBy.get(ymd)) kept[ymd] = msg;
+      }
+      return kept;
+    });
+    setRowsRaw(next);
+  };
+  const validate = (): boolean => {
+    const errs = validateDateRows(rows);
+    setRowErrors(errs);
+    return Object.keys(errs).length === 0;
+  };
+  return { rows, setRows, rowErrors, validate };
 }
 
 // Phase 7 3단계 D-2: 미니 캘린더(월 그리드) + 선택 날짜 시간 입력 리스트.
 // - 이벤트 기간 내 날짜만 클릭 가능(범위 밖은 비활성/회색).
-// - 클릭 토글, 불연속 선택 가능.
+// - 한 번 클릭으로 바로 선택/해제, 이어서 다른 날을 누르면 그 사이까지 적용. 불연속 선택 가능.
 // - 월 네비는 이벤트 기간을 포함하는 범위로 제한.
 function DatesPicker({
   event,
   value,
   onChange,
+  rowErrors,
   requireAtLeastOne,
   helpText,
   lockPastBefore,
@@ -1999,6 +2098,8 @@ function DatesPicker({
   event: TripEventDetail;
   value: DatePayloadRow[];
   onChange: (v: DatePayloadRow[]) => void;
+  // 날짜 → 제출 검사 오류 문구 (해당 행 아래에 표시)
+  rowErrors?: Record<string, string>;
   requireAtLeastOne: boolean;
   helpText?: string;
   lockPastBefore?: string;
@@ -2056,7 +2157,23 @@ function DatesPicker({
     return arr;
   }, [viewYm]);
 
-  // 범위 선택 앵커(1번째 클릭). mode는 앵커 날짜의 선택 여부로 결정.
+  // 출장 기간이 하루뿐이고 선택된 날짜가 없으면 그 날을 미리 선택해 둔다.
+  // 처음 열 때 한 번만 — 전체 해제 뒤 다시 채워지지 않게 ref 로 막는다.
+  const prefilledRef = useRef(false);
+  useEffect(() => {
+    if (prefilledRef.current) return;
+    prefilledRef.current = true;
+    if (
+      event.startDate === event.endDate &&
+      value.length === 0 &&
+      inRange.has(event.startDate)
+    ) {
+      onChange([emptyDateRow(event.startDate)]);
+    }
+  }, [event.startDate, event.endDate, value.length, inRange, onChange]);
+
+  // 범위 선택 앵커. 첫 클릭에서 그 날을 바로 선택(add)/해제(remove)하고 앵커를 둔다.
+  // 앵커가 있을 때 다른 날을 누르면 앵커~그 날 구간에 같은 모드를 적용한다.
   const [anchor, setAnchor] = useState<
     { ymd: string; mode: "add" | "remove" } | null
   >(null);
@@ -2079,7 +2196,7 @@ function DatesPicker({
     const exist = new Set(value.map((v) => v.attendDate));
     const added = span
       .filter((d) => !exist.has(d))
-      .map((d) => ({ attendDate: d, startTime: "", endTime: "" }));
+      .map(emptyDateRow);
     if (added.length === 0) return;
     onChange(
       [...value, ...added].sort((x, y) => x.attendDate.localeCompare(y.attendDate))
@@ -2089,11 +2206,15 @@ function DatesPicker({
   const handleCellClick = (ymd: string) => {
     if (!inRange.has(ymd)) return;
     if (anchor === null) {
-      setAnchor({ ymd, mode: byDate.has(ymd) ? "remove" : "add" });
+      // 첫 클릭: 그 날을 바로 선택/해제하고 앵커를 둔다
+      const mode = byDate.has(ymd) ? "remove" : "add";
+      applyRange(ymd, ymd, mode);
+      setAnchor({ ymd, mode });
       setHoverYmd(ymd);
       return;
     }
-    applyRange(anchor.ymd, ymd, anchor.mode);
+    // 같은 날을 다시 누르면 아무것도 바꾸지 않고 앵커만 끝낸다
+    if (ymd !== anchor.ymd) applyRange(anchor.ymd, ymd, anchor.mode);
     setAnchor(null);
     setHoverYmd(null);
   };
@@ -2118,7 +2239,7 @@ function DatesPicker({
     setHoverYmd(null);
   };
 
-  // ESC로 앵커 취소 (상위 모달이 닫히지 않도록 capture 단계에서 차단)
+  // ESC로 앵커만 끝냄 — 선택은 유지 (상위 모달이 닫히지 않도록 capture 단계에서 차단)
   useEffect(() => {
     if (!anchor) return;
     const onKey = (e: KeyboardEvent) => {
@@ -2139,13 +2260,21 @@ function DatesPicker({
     return new Set(enumerateDates(a, b).filter((d) => inRange.has(d)));
   }, [anchor, hoverYmd, inRange]);
 
-  const updateTime = (
-    ymd: string,
-    field: "startTime" | "endTime",
-    next: string
-  ) => {
+  // 행 수정. 체크를 끄거나 근태 시간이 비면 미팅 시간도 비우고 체크도 끈다.
+  const updateRow = (ymd: string, patch: Partial<DatePayloadRow>) => {
     if (isLocked(ymd)) return;
-    onChange(value.map((v) => (v.attendDate === ymd ? { ...v, [field]: next } : v)));
+    onChange(
+      value.map((v) => {
+        if (v.attendDate !== ymd) return v;
+        const next = { ...v, ...patch };
+        if (!next.meetingOn || !next.startTime || !next.endTime) {
+          next.meetingOn = false;
+          next.meetingStartTime = "";
+          next.meetingEndTime = "";
+        }
+        return next;
+      })
+    );
   };
 
   const [headerYy, headerMm] = viewYm.split("-").map(Number);
@@ -2287,8 +2416,10 @@ function DatesPicker({
         {anchor && (
           <div className="mt-2 flex items-center gap-2 rounded-lg bg-amber-50 px-2.5 py-1.5">
             <span className="text-[11px] text-amber-700 leading-relaxed">
-              {anchor.ymd} 부터 — {anchor.mode === "add" ? "선택할" : "해제할"}{" "}
-              마지막 날짜를 클릭하세요 (같은 날 다시 클릭 = 하루만)
+              {anchor.ymd.slice(5)}{" "}
+              {anchor.mode === "add"
+                ? "선택됨 — 기간으로 늘리려면 마지막 날을 누르세요"
+                : "해제됨 — 이어서 해제할 마지막 날을 누르세요"}
             </span>
             <button
               type="button"
@@ -2298,7 +2429,7 @@ function DatesPicker({
               }}
               className="ml-auto text-[11px] font-semibold text-amber-700 hover:underline shrink-0"
             >
-              취소
+              완료
             </button>
           </div>
         )}
@@ -2308,56 +2439,131 @@ function DatesPicker({
       {sortedSelected.length > 0 && (
         <div className="mt-3 space-y-1.5">
           <div className="text-[11px] font-semibold text-gray-600">
-            선택된 날짜 {sortedSelected.length}개 (시간 비우면 종일)
+            선택된 날짜 {sortedSelected.length}개 (근태 시간 비우면 종일)
           </div>
-          <div className="border border-gray-100 rounded-xl divide-y divide-gray-50 max-h-44 overflow-y-auto">
-            {sortedSelected.map((row) => (
-              <div
-                key={row.attendDate}
-                className="px-3 py-2 flex items-center gap-2 flex-wrap"
-              >
-                <span className="font-mono text-xs text-gray-700 min-w-[110px]">
-                  {row.attendDate} ({weekdayLabel(row.attendDate)})
-                </span>
-                <div className="flex items-center gap-1 ml-auto">
-                  <TimePicker
-                    value={row.startTime}
-                    onChange={(val) =>
-                      updateTime(row.attendDate, "startTime", val)
-                    }
-                    placeholder="시작"
-                    className="w-[120px]"
-                    disabled={isLocked(row.attendDate)}
-                  />
-                  <span className="text-xs text-gray-400">~</span>
-                  <TimePicker
-                    value={row.endTime}
-                    onChange={(val) =>
-                      updateTime(row.attendDate, "endTime", val)
-                    }
-                    placeholder="종료"
-                    className="w-[120px]"
-                    disabled={isLocked(row.attendDate)}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removeOne(row.attendDate)}
-                    disabled={isLocked(row.attendDate)}
-                    className="p-1 rounded hover:bg-rose-50 text-rose-400 disabled:opacity-30 disabled:cursor-not-allowed"
-                    title={isLocked(row.attendDate) ? "지난 날짜는 바꿀 수 없어요" : "제거"}
+          <div className="border border-gray-100 rounded-xl divide-y divide-gray-50 max-h-72 overflow-y-auto">
+            {sortedSelected.map((row) => {
+              const locked = isLocked(row.attendDate);
+              // 미팅 시간은 근태 시작·종료를 둘 다 넣은 날에만
+              const canMeeting = !!row.startTime && !!row.endTime;
+              const attendText = `${row.startTime}~${row.endTime}`;
+              const calendarText =
+                row.meetingStartTime && row.meetingEndTime
+                  ? `${row.meetingStartTime}~${row.meetingEndTime}`
+                  : attendText;
+              const rowError = rowErrors?.[row.attendDate];
+              return (
+                <div key={row.attendDate} className="px-3 py-2 space-y-1.5">
+                  {/* 1줄: 날짜 | 근태 시작~종료 | 제거 */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-mono text-xs text-gray-700 min-w-[110px]">
+                      {row.attendDate} ({weekdayLabel(row.attendDate)})
+                    </span>
+                    <div className="flex items-center gap-1 ml-auto">
+                      <span className="w-7 shrink-0 text-[11px] font-semibold text-gray-500">
+                        근태
+                      </span>
+                      <TimePicker
+                        value={row.startTime}
+                        onChange={(val) =>
+                          updateRow(row.attendDate, { startTime: val })
+                        }
+                        placeholder="시작"
+                        className="w-[120px]"
+                        disabled={locked}
+                      />
+                      <span className="text-xs text-gray-400">~</span>
+                      <TimePicker
+                        value={row.endTime}
+                        onChange={(val) =>
+                          updateRow(row.attendDate, { endTime: val })
+                        }
+                        placeholder="종료"
+                        className="w-[120px]"
+                        disabled={locked}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeOne(row.attendDate)}
+                        disabled={locked}
+                        className="p-1 rounded hover:bg-rose-50 text-rose-400 disabled:opacity-30 disabled:cursor-not-allowed"
+                        title={locked ? "지난 날짜는 바꿀 수 없어요" : "제거"}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  </div>
+                  {/* 2줄: 실제 미팅 시간 체크 */}
+                  <label
+                    className={`flex items-center gap-1.5 text-[11px] ${
+                      canMeeting && !locked
+                        ? "text-gray-600 cursor-pointer"
+                        : "text-gray-400 cursor-not-allowed"
+                    }`}
                   >
-                    <X size={12} />
-                  </button>
+                    <input
+                      type="checkbox"
+                      checked={row.meetingOn}
+                      disabled={!canMeeting || locked}
+                      onChange={(e) =>
+                        updateRow(row.attendDate, { meetingOn: e.target.checked })
+                      }
+                      className="h-3.5 w-3.5 rounded border-gray-300 accent-blue-600 disabled:cursor-not-allowed"
+                    />
+                    실제 미팅 시간 따로 입력
+                    {!canMeeting && (
+                      <span className="text-[10px] text-gray-400">
+                        (근태 시간을 넣으면 선택 가능)
+                      </span>
+                    )}
+                  </label>
+                  {row.meetingOn && (
+                    <>
+                      {/* 3줄: 미팅 시작~종료 — 근태 칸과 세로 정렬(끝의 빈 칸 = 제거 버튼 자리) */}
+                      <div className="flex items-center gap-1 justify-end">
+                        <span className="w-7 shrink-0 text-[11px] font-semibold text-gray-500">
+                          미팅
+                        </span>
+                        <TimePicker
+                          value={row.meetingStartTime}
+                          onChange={(val) =>
+                            updateRow(row.attendDate, { meetingStartTime: val })
+                          }
+                          placeholder="시작"
+                          className="w-[120px]"
+                          disabled={locked}
+                        />
+                        <span className="text-xs text-gray-400">~</span>
+                        <TimePicker
+                          value={row.meetingEndTime}
+                          onChange={(val) =>
+                            updateRow(row.attendDate, { meetingEndTime: val })
+                          }
+                          placeholder="종료"
+                          className="w-[120px]"
+                          disabled={locked}
+                        />
+                        <span className="w-5 shrink-0" aria-hidden="true" />
+                      </div>
+                      {/* 4줄: 캘린더에 무엇이 들어가는지 */}
+                      <div className="text-right text-[10px] text-gray-500 pr-6">
+                        캘린더 {calendarText} · 근태 {attendText}
+                      </div>
+                    </>
+                  )}
+                  {rowError && (
+                    <p className="text-[11px] text-rose-600">{rowError}</p>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
 
       <p className="text-[11px] text-gray-400 mt-2 leading-relaxed">
         {helpText ??
-          "시작일을 클릭한 뒤 종료일을 클릭하면 그 사이 전체가 선택됩니다. 떨어진 구간을 여러 번 선택하면 합쳐집니다(예: 22~23 + 26~27). 이미 선택된 날에서 시작하면 그 범위가 해제됩니다. 시작/종료 시간은 선택사항(비우면 종일)."}
+          "날짜를 누르면 바로 선택되고, 이어서 다른 날을 누르면 그 사이까지 선택됩니다. 떨어진 날을 고를 땐 '완료'를 누른 뒤 고르세요. 선택된 날을 누르면 해제됩니다. 근태 시간은 선택사항(비우면 종일)이고, 실제 미팅 시간을 넣으면 캘린더에는 미팅 시간으로 표시됩니다."}
       </p>
     </div>
   );

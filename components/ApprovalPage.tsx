@@ -24,6 +24,7 @@ import {
   todayYmd,
   type ApiDatePayload,
 } from "@/components/FieldTripPage";
+import { tripTimeLabel } from "@/lib/trip-dates";
 
 // 일수 포맷: 정수면 그대로, 아니면 소수 1자리 (반차 0.5 단위 대응)
 function fmtDays(n: number): string {
@@ -109,6 +110,8 @@ interface TripPendingParticipant {
     attendDate: string;
     startTime: string | null;
     endTime: string | null;
+    meetingStartTime: string | null;
+    meetingEndTime: string | null;
   }>;
 }
 interface TripApprovalItem {
@@ -150,6 +153,8 @@ interface TripInviteItem {
     attendDate: string;
     startTime: string | null;
     endTime: string | null;
+    meetingStartTime: string | null;
+    meetingEndTime: string | null;
   }>;
   requestedAt: string;
 }
@@ -1185,9 +1190,7 @@ function TripInviteCard({
               className="text-[11px] font-mono bg-gray-50 text-gray-700 px-1.5 py-0.5 rounded"
             >
               {d.attendDate}
-              {d.startTime || d.endTime
-                ? ` ${d.startTime ?? "-"}~${d.endTime ?? "-"}`
-                : " 종일"}
+              {tripTimeLabel(d)}
             </span>
           ))}
         </div>
@@ -1503,9 +1506,7 @@ function TripApprovalModal({
                             className="text-[11px] font-mono bg-gray-50 text-gray-700 px-1.5 py-0.5 rounded"
                           >
                             {d.attendDate}
-                            {d.startTime || d.endTime
-                              ? ` ${d.startTime ?? "-"}~${d.endTime ?? "-"}`
-                              : " 종일"}
+                            {tripTimeLabel(d)}
                           </span>
                         ))}
                       </div>

@@ -69,7 +69,11 @@ export async function POST(request: Request) {
       // 챗 수락 시 날짜 미지정이면 초대 때 정해둔 날짜를 쓴다
       dates: {
         orderBy: [{ attendDate: "asc" }],
-        select: { attendDate: true, startTime: true, endTime: true },
+        select: {
+          attendDate: true, startTime: true, endTime: true,
+          // 미팅 시각도 함께 — 빠뜨리면 챗 수락 때 미팅 시간이 지워진다
+          meetingStartTime: true, meetingEndTime: true,
+        },
       },
       tripEvent: {
         select: { id: true, name: true, startDate: true, endDate: true, createdById: true },
@@ -132,7 +136,7 @@ export async function POST(request: Request) {
 
   // ───── 수락 ───── (웹 trip-participants accept 동일)
   // 참석 날짜: 지정(콤마구분 YYYY-MM-DD)하면 그 날짜(종일).
-  // 미지정이면 초대 때 정해둔 날짜(시간 포함)를 그대로 쓰고, 그것도 없으면 출장 전체 기간.
+  // 미지정이면 초대 때 정해둔 날짜(근태·미팅 시간 포함)를 그대로 쓰고, 그것도 없으면 출장 전체 기간.
   let parsedDates: ParsedDate[];
   const savedDates = attendDatesText ? [] : part.dates;
   if (savedDates.length > 0) {
@@ -140,6 +144,8 @@ export async function POST(request: Request) {
       attendDate: d.attendDate,
       startTime: d.startTime,
       endTime: d.endTime,
+      meetingStartTime: d.meetingStartTime,
+      meetingEndTime: d.meetingEndTime,
     }));
   } else {
     let rawDates: { attendDate: string }[];

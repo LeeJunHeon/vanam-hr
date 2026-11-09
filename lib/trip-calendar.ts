@@ -14,6 +14,8 @@
 //    - 참석자·연속 날짜 묶음별 1건. external_event_id = trip-{출장}-{참석자}-{묶음 시작일}
 //      (캘린더 event_id 에 의존하지 않음 — 캘린더가 재구성되어도 근태는 영향 없음).
 //  • 날짜 행 교체 — replaceParticipantDates(tx, participantId, dates, mode).
+//  • 시간: 캘린더는 미팅 시간 우선(meeting_start_time/meeting_end_time 이 둘 다 있으면 그 시간, 없으면 start/end),
+//          근태는 항상 start_time/end_time(이동 포함). 근태 쪽 코드는 미팅 시간을 읽지 않는다.
 //
 // 외부 호출(syncer)은 트랜잭션 밖. 실패는 로그(전체 흐름 보존).
 
@@ -591,13 +593,21 @@ export async function syncTripParticipantAttendance(
 
 // 날짜 행 교체 — 초대 수락(웹 accept·챗 수락)과 날짜 변경(update_dates) 공용. 트랜잭션 안에서 부른다.
 //  - "initial": 전체 교체. 지워지는 행의 calendar_event_id 를 모아 반환.
-//  - "update": 지난 날짜(KST 오늘 미만)는 지금과 날짜·시각이 정확히 같아야 한다(다르면 400, 아무것도 안 바꿈).
-//              오늘 이후만 비교해 빠진 날 삭제·시각 바뀐 날 수정·새 날 추가. 결과 0개면 400.
-//              removeOnly = 추가 0 · 시각 변경 0 (승인 유지 판단용).
+//  - "update": 지난 날짜(KST 오늘 미만)는 지금과 날짜·근태 시각·미팅 시각이 정확히 같아야 한다(다르면 400, 아무것도 안 바꿈).
+//              오늘 이후만 비교해 빠진 날 삭제·근태 시각 또는 미팅 시각이 바뀐 날 수정·새 날 추가. 결과 0개면 400.
+//              removeOnly = 추가 0 · 근태 시각 변경 0 (승인 유지 판단용).
+//              미팅 시각만 바뀐 날은 행은 고치지만 removeOnly 를 깨지 않는다 — 근태가 그대로라 재결재 없음.
+//  두 모드 모두 미팅 시각(meetingStartTime/meetingEndTime)을 함께 저장한다.
 export async function replaceParticipantDates(
   tx: Db,
   participantId: number,
-  dates: Array<{ attendDate: Date; startTime: Date | null; endTime: Date | null }>,
+  dates: Array<{
+    attendDate: Date;
+    startTime: Date | null;
+    endTime: Date | null;
+    meetingStartTime: Date | null;
+    meetingEndTime: Date | null;
+  }>,
   mode: "initial" | "update"
 ): Promise<
   | { ok: true; removedCalendarEventIds: string[]; removeOnly: boolean }
@@ -605,7 +615,10 @@ export async function replaceParticipantDates(
 > {
   const existing = await tx.tripParticipantDate.findMany({
     where: { tripParticipantId: participantId },
-    select: { id: true, attendDate: true, startTime: true, endTime: true, calendarEventId: true },
+    select: {
+      id: true, attendDate: true, startTime: true, endTime: true,
+      meetingStartTime: true, meetingEndTime: true, calendarEventId: true,
+    },
   });
   const calIds = (rows: typeof existing) =>
     rows
@@ -621,6 +634,8 @@ export async function replaceParticipantDates(
           attendDate: d.attendDate,
           startTime: d.startTime,
           endTime: d.endTime,
+          meetingStartTime: d.meetingStartTime,
+          meetingEndTime: d.meetingEndTime,
         })),
       });
     }
@@ -628,11 +643,19 @@ export async function replaceParticipantDates(
   }
 
   const today = kstTodayMidnightUtc().getTime();
-  const sig = (d: { startTime: Date | null; endTime: Date | null }) =>
-    `${timeKey(d.startTime)}-${timeKey(d.endTime)}`;
+  type Times = {
+    startTime: Date | null;
+    endTime: Date | null;
+    meetingStartTime: Date | null;
+    meetingEndTime: Date | null;
+  };
+  // 근태 시각 / 미팅 시각 시그니처
+  const attendSig = (d: Times) => `${timeKey(d.startTime)}-${timeKey(d.endTime)}`;
+  const meetingSig = (d: Times) => `${timeKey(d.meetingStartTime)}-${timeKey(d.meetingEndTime)}`;
+  const sig = (d: Times) => `${attendSig(d)}|${meetingSig(d)}`;
   const mmdd = (ymd: string) => ymd.slice(5);
 
-  // 지난 날짜는 그대로여야 한다
+  // 지난 날짜는 그대로여야 한다 (근태 시각·미팅 시각 모두)
   const pastOld = new Map(
     existing.filter((d) => d.attendDate.getTime() < today).map((d) => [ymdKey(d.attendDate), sig(d)])
   );
@@ -658,20 +681,30 @@ export async function replaceParticipantDates(
   const newByYmd = new Map(futureNew.map((d) => [ymdKey(d.attendDate), d]));
 
   const removed = futureOld.filter((d) => !newByYmd.has(ymdKey(d.attendDate)));
-  const changed = futureNew.filter((d) => {
+  // 근태 시각이 바뀐 날 / 미팅 시각만 바뀐 날 — 둘 다 행을 고치지만 승인 유지 판단은 앞의 것만 본다.
+  const attendChanged = futureNew.filter((d) => {
     const o = oldByYmd.get(ymdKey(d.attendDate));
-    return o && sig(o) !== sig(d);
+    return o && attendSig(o) !== attendSig(d);
+  });
+  const meetingOnlyChanged = futureNew.filter((d) => {
+    const o = oldByYmd.get(ymdKey(d.attendDate));
+    return o && attendSig(o) === attendSig(d) && meetingSig(o) !== meetingSig(d);
   });
   const added = futureNew.filter((d) => !oldByYmd.has(ymdKey(d.attendDate)));
 
   if (removed.length > 0) {
     await tx.tripParticipantDate.deleteMany({ where: { id: { in: removed.map((d) => d.id) } } });
   }
-  for (const d of changed) {
+  for (const d of [...attendChanged, ...meetingOnlyChanged]) {
     const o = oldByYmd.get(ymdKey(d.attendDate))!;
     await tx.tripParticipantDate.update({
       where: { id: o.id },
-      data: { startTime: d.startTime, endTime: d.endTime },
+      data: {
+        startTime: d.startTime,
+        endTime: d.endTime,
+        meetingStartTime: d.meetingStartTime,
+        meetingEndTime: d.meetingEndTime,
+      },
     });
   }
   if (added.length > 0) {
@@ -681,13 +714,15 @@ export async function replaceParticipantDates(
         attendDate: d.attendDate,
         startTime: d.startTime,
         endTime: d.endTime,
+        meetingStartTime: d.meetingStartTime,
+        meetingEndTime: d.meetingEndTime,
       })),
     });
   }
   return {
     ok: true,
     removedCalendarEventIds: calIds(removed),
-    removeOnly: added.length === 0 && changed.length === 0,
+    removeOnly: added.length === 0 && attendChanged.length === 0,
   };
 }
 
@@ -714,6 +749,8 @@ function buildEventDescription(eventMemo: string | null): string {
  *     - 지난 날: 근태에 기록된 날짜(살아있는 출장 근태 기간이 덮는 날) — 참석자 상태·출장 status 무관.
  *       취소된 출장·늦게 승인된 끝난 출장도 지난 기록은 그린다.
  *  3) "날짜 → 참석자 집합(+시간)" 시그니처가 같고 연속이면 1건으로 묶어 캘린더 일정 생성.
+ *     여기서 시간 = 캘린더용 시간(미팅 시작·종료가 둘 다 있으면 미팅 시간, 아니면 start/end).
+ *     같은 날 참석자끼리 캘린더용 시간이 다르면 종일로 그린다.
  *  4) 새로 생성된 event_id 를 그 그룹의 모든 참석자 × 모든 날짜 행에 저장.
  *
  * 외부 호출 실패는 로그만, 전체 작업은 계속 진행.
@@ -800,6 +837,8 @@ export async function rebuildTripEventCalendar(
           attendDate: true,
           startTime: true,
           endTime: true,
+          meetingStartTime: true,
+          meetingEndTime: true,
         },
       },
     },
@@ -832,6 +871,7 @@ export async function rebuildTripEventCalendar(
     employeeName: string;
     employeeEmail: string | null;
     dateId: number;
+    // 캘린더용 시간 — 미팅 시간 우선, 없으면 start/end
     startTime: Date | null;
     endTime: Date | null;
   }
@@ -844,14 +884,15 @@ export async function rebuildTripEventCalendar(
       if (isPast ? !isRecorded(p, d.attendDate) : !confirmed) continue;
       const ymd = ymdKey(d.attendDate);
       const list = byDate.get(ymd) ?? [];
+      const useMeeting = d.meetingStartTime !== null && d.meetingEndTime !== null;
       list.push({
         participantId: p.id,
         employeeId: p.employee.id,
         employeeName: p.employee.name,
         employeeEmail: p.employee.email ?? null,
         dateId: d.id,
-        startTime: d.startTime,
-        endTime: d.endTime,
+        startTime: useMeeting ? d.meetingStartTime : d.startTime,
+        endTime: useMeeting ? d.meetingEndTime : d.endTime,
       });
       byDate.set(ymd, list);
     }
