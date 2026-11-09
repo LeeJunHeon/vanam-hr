@@ -2051,6 +2051,13 @@ function validateDateRows(rows: DatePayloadRow[]): Record<string, string> {
   const errors: Record<string, string> = {};
   for (const d of rows) {
     if (!d.meetingOn) continue;
+    // 체크만 켜고 미팅 시간을 둘 다 비운 행 — 공용 함수는 "미팅 없음"으로 통과시키므로 화면에서만 막는다
+    // (그대로 보내면 미팅 필드가 빠져 "미팅 없음"으로 저장된다).
+    if (!d.meetingStartTime && !d.meetingEndTime) {
+      errors[d.attendDate] =
+        "미팅 시간을 입력하거나 '실제 미팅 시간 따로 입력' 체크를 끄세요.";
+      continue;
+    }
     const e = validateTripMeetingTime(d);
     if (e) errors[d.attendDate] = e;
   }
@@ -2085,6 +2092,7 @@ function useDateRows(init: () => DatePayloadRow[]) {
 // Phase 7 3단계 D-2: 미니 캘린더(월 그리드) + 선택 날짜 시간 입력 리스트.
 // - 이벤트 기간 내 날짜만 클릭 가능(범위 밖은 비활성/회색).
 // - 한 번 클릭으로 바로 선택/해제, 이어서 다른 날을 누르면 그 사이까지 적용. 불연속 선택 가능.
+// - 방금 누른 날을 다시 누르면 그 클릭을 되돌린다(선택 취소 / 해제한 행을 시간까지 그대로 복원).
 // - 월 네비는 이벤트 기간을 포함하는 범위로 제한.
 function DatesPicker({
   event,
@@ -2173,9 +2181,11 @@ function DatesPicker({
   }, [event.startDate, event.endDate, value.length, inRange, onChange]);
 
   // 범위 선택 앵커. 첫 클릭에서 그 날을 바로 선택(add)/해제(remove)하고 앵커를 둔다.
-  // 앵커가 있을 때 다른 날을 누르면 앵커~그 날 구간에 같은 모드를 적용한다.
+  // 앵커가 있을 때 다른 날을 누르면 앵커~그 날 구간에 같은 모드를 적용하고,
+  // 같은 날을 다시 누르면 첫 클릭을 되돌린다.
+  // removedRow: remove 로 시작할 때 해제한 행(되돌릴 때 시간·미팅 상태까지 그대로 복원하기 위해 보관).
   const [anchor, setAnchor] = useState<
-    { ymd: string; mode: "add" | "remove" } | null
+    { ymd: string; mode: "add" | "remove"; removedRow?: DatePayloadRow } | null
   >(null);
   const [hoverYmd, setHoverYmd] = useState<string | null>(null);
 
@@ -2203,18 +2213,32 @@ function DatesPicker({
     );
   };
 
+  // 날짜 셀 클릭.
+  //  - 앵커 없음(첫 클릭): 그 날을 바로 선택/해제하고 앵커를 둔다. 해제면 그 행을 앵커에 보관.
+  //  - 앵커와 다른 날: 앵커~그 날 구간에 같은 모드(add/remove)를 적용하고 앵커를 끝낸다.
+  //  - 앵커와 같은 날: 첫 클릭을 되돌리고 앵커를 끝낸다
+  //    (add 였으면 다시 해제, remove 였으면 보관해 둔 행을 그대로 다시 넣음).
   const handleCellClick = (ymd: string) => {
     if (!inRange.has(ymd)) return;
     if (anchor === null) {
-      // 첫 클릭: 그 날을 바로 선택/해제하고 앵커를 둔다
-      const mode = byDate.has(ymd) ? "remove" : "add";
+      const existing = byDate.get(ymd);
+      const mode = existing ? "remove" : "add";
       applyRange(ymd, ymd, mode);
-      setAnchor({ ymd, mode });
+      setAnchor({ ymd, mode, removedRow: existing });
       setHoverYmd(ymd);
       return;
     }
-    // 같은 날을 다시 누르면 아무것도 바꾸지 않고 앵커만 끝낸다
-    if (ymd !== anchor.ymd) applyRange(anchor.ymd, ymd, anchor.mode);
+    if (ymd !== anchor.ymd) {
+      applyRange(anchor.ymd, ymd, anchor.mode);
+    } else if (anchor.mode === "add") {
+      onChange(value.filter((v) => v.attendDate !== ymd));
+    } else if (anchor.removedRow && !byDate.has(ymd)) {
+      onChange(
+        [...value, anchor.removedRow].sort((x, y) =>
+          x.attendDate.localeCompare(y.attendDate)
+        )
+      );
+    }
     setAnchor(null);
     setHoverYmd(null);
   };
@@ -2418,8 +2442,8 @@ function DatesPicker({
             <span className="text-[11px] text-amber-700 leading-relaxed">
               {anchor.ymd.slice(5)}{" "}
               {anchor.mode === "add"
-                ? "선택됨 — 기간으로 늘리려면 마지막 날을 누르세요"
-                : "해제됨 — 이어서 해제할 마지막 날을 누르세요"}
+                ? "선택됨 — 기간으로 늘리려면 마지막 날을, 취소하려면 같은 날을 다시 누르세요"
+                : "해제됨 — 이어서 해제할 마지막 날을, 되돌리려면 같은 날을 다시 누르세요"}
             </span>
             <button
               type="button"
@@ -2563,7 +2587,7 @@ function DatesPicker({
 
       <p className="text-[11px] text-gray-400 mt-2 leading-relaxed">
         {helpText ??
-          "날짜를 누르면 바로 선택되고, 이어서 다른 날을 누르면 그 사이까지 선택됩니다. 떨어진 날을 고를 땐 '완료'를 누른 뒤 고르세요. 선택된 날을 누르면 해제됩니다. 근태 시간은 선택사항(비우면 종일)이고, 실제 미팅 시간을 넣으면 캘린더에는 미팅 시간으로 표시됩니다."}
+          "날짜를 누르면 바로 선택되고, 이어서 다른 날을 누르면 그 사이까지 선택됩니다. 같은 날을 다시 누르면 취소됩니다. 떨어진 날을 고를 땐 '완료'를 누른 뒤 고르세요. 선택된 날을 누르면 해제됩니다. 근태 시간은 선택사항(비우면 종일)이고, 실제 미팅 시간을 넣으면 캘린더에는 미팅 시간으로 표시됩니다."}
       </p>
     </div>
   );
