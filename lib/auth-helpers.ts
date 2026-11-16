@@ -55,6 +55,16 @@ export async function requireSession(): Promise<
   return { ok: true, session };
 }
 
+/**
+ * 서버 페이지(app/<경로>/page.tsx)용 세션 읽기. 로그인 안 했으면 null.
+ * requireSession 과 같은 판정(로컬 우회 모드면 가짜 세션)이지만 NextResponse 대신 세션만 돌려준다.
+ */
+export async function getPageSession(): Promise<Session | null> {
+  if (DEV_AUTH_BYPASS) return makeDevSession();
+  const session = await auth();
+  return session?.user ? session : null;
+}
+
 /** 세션이 admin 또는 ceo 권한인지 (관리 기능 접근용) */
 export function isAdminSession(session: Session | null | undefined): boolean {
   const role = session?.user?.role;

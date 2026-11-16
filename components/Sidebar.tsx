@@ -1,13 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { signOut } from "next-auth/react";
 import {
   Home, Calendar, FileText, CheckSquare,
   Users, Building2, Smartphone, Clock,
   Settings, CalendarDays, Plane,
   LogOut, X, ArrowLeft, BarChart3, CalendarCheck,
-  Target, TrendingUp,
+  Target, TrendingUp, Timer,
 } from "lucide-react";
 import { visibleMenuItems, type MenuItem, type PageId } from "@/lib/menus";
 
@@ -73,6 +74,16 @@ export default function Sidebar({
             <Icon size={18} />
             {item.label}
           </button>
+          {/* 근무시간 집계 — 메뉴 상태 화면이 아닌 독립 주소(/work-hours)라 lib/menus 목록에 넣지 않고 링크로 둔다 */}
+          {isAdmin && item.id === "attendance-overview" && (
+            <Link
+              href="/work-hours"
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition-all text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+            >
+              <Timer size={18} />
+              근무시간 집계
+            </Link>
+          )}
         </div>
       );
     });
