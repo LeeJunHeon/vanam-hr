@@ -24,8 +24,11 @@ const ICONS: Partial<Record<MenuItem["icon"] | NonNullable<MenuItem["sidebarIcon
   Smartphone, Clock, Settings, Target, TrendingUp,
 };
 
+/** 지금 보고 있는 화면 — 메뉴 키 또는 독립 주소 화면("work-hours" = /work-hours) */
+export type SidebarCurrent = PageId | "work-hours";
+
 interface SidebarProps {
-  currentPage: PageId;
+  currentPage: SidebarCurrent;
   onNavigate: (page: PageId) => void;
   isOpen: boolean;
   onClose: () => void;
@@ -78,7 +81,14 @@ export default function Sidebar({
           {isAdmin && item.id === "attendance-overview" && (
             <Link
               href="/work-hours"
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition-all text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+              onClick={() => {
+                if (typeof window !== "undefined" && window.innerWidth < 1024) onClose();
+              }}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition-all ${
+                currentPage === "work-hours"
+                  ? "bg-blue-50 text-blue-600 font-semibold"
+                  : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+              }`}
             >
               <Timer size={18} />
               근무시간 집계

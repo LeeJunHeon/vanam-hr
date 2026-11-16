@@ -3,55 +3,11 @@
 // 이 파일은 클라이언트에서도 쓰일 수 있으므로 서버 전용 모듈을 import 하지 않는다.
 
 // ─────────────────────────────────────────────────────────────
-// 정책 (policy_settings) — 행이 없거나 값이 이상하면 코드 기본값
-// ─────────────────────────────────────────────────────────────
-
-export const WORK_HOURS_POLICY_KEYS = [
-  "work_hours_break_per_stay_minutes",
-  "work_hours_break_minutes",
-] as const;
-
-export const WORK_HOURS_POLICY_DESCRIPTION =
-  "근무시간 집계 화면에만 쓰임, 조퇴 판정과 무관";
-
-export interface WorkHoursPolicy {
-  /** 머문 시간 이만큼마다 휴게 공제 (분, 기본 270 = 4시간 30분) */
-  breakPerStayMinutes: number;
-  /** 한 번 공제할 휴게 (분, 기본 30) */
-  breakMinutes: number;
-}
-
-export const DEFAULT_WORK_HOURS_POLICY: WorkHoursPolicy = {
-  breakPerStayMinutes: 270,
-  breakMinutes: 30,
-};
-
-// 정책 값 검증 — 기준분은 1 이상, 공제분은 0 이상 정수. 정책 화면 저장 검사와 같이 쓴다.
-export function validWorkHoursPolicyValue(key: string, raw: string): boolean {
-  if (!/^\d+$/.test(raw.trim())) return false;
-  const n = parseInt(raw.trim(), 10);
-  if (key === "work_hours_break_per_stay_minutes") return n >= 1 && n <= 24 * 60;
-  if (key === "work_hours_break_minutes") return n >= 0 && n <= 24 * 60;
-  return false;
-}
-
-export function parseWorkHoursPolicy(values: Map<string, string>): WorkHoursPolicy {
-  const pick = (key: (typeof WORK_HOURS_POLICY_KEYS)[number], def: number) => {
-    const raw = values.get(key);
-    return raw !== undefined && validWorkHoursPolicyValue(key, raw) ? parseInt(raw.trim(), 10) : def;
-  };
-  return {
-    breakPerStayMinutes: pick("work_hours_break_per_stay_minutes", DEFAULT_WORK_HOURS_POLICY.breakPerStayMinutes),
-    breakMinutes: pick("work_hours_break_minutes", DEFAULT_WORK_HOURS_POLICY.breakMinutes),
-  };
-}
-
-// ─────────────────────────────────────────────────────────────
 // 하루 근무시간
 // ─────────────────────────────────────────────────────────────
 
 export type DayWorkResult =
-  | { status: "ok"; stayMinutes: number; breakMinutes: number; workMinutes: number }
+  | { status: "ok"; workMinutes: number }
   | { status: "no_checkout" } // 퇴근 기록 없음(오늘 근무 중 포함) — 합계 제외
   | { status: "invalid" }; // 출근 없이 퇴근만 있음 / 퇴근이 출근보다 빠름 — 합계 제외
 
@@ -61,31 +17,16 @@ function floorMinuteMs(d: Date): number {
 }
 
 /**
- * 하루 근무시간 = 머문 시간 − 휴게 공제.
- *  - 머문 시간 = 퇴근 − 출근 (분 절삭한 두 시각의 차, 분)
- *  - 휴게 공제 = floor(머문 시간 / 기준분) × 공제분 (기본 270분마다 30분)
- *    근로기준법 제54조(근로시간 4시간마다 휴게 30분 이상)를 "회사에 머문 시간" 기준으로 환산한 식이다.
- *    머문 4시간 30분 = 근로 4시간 + 휴게 30분 이므로, 머문 시간 270분마다 30분을 뺀다.
- *    예) 3:00→공제 0, 5:00→30분(4:30), 9:00→60분(8:00), 13:00→60분(12:00), 13:30→90분(12:00)
+ * 하루 근무시간 = 퇴근 − 출근 (분 절삭한 두 시각의 차, 분). 휴게(점심) 시간은 빼지 않는다.
+ * 자정을 넘긴 퇴근도 시각 차로 그대로 센다.
  */
-export function computeDayWorkMinutes(
-  checkIn: Date | null,
-  checkOut: Date | null,
-  policy: WorkHoursPolicy = DEFAULT_WORK_HOURS_POLICY
-): DayWorkResult {
+export function computeDayWorkMinutes(checkIn: Date | null, checkOut: Date | null): DayWorkResult {
   if (!checkIn && !checkOut) return { status: "invalid" };
   if (!checkOut) return { status: "no_checkout" };
   if (!checkIn) return { status: "invalid" };
-  const stayMinutes = Math.floor((floorMinuteMs(checkOut) - floorMinuteMs(checkIn)) / 60000);
-  if (stayMinutes < 0) return { status: "invalid" };
-  const breakMinutes =
-    Math.floor(stayMinutes / policy.breakPerStayMinutes) * policy.breakMinutes;
-  return {
-    status: "ok",
-    stayMinutes,
-    breakMinutes,
-    workMinutes: Math.max(0, stayMinutes - breakMinutes),
-  };
+  const workMinutes = Math.floor((floorMinuteMs(checkOut) - floorMinuteMs(checkIn)) / 60000);
+  if (workMinutes < 0) return { status: "invalid" };
+  return { status: "ok", workMinutes };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -99,23 +40,10 @@ export function formatHM(minutes: number): string {
   return `${sign}${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`;
 }
 
-/** 분 → "4시간 30분" / "4시간" / "30분" (기준 문장용) */
-export function formatKoreanDuration(minutes: number): string {
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  if (h && m) return `${h}시간 ${m}분`;
-  if (h) return `${h}시간`;
-  return `${m}분`;
-}
-
-/** 화면 상단 기준 문장 — 정책값이 바뀌면 숫자도 따라 바뀐다 */
-export function workHoursRuleSentence(policy: WorkHoursPolicy): string {
-  return (
-    "근무시간 = WiFi 첫 연결 ~ 마지막 연결 (승인된 근태 정정이 있으면 정정 시각) − 휴게시간" +
-    `(머문 시간 ${formatKoreanDuration(policy.breakPerStayMinutes)}마다 ${formatKoreanDuration(policy.breakMinutes)}, 정책값 반영)` +
-    " / 주 기준 월~일 / 퇴근 기록 없는 날은 합계 제외"
-  );
-}
+/** 화면 상단 기준 문장 */
+export const WORK_HOURS_RULE_SENTENCE =
+  "근무시간 = WiFi 첫 연결 ~ 마지막 연결 (승인된 근태 정정이 있으면 정정 시각) / 휴게시간 공제 없음" +
+  " / 주 기준 월~일, 그 달 날짜만 합산 / 퇴근 기록 없는 날은 합계 제외";
 
 /** Date → KST "HH:MM" */
 export function formatKstHHMM(d: Date): string {
@@ -312,7 +240,7 @@ export function timeSourceOf(r: DailyRecordInput): TimeSource {
   return "WiFi";
 }
 
-export function summarizeDay(r: DailyRecordInput | null, policy: WorkHoursPolicy): DaySummary {
+export function summarizeDay(r: DailyRecordInput | null): DaySummary {
   if (!r) return { countedMinutes: 0, result: null, source: "-", notes: [] };
   const notes: string[] = [];
   if (r.categoryName && r.categoryType !== "correction") notes.push(r.categoryName);
@@ -321,7 +249,7 @@ export function summarizeDay(r: DailyRecordInput | null, policy: WorkHoursPolicy
     if (notes.length === 0) notes.push(r.autoStatus === "absent" ? "결근" : "기록 없음");
     return { countedMinutes: 0, result: null, source: "-", notes };
   }
-  const result = computeDayWorkMinutes(r.checkIn, r.checkOut, policy);
+  const result = computeDayWorkMinutes(r.checkIn, r.checkOut);
   if (result.status === "no_checkout") notes.push("퇴근 없음");
   if (result.status === "invalid") notes.push("기록 오류");
   return {

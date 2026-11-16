@@ -29,7 +29,7 @@ function clipForColumn(value: string, max: number): string {
 // 전역 정책(policy_settings)에서 이 type의 앱/이메일 on 여부를 읽는다.
 // 키 규칙: notify_{type}_app / notify_{type}_email. 값은 'true'/'false' 문자열.
 // 키가 없으면 기본값: 앱=true(수신), 이메일=false(미수신) — 안전.
-async function getChannelFlags(type: string): Promise<{ app: boolean; email: boolean; push: boolean }> {
+export async function getChannelFlags(type: string): Promise<{ app: boolean; email: boolean; push: boolean }> {
   const appKey = `notify_${type}_app`;
   const emailKey = `notify_${type}_email`;
   const pushKey = `notify_${type}_push`;

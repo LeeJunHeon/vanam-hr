@@ -219,3 +219,6 @@ attendance-poller.log
 # NAS 배포 기록(deploy 스크립트가 쓴다)
 .deploy-state
 .deploy-state.tmp
+
+# next dev 가 로컬에서 자동 생성하는 에이전트 안내 파일 — 커밋하지 않는다
+AGENTS.md

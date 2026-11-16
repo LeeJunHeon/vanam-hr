@@ -3,44 +3,36 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  WORK_HOURS_RULE_SENTENCE,
   computeDayWorkMinutes,
   decideWorkHoursScope,
   formatHM,
   formatPeriodTotal,
+  formatTimeOnWorkDate,
   monthWeeks,
-  parseWorkHoursPolicy,
   parseYm,
   parseYmd,
   summarizeDay,
   sumDays,
   weekRange,
-  workHoursRuleSentence,
-  DEFAULT_WORK_HOURS_POLICY,
   type DailyRecordInput,
 } from "@/lib/work-hours";
 
 const at = (hhmm: string, day = "2026-11-16") => new Date(`${day}T${hhmm}:00+09:00`);
-const stay = (h: number, m = 0) => {
+const work = (h: number, m = 0) => {
   const r = computeDayWorkMinutes(at("09:00"), new Date(at("09:00").getTime() + (h * 60 + m) * 60000));
   assert.equal(r.status, "ok");
-  return r as Extract<typeof r, { status: "ok" }>;
+  return (r as Extract<typeof r, { status: "ok" }>).workMinutes;
 };
 
-test("휴게 공제 예시 5개 (270분마다 30분)", () => {
-  assert.deepEqual(stay(3), { status: "ok", stayMinutes: 180, breakMinutes: 0, workMinutes: 180 });
-  assert.equal(stay(5).breakMinutes, 30);
-  assert.equal(formatHM(stay(5).workMinutes), "4:30");
-  assert.equal(stay(9).breakMinutes, 60);
-  assert.equal(formatHM(stay(9).workMinutes), "8:00");
-  assert.equal(stay(13).breakMinutes, 60);
-  assert.equal(formatHM(stay(13).workMinutes), "12:00");
-  assert.equal(stay(13, 30).breakMinutes, 90);
-  assert.equal(formatHM(stay(13, 30).workMinutes), "12:00");
-});
-
-test("경계: 4:29 → 공제 0, 4:30 → 30분", () => {
-  assert.equal(stay(4, 29).breakMinutes, 0);
-  assert.equal(stay(4, 30).breakMinutes, 30);
+test("휴게 공제 없음 — 출근~퇴근 그대로", () => {
+  assert.equal(formatHM(work(3)), "3:00");
+  assert.equal(formatHM(work(5)), "5:00");
+  assert.equal(formatHM(work(9)), "9:00");
+  assert.equal(formatHM(work(13, 30)), "13:30");
+  assert.deepEqual(computeDayWorkMinutes(at("09:00"), at("18:00")), { status: "ok", workMinutes: 540 });
+  assert.match(WORK_HOURS_RULE_SENTENCE, /휴게시간 공제 없음/);
+  assert.doesNotMatch(WORK_HOURS_RULE_SENTENCE, /마다/);
 });
 
 test("초는 버리고 분으로 계산", () => {
@@ -48,7 +40,7 @@ test("초는 버리고 분으로 계산", () => {
     new Date("2026-11-16T09:00:59+09:00"),
     new Date("2026-11-16T18:00:01+09:00")
   );
-  assert.equal(r.status === "ok" && r.stayMinutes, 540);
+  assert.deepEqual(r, { status: "ok", workMinutes: 540 });
 });
 
 test("퇴근 없음 / 출근 없음 / 음수", () => {
@@ -57,24 +49,11 @@ test("퇴근 없음 / 출근 없음 / 음수", () => {
   assert.deepEqual(computeDayWorkMinutes(at("18:00"), at("09:00")), { status: "invalid" });
 });
 
-test("정책값 변경 (240분마다 60분)", () => {
-  const p = { breakPerStayMinutes: 240, breakMinutes: 60 };
-  const r = computeDayWorkMinutes(at("09:00"), at("18:00"), p); // 540분
-  assert.deepEqual(r, { status: "ok", stayMinutes: 540, breakMinutes: 120, workMinutes: 420 });
-  assert.match(workHoursRuleSentence(p), /머문 시간 4시간마다 1시간/);
-  assert.match(workHoursRuleSentence(DEFAULT_WORK_HOURS_POLICY), /머문 시간 4시간 30분마다 30분/);
-});
-
-test("정책 해석: 행 없음·이상값은 기본값", () => {
-  assert.deepEqual(parseWorkHoursPolicy(new Map()), DEFAULT_WORK_HOURS_POLICY);
-  assert.deepEqual(
-    parseWorkHoursPolicy(new Map([["work_hours_break_per_stay_minutes", "0"], ["work_hours_break_minutes", "abc"]])),
-    DEFAULT_WORK_HOURS_POLICY
-  );
-  assert.deepEqual(
-    parseWorkHoursPolicy(new Map([["work_hours_break_per_stay_minutes", "240"], ["work_hours_break_minutes", "60"]])),
-    { breakPerStayMinutes: 240, breakMinutes: 60 }
-  );
+test("자정 넘김 — 다음 날 퇴근도 시각 차로, 표시는 (+1)", () => {
+  const r = computeDayWorkMinutes(at("10:00", "2026-09-29"), at("00:53", "2026-09-30"));
+  assert.deepEqual(r, { status: "ok", workMinutes: 14 * 60 + 53 });
+  assert.equal(formatTimeOnWorkDate(at("00:53", "2026-09-30"), "2026-09-29"), "00:53(+1)");
+  assert.equal(formatTimeOnWorkDate(at("10:00", "2026-09-29"), "2026-09-29"), "10:00");
 });
 
 test("2026-11 월별 주 칸 — 월~일, 그 달 날짜만 (11/1 은 일요일)", () => {
@@ -127,10 +106,9 @@ const row = (p: Partial<DailyRecordInput>): DailyRecordInput => ({
 });
 
 test("하루 요약: WiFi / 승인 정정 / 출장 무기록 / 퇴근 없음", () => {
-  const P = DEFAULT_WORK_HOURS_POLICY;
-  const wifi = summarizeDay(row({ checkIn: at("09:00"), checkOut: at("18:00") }), P);
+  const wifi = summarizeDay(row({ checkIn: at("09:00"), checkOut: at("18:00") }));
   assert.equal(wifi.source, "WiFi");
-  assert.equal(wifi.countedMinutes, 480);
+  assert.equal(wifi.countedMinutes, 540);
 
   const corr = summarizeDay(
     row({
@@ -140,29 +118,26 @@ test("하루 요약: WiFi / 승인 정정 / 출장 무기록 / 퇴근 없음", (
       isOverridden: true,
       overrideSource: "manual",
     }),
-    P
   );
   assert.equal(corr.source, "정정(출근)");
-  assert.equal(corr.countedMinutes, 570 - 60);
+  assert.equal(corr.countedMinutes, 570);
 
   const trip = summarizeDay(
     row({ isOverridden: true, overrideSource: "calendar", categoryName: "출장", categoryType: "work" }),
-    P
   );
   assert.equal(trip.countedMinutes, 0);
   assert.deepEqual(trip.notes, ["출장"]);
 
   const tripWifi = summarizeDay(
     row({ checkIn: at("09:00"), checkOut: at("13:00"), isOverridden: true, overrideSource: "calendar", categoryName: "외근", categoryType: "work" }),
-    P
   );
   assert.equal(tripWifi.source, "WiFi");
   assert.equal(tripWifi.countedMinutes, 240);
 
-  const open = summarizeDay(row({ checkIn: at("09:00"), autoStatus: "working" }), P);
+  const open = summarizeDay(row({ checkIn: at("09:00"), autoStatus: "working" }));
   assert.deepEqual(open.notes, ["퇴근 없음"]);
   const total = sumDays([wifi, open]);
-  assert.equal(formatPeriodTotal(total), "8:00 (퇴근 없음 1일 제외)");
+  assert.equal(formatPeriodTotal(total), "9:00 (퇴근 없음 1일 제외)");
 });
 
 // 조회 범위 — 세션 → 플래그는 lib/auth-helpers(isAdminSession·canViewAllEmployees) 가 정한다.

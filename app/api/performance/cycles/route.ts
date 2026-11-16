@@ -18,6 +18,7 @@ import {
   perfTodayYmd,
   ymdToDate,
 } from "@/lib/performance/server";
+import { notifyPerfOpen } from "@/lib/performance/open-notify";
 
 export const dynamic = "force-dynamic";
 
@@ -139,6 +140,8 @@ export async function POST(request: NextRequest) {
       },
       select: { id: true },
     });
+    // 제출 기간이 이미 열렸으면 대상자에게 성과 제출 시작 알림 (실패해도 회차 생성은 성공 — 로그만)
+    await notifyPerfOpen(created.id, "create");
     return NextResponse.json({ id: created.id }, { status: 201 });
   } catch (error) {
     if ((error as { code?: string })?.code === "P2002") {

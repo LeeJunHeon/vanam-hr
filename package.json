@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "eslint",
     "parity": "node tests/parity/run.mjs",
-    "test:work-hours": "node --import tsx --test tests/work-hours/work-hours.test.ts"
+    "test:work-hours": "node --import tsx --test tests/work-hours/work-hours.test.ts",
+    "test:perf-open": "node --import tsx --test tests/performance/open-notify.test.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.4.2",

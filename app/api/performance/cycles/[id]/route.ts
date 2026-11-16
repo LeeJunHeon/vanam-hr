@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth-helpers";
 import { isValidYmd } from "@/lib/performance/rules";
-import { parseEmployeeIds, ymdToDate } from "@/lib/performance/server";
+import { cycleDates, parseEmployeeIds, ymdToDate } from "@/lib/performance/server";
+import { notifyPerfOpen } from "@/lib/performance/open-notify";
 
 export const dynamic = "force-dynamic";
 
@@ -80,6 +81,12 @@ export async function PUT(
         targetEmployeeIds: ids,
         updatedAt: new Date(),
       },
+    });
+    // 기간이 열려 있으면 성과 제출 시작 알림 — 이미 열려 있던 회차는 새로 추가된 대상자만,
+    // 이번 수정으로 열린 회차는 아직 못 받은 대상자 전원 (실패해도 수정은 성공 — 로그만)
+    await notifyPerfOpen(id, "update", {
+      ...cycleDates(cycle),
+      targetEmployeeIds: cycle.targetEmployeeIds,
     });
     return NextResponse.json({ ok: true });
   } catch (error) {

@@ -17,37 +17,13 @@ import {
 import { exportExcel } from "@/lib/excelUtils";
 import ExcelButton from "@/components/ExcelButton";
 import { todayYmd } from "@/lib/dateUtils";
-import {
-  DEFAULT_WORK_HOURS_POLICY,
-  WORK_HOURS_POLICY_DESCRIPTION,
-} from "@/lib/work-hours";
 
 interface Policy {
   key: string;
   value: string;
   description: string | null;
   updatedAt: string;
-  /** DB 에 행이 없어 기본값으로 보여 주는 항목 (처음 저장할 때 행이 생긴다) */
-  isDefault?: boolean;
 }
-
-// 근무시간 집계 화면(/work-hours) 정책 — 행이 없어도 편집 항목으로 보여 준다.
-const WORK_HOURS_POLICY_ITEMS: Policy[] = [
-  {
-    key: "work_hours_break_per_stay_minutes",
-    value: String(DEFAULT_WORK_HOURS_POLICY.breakPerStayMinutes),
-    description: `${WORK_HOURS_POLICY_DESCRIPTION}. 머문 시간 이 분(分)마다 휴게시간을 뺀다 (기본 270 = 4시간 30분)`,
-    updatedAt: "",
-    isDefault: true,
-  },
-  {
-    key: "work_hours_break_minutes",
-    value: String(DEFAULT_WORK_HOURS_POLICY.breakMinutes),
-    description: `${WORK_HOURS_POLICY_DESCRIPTION}. 한 번에 빼는 휴게시간(분, 기본 30)`,
-    updatedAt: "",
-    isDefault: true,
-  },
-];
 
 // 비밀번호류 키 감지 — UI에서 마스킹 처리
 const isSecretKey = (key: string): boolean => {
@@ -88,20 +64,7 @@ export default function PoliciesPage() {
       if (search) params.set("search", search);
 
       const res = await fetch(`/api/policies?${params}`);
-      if (res.ok) {
-        const list: Policy[] = await res.json();
-        const q = search.trim().toLowerCase();
-        const missing = WORK_HOURS_POLICY_ITEMS.filter(
-          (d) =>
-            !list.some((p) => p.key === d.key) &&
-            (!q || d.key.includes(q) || (d.description ?? "").toLowerCase().includes(q))
-        );
-        setPolicies(
-          missing.length > 0
-            ? [...list, ...missing].sort((a, b) => a.key.localeCompare(b.key))
-            : list
-        );
-      }
+      if (res.ok) setPolicies(await res.json());
     } catch (e) {
       console.error(e);
     } finally {
@@ -163,7 +126,7 @@ export default function PoliciesPage() {
         // 비밀 키는 값을 마스킹해서 export
         isSecretKey(p.key) && p.value ? "***" : p.value,
         p.description ?? "",
-        p.isDefault ? "(기본값 — 미저장)" : new Date(p.updatedAt).toLocaleString("ko-KR"),
+        new Date(p.updatedAt).toLocaleString("ko-KR"),
       ]),
       `정책설정_${todayYmd()}.xlsx`,
       "정책설정"
@@ -296,9 +259,7 @@ export default function PoliciesPage() {
                         </p>
                       </div>
                       <p className="text-[10px] text-gray-400 mt-1">
-                        {p.isDefault
-                          ? "기본값 사용 중 (저장하면 정책 행이 만들어집니다)"
-                          : `최종 수정: ${new Date(p.updatedAt).toLocaleString("ko-KR")}`}
+                        최종 수정: {new Date(p.updatedAt).toLocaleString("ko-KR")}
                       </p>
                     </div>
                   </div>

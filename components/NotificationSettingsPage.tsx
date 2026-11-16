@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Loader2, Bell } from "lucide-react";
 
-// 알림 종류 정의 (정책 키 prefix ↔ 라벨). DB의 42개 키와 1:1 (14종 × 앱/이메일/푸시).
+// 알림 종류 정의 (정책 키 prefix ↔ 라벨). 정책 키 notify_{type}_{app|email|push} (15종 × 앱/이메일/푸시, 행이 없으면 PUT 이 만든다).
 const NOTIFY_TYPES: { type: string; label: string; desc: string; channels: ("app" | "email" | "push")[] }[] = [
   { type: "approval_request", label: "새 결재 요청", desc: "휴가/근태 신청 시 결재자에게", channels: ["app", "email", "push"] },
   { type: "trip_request", label: "새 외근 결재 요청", desc: "외근 참여(결재 필요) 시 부서 결재자에게", channels: ["app", "email", "push"] },
@@ -19,6 +19,7 @@ const NOTIFY_TYPES: { type: string; label: string; desc: string; channels: ("app
   { type: "attendance_alert", label: "근태 확인 요청", desc: "결근/지각/조퇴 기록 시 본인에게", channels: ["app", "email", "push"] },
   { type: "team_schedule", label: "팀 일정 안내", desc: "같은 부서 동료의 휴가/반차 승인 시 팀원에게", channels: ["app", "email", "push"] },
   { type: "perf_revision", label: "성과 수정 요청", desc: "관리자가 성과 수정을 요청하면 본인에게", channels: ["app", "email", "push"] },
+  { type: "perf_open", label: "성과 제출 시작", desc: "성과 제출 기간이 시작되면 대상자에게", channels: ["app", "email", "push"] },
 ];
 
 type FlagMap = Record<string, boolean>; // key(notify_xxx_app) → bool

@@ -3,6 +3,7 @@ import { timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { createNotifications } from "@/lib/notify";
 import { confirmedParticipantWhere } from "@/lib/trip-helpers";
+import { sweepPerfOpen } from "@/lib/performance/open-notify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +13,8 @@ export const dynamic = "force-dynamic";
 // 제출 전까지 매 영업일 1회 본인에게 알림. draft(작성중)도 미제출로 취급.
 // 머신-투-머신(내부 시스템 전용). 인증: Authorization: Bearer <INTERNAL_API_TOKEN>.
 // 하루 1회 실행 보장은 호출자(aggregator 날짜 게이트) 책임.
+// 같은 일일 점검에 성과 제출 시작 알림(perf_open)도 얹는다 — 영업일과 무관하게 먼저 돌린다
+// (lib/performance/open-notify, 중복 발송은 거기서 막는다).
 
 function safeStringEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -60,6 +63,9 @@ export async function POST(request: Request) {
   if (!token || !safeStringEqual(token, expected)) {
     return NextResponse.json({ error: "인증 실패" }, { status: 401 });
   }
+
+  // 성과 제출 시작 알림 — 출장보고서 점검의 성공·실패·건너뜀과 무관 (sweepPerfOpen 은 예외를 던지지 않는다)
+  await sweepPerfOpen();
 
   try {
     const today = todayKst();

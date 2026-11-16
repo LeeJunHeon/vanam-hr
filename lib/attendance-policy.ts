@@ -1,11 +1,6 @@
 import type { Prisma } from "@/app/generated/prisma/client";
 import type { prisma } from "@/lib/prisma";
 import { parseCutoffHour } from "@/lib/kst-date";
-import {
-  WORK_HOURS_POLICY_KEYS,
-  parseWorkHoursPolicy,
-  type WorkHoursPolicy,
-} from "@/lib/work-hours";
 
 // 근태 정책 값 읽기 — 키·기본값을 여기 한 곳에서 정한다(aggregator aggregate_today 와 같은 키·같은 기본값).
 //   debounce_minutes(60), work_date_cutoff_hour(4), grace_in_minutes(10), grace_out_minutes(0),
@@ -77,13 +72,4 @@ export async function loadAttendancePolicy(db: Db): Promise<AttendancePolicy> {
     select: { key: true, value: true },
   });
   return parseAttendancePolicy(new Map(rows.map((r) => [r.key, r.value])));
-}
-
-// 근무시간 집계 화면(/work-hours) 전용 정책 — 위 근태 정책(판정)과 별개 키. 해석·기본값은 lib/work-hours.
-export async function loadWorkHoursPolicy(db: Db): Promise<WorkHoursPolicy> {
-  const rows = await db.policySetting.findMany({
-    where: { key: { in: [...WORK_HOURS_POLICY_KEYS] } },
-    select: { key: true, value: true },
-  });
-  return parseWorkHoursPolicy(new Map(rows.map((r) => [r.key, r.value])));
 }
