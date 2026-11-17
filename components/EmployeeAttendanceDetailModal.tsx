@@ -23,8 +23,6 @@ import {
   formatWorkMinutes,
   isVacationCategory,
   AUTO_STATUS_META,
-  dayOffsetFromWorkDate,
-  dayOffsetTitle,
   evalKeys,
   showCorrectionBadge,
   progressLabel,
@@ -32,6 +30,7 @@ import {
 import type { RealtimeStatus, ProgressStatus } from "@/lib/realtime-presence";
 import { summarizeDays } from "@/lib/attendance-summary";
 import ExcelButton from "@/components/ExcelButton";
+import { renderTimeCell } from "@/components/AttendanceTimeCell";
 import AttendanceExportModal from "@/components/AttendanceExportModal";
 
 // 직원 카드 클릭 시 열리는 최근 30일 출퇴근 상세 모달.
@@ -188,42 +187,7 @@ function renderRealtimeProgress(
 }
 
 // 평가 컬럼. Phase 6-2B: 캘린더 보정 시 카테고리명 표시 (Q5c).
-// 출퇴근 셀 — 정정된 경우 원본(취소선) + 정정값(청록). 캘린더 일별 모달과 동일 규칙.
-// workDate를 주면 자정을 넘긴 시각에 "+1" 윗첨자를 붙인다(야간 근무).
-function renderTimeCell(
-  original: string | null,
-  actual: string | null,
-  workDate?: string
-) {
-  const off = workDate ? dayOffsetFromWorkDate(workDate, actual) : 0;
-  const mark =
-    off > 0 ? (
-      <sup
-        className="ml-0.5 text-[10px] font-semibold text-amber-600"
-        title={dayOffsetTitle(workDate, actual)}
-      >
-        +{off}
-      </sup>
-    ) : null;
-  if (original) {
-    return (
-      <>
-        <span className="line-through text-gray-400 mr-1">{formatTime(original)}</span>
-        <span className="text-cyan-600 font-semibold">
-          {formatTime(actual)}
-          {mark}
-        </span>
-      </>
-    );
-  }
-  if (!actual) return "-";
-  return (
-    <>
-      {formatTime(actual)}
-      {mark}
-    </>
-  );
-}
+// 출퇴근 셀(renderTimeCell)은 components/AttendanceTimeCell 공용.
 
 // 평가 칸 — 3축 분리 규칙.
 //  [평가] 항상 표시(플래그 있으면 지각·조퇴 병기, 없으면 autoStatus 단독 폴백)

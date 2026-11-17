@@ -2,9 +2,11 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
-import AppShell from "@/components/AppShell";
+import { Menu } from "lucide-react";
+import Sidebar from "@/components/Sidebar";
 import { DEFAULT_PAGE, isAdminOnlyPage, isPageId, type PageId } from "@/lib/menus";
 import { readPageParam, writePageParam, recordMenuUsage } from "@/lib/launcher";
+import NotificationBell from "@/components/NotificationBell";
 import DashboardPage from "@/components/DashboardPage";
 import MyAttendancePage from "@/components/MyAttendancePage";
 import RequestPage from "@/components/RequestPage";
@@ -18,6 +20,7 @@ import ApprovalLinesPage from "@/components/ApprovalLinesPage";
 import SystemSettingsPage from "@/components/SystemSettingsPage";
 import NotMappedNoticePage from "@/components/NotMappedNoticePage";
 import AttendanceOverviewPage from "@/components/AttendanceOverviewPage";
+import WorkHoursPage from "@/components/WorkHoursPage";
 import ScheduleOverviewPage from "@/components/ScheduleOverviewPage";
 import EmployeeShiftsPage from "@/components/EmployeeShiftsPage";
 import AnnualLeavePage from "@/components/AnnualLeavePage";
@@ -32,6 +35,7 @@ const PAGE_TITLES: Record<PageId, string> = {
   "field-trip": "출장 및 외근 관리",
   approval: "결재함",
   "attendance-overview": "전체 근태 조회",
+  "work-hours": "전체 근무시간 조회",
   "schedule-overview": "전체 일정 조회",
   "annual-leave": "연차 관리",
   employees: "직원 관리",
@@ -49,6 +53,7 @@ export default function Home() {
   const { data: session, status: sessionStatus } = useSession();
   const { me, loading: meLoading } = useCurrentEmployee();
   const [page, setPage] = useState<PageId>(DEFAULT_PAGE);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   // 주소의 ?page= 를 읽어 적용한 뒤에만 주소 동기화를 시작 (첫 렌더의 기본 화면으로 주소를 덮어쓰지 않게)
   const [urlReady, setUrlReady] = useState(false);
 
@@ -65,6 +70,13 @@ export default function Home() {
     if (!urlReady) return;
     writePageParam(page);
   }, [urlReady, page]);
+
+  // 모바일이면 사이드바 기본 닫힘
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.innerWidth < 1024) {
+      setSidebarOpen(false);
+    }
+  }, []);
 
   const userName = session?.user?.name ?? "로딩중...";
   const userRole = session?.user?.role ?? "";
@@ -115,6 +127,7 @@ export default function Home() {
       case "field-trip":         return <FieldTripPage />;
       case "approval":           return <ApprovalPage />;
       case "attendance-overview": return <AttendanceOverviewPage />;
+      case "work-hours":         return <WorkHoursPage />;
       case "schedule-overview":   return <ScheduleOverviewPage />;
       case "annual-leave":       return <AnnualLeavePage />;
       case "employees":          return <EmployeesPage />;
@@ -131,18 +144,44 @@ export default function Home() {
   };
 
   return (
-    <AppShell
-      currentPage={page}
-      onNavigate={navigate}
-      title={PAGE_TITLES[page]}
-      userName={userName}
-      userRole={userRole}
-      onNotificationNavigate={(linkPage) => {
-        // 모르는 키면 이동·기록 둘 다 하지 않음
-        if (isPageId(linkPage)) navigate(linkPage);
-      }}
-    >
-      {renderPage()}
-    </AppShell>
+    <div className="flex h-screen bg-gray-50">
+      <Sidebar
+        currentPage={page}
+        onNavigate={navigate}
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        userName={userName}
+        userRole={userRole}
+      />
+
+      <main className="flex-1 flex flex-col min-w-0">
+        <header className="h-14 bg-white border-b border-gray-100 flex items-center justify-between px-4 sm:px-5 shrink-0">
+          <div className="flex items-center">
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+            >
+              <Menu size={18} className="text-gray-500" />
+            </button>
+            <span className="text-sm font-semibold text-gray-700 lg:hidden ml-3">
+              {PAGE_TITLES[page]}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <NotificationBell
+              apiUrl="/api/notifications"
+              onNavigate={(linkPage) => {
+                // 모르는 키면 이동·기록 둘 다 하지 않음
+                if (isPageId(linkPage)) navigate(linkPage);
+              }}
+            />
+          </div>
+        </header>
+
+        <div className="flex-1 overflow-y-auto">
+          {renderPage()}
+        </div>
+      </main>
+    </div>
   );
 }

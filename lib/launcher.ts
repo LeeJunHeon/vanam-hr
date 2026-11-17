@@ -12,14 +12,45 @@ export function readPageParam(): PageId | null {
 }
 
 /**
+ * 화면 전용 쿼리 키 — 그 화면이 자기 상태(기간·직원 등)를 주소에 담을 때 쓰는 키.
+ * 다른 메뉴로 옮기면 writePageParam 이 이 키들을 주소에서 지운다.
+ */
+const PAGE_QUERY_KEYS: Partial<Record<PageId, readonly string[]>> = {
+  "work-hours": ["view", "month", "date", "employee", "department"],
+};
+
+/**
  * 주소의 page 파라미터를 현재 화면과 맞춘다 (replaceState — 히스토리 항목을 늘리지 않음).
- * 기본 화면이면 page 를 지우고, 다른 쿼리 파라미터·해시는 그대로 둔다.
+ * 기본 화면이면 page 를 지우고, 다른 화면 전용 쿼리 키(PAGE_QUERY_KEYS)도 지운다.
+ * 그 밖의 쿼리 파라미터·해시는 그대로 둔다.
  */
 export function writePageParam(page: PageId): void {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
   if (page === DEFAULT_PAGE) url.searchParams.delete("page");
   else url.searchParams.set("page", page);
+  for (const [owner, keys] of Object.entries(PAGE_QUERY_KEYS)) {
+    if (owner === page) continue;
+    for (const k of keys ?? []) url.searchParams.delete(k);
+  }
+  replaceUrl(url);
+}
+
+/**
+ * 지금 화면의 전용 쿼리값을 주소에 맞춘다 (replaceState). null·빈 문자열이면 그 키를 지운다.
+ * page 파라미터는 건드리지 않는다(writePageParam 담당).
+ */
+export function writePageQuery(values: Record<string, string | null>): void {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  for (const [k, v] of Object.entries(values)) {
+    if (v) url.searchParams.set(k, v);
+    else url.searchParams.delete(k);
+  }
+  replaceUrl(url);
+}
+
+function replaceUrl(url: URL): void {
   if (url.href === window.location.href) return;
   window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
 }

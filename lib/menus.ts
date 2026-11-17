@@ -6,6 +6,7 @@ export type PageId =
   | "dashboard" | "my-attendance" | "request" | "approval"
   | "field-trip"
   | "attendance-overview"
+  | "work-hours"
   | "schedule-overview"
   | "annual-leave"
   | "employees" | "org" | "devices" | "shifts" | "employee-shifts"
@@ -22,7 +23,7 @@ export type PortalIconName =
   | "Award" | "IdCard" | "LayoutDashboard" | "ListChecks" | "ClipboardList" | "History" | "Gauge";
 
 /** 사이드바에서만 쓰는 아이콘 (포털 런처 목록에 없음 — 포털에는 icon 을 보낸다) */
-export type SidebarOnlyIconName = "TrendingUp";
+export type SidebarOnlyIconName = "TrendingUp" | "Timer";
 
 export interface MenuItem {
   id: PageId;
@@ -49,6 +50,7 @@ export const MENU_ITEMS: readonly MenuItem[] = [
   { id: "my-performance", label: "내 성과",        icon: "Target" },
   // 관리자
   { id: "attendance-overview", label: "전체 근태 조회", icon: "BarChart3",   group: "관리자", adminOnly: true },
+  { id: "work-hours",     label: "전체 근무시간 조회", icon: "Clock", sidebarIcon: "Timer", group: "관리자", adminOnly: true },
   { id: "schedule-overview",   label: "전체 일정 조회", icon: "CalendarDays", group: "관리자", adminOnly: true },
   { id: "annual-leave",   label: "연차 관리",      icon: "CalendarCheck", group: "관리자", adminOnly: true },
   { id: "performance-admin", label: "성과 관리",   icon: "Gauge", sidebarIcon: "TrendingUp", group: "관리자", adminOnly: true },

@@ -9,7 +9,7 @@
     "start": "next start",
     "lint": "eslint",
     "parity": "node tests/parity/run.mjs",
-    "test:work-hours": "node --import tsx --test tests/work-hours/work-hours.test.ts",
+    "test:work-hours": "node --import tsx --experimental-test-module-mocks --test tests/work-hours/work-hours.test.ts tests/work-hours/api.test.ts",
     "test:perf-open": "node --import tsx --test tests/performance/open-notify.test.ts"
   },
   "dependencies": {

@@ -19,7 +19,7 @@ const NOTIFY_TYPES: { type: string; label: string; desc: string; channels: ("app
   { type: "attendance_alert", label: "근태 확인 요청", desc: "결근/지각/조퇴 기록 시 본인에게", channels: ["app", "email", "push"] },
   { type: "team_schedule", label: "팀 일정 안내", desc: "같은 부서 동료의 휴가/반차 승인 시 팀원에게", channels: ["app", "email", "push"] },
   { type: "perf_revision", label: "성과 수정 요청", desc: "관리자가 성과 수정을 요청하면 본인에게", channels: ["app", "email", "push"] },
-  { type: "perf_open", label: "성과 제출 시작", desc: "성과 제출 기간이 시작되면 대상자에게", channels: ["app", "email", "push"] },
+  { type: "perf_open", label: "성과 회차 등록", desc: "성과 제출 회차가 만들어지거나 대상자로 추가되면 본인에게", channels: ["app", "email", "push"] },
 ];
 
 type FlagMap = Record<string, boolean>; // key(notify_xxx_app) → bool
