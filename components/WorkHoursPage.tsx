@@ -20,22 +20,26 @@ import {
   mondayOf,
   parseYm,
   parseYmd,
-  periodExcludedText,
-  periodTotalText,
+  periodMinutesText,
+  periodRemarkText,
   shortMd,
   summarizeDay,
   sumDays,
   weekRange,
   weekdayKo,
+  type DayState,
+  type DaySummary,
   type PeriodTotal,
   type WorkHoursDayRow,
 } from "@/lib/work-hours";
-import { formatWorkMinutes } from "@/lib/attendanceLabels";
+import { formatWorkMinutes, PROGRESS_WORKING } from "@/lib/attendanceLabels";
 
 // 전체 근무시간 조회 (관리자 메뉴 work-hours).
 // 데이터: GET /api/attendance/work-hours (권한·부서 강제는 서버). 계산: lib/work-hours.
 // 주소: /?page=work-hours&view=month&month=2026-11 | &view=week&date=2026-11-16 | &employee=8 | &department=3
 //       (화면 상태가 바뀌면 replaceState 로 맞춘다. 다른 메뉴로 가면 lib/launcher 가 이 키들을 지운다)
+// 표: 열 너비 고정(table-fixed) — 달마다 주 개수가 달라도 이름·부서·합계·비고 위치는 그대로,
+//     좁은 창에서는 카드 안에서만 가로 스크롤(이름 칸 고정).
 
 type View = "month" | "week";
 
@@ -48,6 +52,8 @@ interface Employee {
 
 interface ApiResponse {
   range: { startDate: string; endDate: string };
+  /** 오늘 근무일 (work_date_cutoff_hour 기준) */
+  today: string;
   scope: "all" | "department";
   departmentId: number | null;
   departments: { id: number; name: string }[] | null;
@@ -57,7 +63,11 @@ interface ApiResponse {
 }
 
 interface Column {
-  label: string;
+  key: string;
+  /** 머리글 윗줄 — "1주" / "월" */
+  title: string;
+  /** 머리글 아랫줄 — "11/2~11/8" / "11/16" */
+  sub: string;
   days: string[];
 }
 
@@ -89,16 +99,21 @@ function readUrlState(): UrlState {
 }
 
 const RULE_TEXT =
-  "직원별 주간·월간 근무시간 — WiFi 첫 연결~마지막 연결(승인된 근태 정정 반영), 휴게시간 공제 없음, 퇴근 기록 없는 날은 합계 제외";
+  "직원별 주간·월간 근무시간 — WiFi 첫 연결~마지막 연결(승인된 근태 정정 반영), 휴게시간 공제 없음, 지난 날짜의 퇴근 기록 없는 날은 합계 제외";
 
-function TotalText({ t }: { t: PeriodTotal }) {
-  const excluded = periodExcludedText(t);
-  return (
-    <>
-      {formatWorkMinutes(t.minutes)}
-      {excluded && <div className="text-[11px] font-normal text-gray-400">{excluded}</div>}
-    </>
-  );
+// 숫자 칸 글자 색 — "-"·"0분" 연한 회색, 근무중 파랑, 퇴근 없음·기록 오류 주황
+const ZERO = formatWorkMinutes(0);
+function tone(text: string, state?: DayState): string {
+  if (text === "-" || text === ZERO) return "text-gray-300";
+  if (state === "working") return PROGRESS_WORKING.cls;
+  if (state === "no_checkout" || state === "invalid") return "text-orange-500";
+  return "text-gray-700";
+}
+
+// 주별 머리글 — 토·일 색은 AttendanceCalendarView 와 같다
+function weekdayTone(ymd: string): string {
+  const dow = new Date(ymd + "T00:00:00.000Z").getUTCDay();
+  return dow === 0 ? "text-rose-500" : dow === 6 ? "text-blue-500" : "text-gray-500";
 }
 
 function RetiredBadge() {
@@ -172,6 +187,8 @@ export default function WorkHoursPage() {
   const loading = result?.key !== queryKey;
   const data = result?.data ?? null;
   const error = result?.error ?? null;
+  // 오늘 근무일 — 서버(work_date_cutoff_hour 기준)가 준 값, 받기 전에는 브라우저 날짜
+  const today = data?.today ?? todayYmd();
 
   // 직원 → 날짜 → 근태 행
   const byEmployee = useMemo(() => {
@@ -188,36 +205,44 @@ export default function WorkHoursPage() {
   const columns: Column[] = useMemo(() => {
     if (view === "month") {
       return monthWeeks(month).map((w) => ({
-        label: `${w.index}주 (${shortMd(w.start)}~${shortMd(w.end)})`,
+        key: w.start,
+        title: `${w.index}주`,
+        sub: w.start === w.end ? shortMd(w.start) : `${shortMd(w.start)}~${shortMd(w.end)}`,
         days: daysInRange(w.start, w.end),
       }));
     }
     return daysInRange(range.start, range.end).map((d) => ({
-      label: `${weekdayKo(d)} (${shortMd(d)})`,
+      key: d,
+      title: weekdayKo(d),
+      sub: shortMd(d),
       days: [d],
     }));
   }, [view, month, range.start, range.end]);
   const totalLabel = view === "month" ? "월 합계" : "주 합계";
-
-  const periodTotal = useCallback(
-    (empId: number, days: string[]): PeriodTotal => {
-      const rows = byEmployee.get(empId);
-      return sumDays(days.map((d) => summarizeDay(rows?.get(d))));
-    },
-    [byEmployee]
-  );
   const allDays = useMemo(() => daysInRange(range.start, range.end), [range.start, range.end]);
 
-  // 칸 글자 (엑셀·휴대폰 카드) — 주별은 하루 칸, 월별은 주 합계
-  const cellText = (empId: number, col: Column): string =>
-    view === "week"
-      ? dayCellText(summarizeDay(byEmployee.get(empId)?.get(col.days[0])))
-      : periodTotalText(periodTotal(empId, col.days));
-  const totalText = (empId: number): string => periodTotalText(periodTotal(empId, allDays));
+  const daySummary = useCallback(
+    (empId: number, ymd: string): DaySummary =>
+      summarizeDay(ymd, byEmployee.get(empId)?.get(ymd), today),
+    [byEmployee, today]
+  );
+  const periodTotal = useCallback(
+    (empId: number, days: string[]): PeriodTotal => sumDays(days.map((d) => daySummary(empId, d))),
+    [daySummary]
+  );
 
-  // 표 칸 — 합계는 제외 표시를 작은 둘째 줄로
-  const cellNode = (empId: number, col: Column) =>
-    view === "week" ? cellText(empId, col) : <TotalText t={periodTotal(empId, col.days)} />;
+  // 칸 — 주별은 하루 값, 월별은 주 합계
+  const cell = (empId: number, col: Column): { text: string; state?: DayState } => {
+    if (view === "week") {
+      const s = daySummary(empId, col.days[0]);
+      return { text: dayCellText(s), state: s.state };
+    }
+    return { text: periodMinutesText(periodTotal(empId, col.days)) };
+  };
+  const total = (empId: number) => {
+    const t = periodTotal(empId, allDays);
+    return { text: periodMinutesText(t), remark: periodRemarkText(t) };
+  };
 
   const employees = data?.employees ?? [];
   // 표에 있는 직원은 바로, 표 밖 직원(다른 부서 등)은 서버가 돌려준 detailEmployee 로
@@ -253,16 +278,26 @@ export default function WorkHoursPage() {
       ? `${month.slice(0, 4)}년 ${Number(month.slice(5, 7))}월`
       : `${range.start.replace(/-/g, ".")} ~ ${shortMd(range.end)}`;
 
-  // ── 엑셀 — 지금 보고 있는 표 그대로 ──
+  // ── 엑셀 — 지금 보고 있는 표 그대로 (머리글은 한 줄 "2주 (11/2~11/8)") ──
   const handleExport = async () => {
     if (!data || employees.length === 0) return;
-    const headers = ["이름", "부서", ...columns.map((c) => c.label), totalLabel];
-    const rows = employees.map((e) => [
-      e.isActive ? e.name : `${e.name} (퇴사)`,
-      e.departmentName ?? "",
-      ...columns.map((c) => cellText(e.id, c)),
-      totalText(e.id),
-    ]);
+    const headers = [
+      "이름",
+      "부서",
+      ...columns.map((c) => `${c.title} (${c.sub})`),
+      totalLabel,
+      "비고",
+    ];
+    const rows = employees.map((e) => {
+      const t = total(e.id);
+      return [
+        e.isActive ? e.name : `${e.name} (퇴사)`,
+        e.departmentName ?? "",
+        ...columns.map((c) => cell(e.id, c).text),
+        t.text,
+        t.remark,
+      ];
+    });
     const deptName =
       departmentId && data.departments
         ? data.departments.find((d) => d.id === departmentId)?.name
@@ -279,29 +314,37 @@ export default function WorkHoursPage() {
   // ── 일별 상세 ──
   const detailDays = useMemo(() => {
     if (!detail) return [];
-    const rows = byEmployee.get(detail.id);
-    return daysInRange(range.start, range.end).map((d) => {
-      const row = rows?.get(d) ?? null;
-      return { ymd: d, row, summary: summarizeDay(row) };
-    });
-  }, [detail, byEmployee, range.start, range.end]);
-  const detailTotal = periodTotalText(sumDays(detailDays.map((d) => d.summary)));
+    return daysInRange(range.start, range.end).map((d) => ({
+      ymd: d,
+      row: byEmployee.get(detail.id)?.get(d) ?? null,
+      summary: daySummary(detail.id, d),
+    }));
+  }, [detail, byEmployee, daySummary, range.start, range.end]);
+  const detailSum = sumDays(detailDays.map((d) => d.summary));
+  const detailTotal = periodMinutesText(detailSum);
+  const detailRemark = periodRemarkText(detailSum);
 
-  const thCls = "text-xs font-semibold text-gray-500 px-4 py-2.5 whitespace-nowrap";
-  const tdCls = "px-4 py-2.5 text-sm";
+  const thBase = "align-middle text-xs font-semibold text-gray-500 whitespace-nowrap";
+  const thCls = `h-[52px] px-3 ${thBase}`;
+  const thNumCls = `h-[52px] px-2 text-right ${thBase}`;
+  const thDetailCls = `h-10 px-3 ${thBase}`;
+  const tdBase = "h-11 text-sm whitespace-nowrap overflow-hidden text-ellipsis";
+  const tdCls = `${tdBase} px-3`;
+  // 숫자 칸 — 상세 모달 근무 칸과 같은 font-mono, 오른쪽 정렬로 자릿수를 맞춘다
+  const numCls = `${tdBase} px-2 font-mono tabular-nums text-right`;
 
   return (
-    <div className="p-4 sm:p-6 space-y-5">
+    <div className="p-4 sm:p-6 pb-24 sm:pb-24 space-y-5 min-w-0">
       {/* ───── 헤더 ───── */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold text-gray-900">전체 근무시간 조회</h1>
           <p className="text-sm text-gray-500 mt-0.5">{RULE_TEXT}</p>
         </div>
         <ExcelButton
           onClick={handleExport}
           disabled={!data || loading || employees.length === 0}
-          className="self-start sm:self-auto"
+          className="self-start sm:self-auto shrink-0"
         />
       </div>
 
@@ -410,86 +453,136 @@ export default function WorkHoursPage() {
             </span>
           </div>
 
-          {/* 데스크탑 표 */}
+          {/* 데스크탑 표 — 열 너비 고정, 좁으면 이 안에서만 가로 스크롤 */}
           <div className="hidden md:block overflow-x-auto">
-            <table className="w-full">
+            <table className="w-full min-w-[1280px] table-fixed">
+              <colgroup>
+                <col className="w-[180px]" />
+                <col className="w-[110px]" />
+                {columns.map((c) => (
+                  <col key={c.key} />
+                ))}
+                <col className="w-[140px]" />
+                <col className="w-[170px]" />
+              </colgroup>
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-100">
-                  <th className={`text-left ${thCls}`}>이름</th>
-                  <th className={`text-left ${thCls}`}>부서</th>
-                  {columns.map((c) => (
-                    <th key={c.label} className={`text-right ${thCls}`}>
-                      {c.label}
-                    </th>
-                  ))}
-                  <th className={`text-right ${thCls}`}>{totalLabel}</th>
+                  <th className={`${thCls} text-left sticky left-0 z-10 bg-gray-50`}>이름</th>
+                  <th className={`${thCls} text-left`}>부서</th>
+                  {columns.map((c) => {
+                    const isToday = view === "week" && c.days[0] === today;
+                    return (
+                      <th key={c.key} className={`${thNumCls} ${isToday ? "bg-blue-50" : ""}`}>
+                        <div className={view === "week" ? weekdayTone(c.key) : ""}>{c.title}</div>
+                        <div className="text-[11px] font-normal text-gray-400 font-mono tabular-nums">
+                          {c.sub}
+                        </div>
+                      </th>
+                    );
+                  })}
+                  <th className={thNumCls}>{totalLabel}</th>
+                  <th className={`${thCls} text-left`}>비고</th>
                 </tr>
               </thead>
               <tbody>
-                {employees.map((e) => (
-                  <tr
-                    key={e.id}
-                    className={`border-b border-gray-50 last:border-0 hover:bg-blue-50/30 ${
-                      employeeId === e.id ? "bg-blue-50/40" : ""
-                    }`}
-                  >
-                    <td className={`${tdCls} whitespace-nowrap`}>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setEmployeeId(e.id)}
-                          className="font-semibold text-gray-900 hover:text-blue-600"
-                        >
-                          {e.name}
-                        </button>
-                        {!e.isActive && <RetiredBadge />}
-                      </div>
-                    </td>
-                    <td className={`${tdCls} text-gray-600 whitespace-nowrap`}>
-                      {e.departmentName ?? "-"}
-                    </td>
-                    {columns.map((c) => (
-                      <td key={c.label} className={`${tdCls} text-gray-700 text-right whitespace-nowrap`}>
-                        {cellNode(e.id, c)}
+                {employees.map((e) => {
+                  const selected = employeeId === e.id;
+                  const t = total(e.id);
+                  return (
+                    <tr
+                      key={e.id}
+                      className={`group border-b border-gray-50 last:border-0 ${
+                        selected ? "bg-blue-50" : "hover:bg-slate-50"
+                      }`}
+                    >
+                      <td
+                        className={`${tdCls} sticky left-0 z-[1] ${
+                          selected ? "bg-blue-50" : "bg-white group-hover:bg-slate-50"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <button
+                            onClick={() => setEmployeeId(e.id)}
+                            className="font-semibold text-gray-900 hover:text-blue-600 truncate"
+                            title={e.name}
+                          >
+                            {e.name}
+                          </button>
+                          {!e.isActive && <RetiredBadge />}
+                        </div>
                       </td>
-                    ))}
-                    <td className={`${tdCls} text-gray-900 font-semibold text-right whitespace-nowrap`}>
-                      <TotalText t={periodTotal(e.id, allDays)} />
-                    </td>
-                  </tr>
-                ))}
+                      <td className={`${tdCls} text-gray-600`} title={e.departmentName ?? undefined}>
+                        {e.departmentName ?? "-"}
+                      </td>
+                      {columns.map((c) => {
+                        const v = cell(e.id, c);
+                        const isToday = view === "week" && c.days[0] === today;
+                        return (
+                          <td
+                            key={c.key}
+                            className={`${numCls} ${tone(v.text, v.state)} ${
+                              isToday ? "bg-blue-50/60" : ""
+                            }`}
+                            title={v.text}
+                          >
+                            {v.text}
+                          </td>
+                        );
+                      })}
+                      <td className={`${numCls} font-semibold ${t.text === "-" || t.text === ZERO ? "text-gray-300" : "text-gray-900"}`}>
+                        {t.text}
+                      </td>
+                      <td className={`${tdCls} text-xs text-orange-500`} title={t.remark || undefined}>
+                        {t.remark}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
 
           {/* 모바일 카드 */}
           <div className="md:hidden divide-y divide-gray-50">
-            {employees.map((e) => (
-              <button
-                key={e.id}
-                onClick={() => setEmployeeId(e.id)}
-                className="w-full text-left px-4 py-3 space-y-1.5 hover:bg-blue-50/30"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-sm font-semibold text-gray-900 truncate">{e.name}</span>
-                    {!e.isActive && <RetiredBadge />}
-                  </div>
-                  <span className="text-xs text-gray-400 shrink-0">{e.departmentName ?? "-"}</span>
-                </div>
-                <div className="space-y-0.5">
-                  {columns.map((c) => (
-                    <div key={c.label} className="flex items-center justify-between text-xs">
-                      <span className="text-gray-500">{c.label}</span>
-                      <span className="text-gray-700">{cellText(e.id, c)}</span>
+            {employees.map((e) => {
+              const t = total(e.id);
+              return (
+                <button
+                  key={e.id}
+                  onClick={() => setEmployeeId(e.id)}
+                  className="w-full text-left px-4 py-3 space-y-1.5 hover:bg-blue-50/30"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-sm font-semibold text-gray-900 truncate">{e.name}</span>
+                      {!e.isActive && <RetiredBadge />}
                     </div>
-                  ))}
-                  <div className="flex items-center justify-between text-xs pt-1">
-                    <span className="text-gray-700 font-semibold">{totalLabel}</span>
-                    <span className="text-gray-900 font-semibold">{totalText(e.id)}</span>
+                    <span className="text-xs text-gray-400 shrink-0">{e.departmentName ?? "-"}</span>
                   </div>
-                </div>
-              </button>
-            ))}
+                  <div className="space-y-0.5">
+                    {columns.map((c) => {
+                      const v = cell(e.id, c);
+                      const isToday = view === "week" && c.days[0] === today;
+                      return (
+                        <div key={c.key} className="flex items-center justify-between gap-2 text-xs">
+                          <span className={`shrink-0 ${isToday ? "text-blue-600 font-semibold" : "text-gray-500"}`}>
+                            {c.title} ({c.sub})
+                          </span>
+                          <span className={`font-mono tabular-nums truncate ${tone(v.text, v.state)}`}>
+                            {v.text}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    <div className="flex items-center justify-between text-xs pt-1">
+                      <span className="text-gray-700 font-semibold">{totalLabel}</span>
+                      <span className="text-gray-900 font-semibold font-mono tabular-nums">{t.text}</span>
+                    </div>
+                    {t.remark && <div className="text-[11px] text-orange-500 text-right">{t.remark}</div>}
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -518,42 +611,60 @@ export default function WorkHoursPage() {
 
           {/* 데스크탑 표 */}
           <div className="hidden md:block overflow-x-auto">
-            <table className="w-full">
+            <table className="w-full min-w-[720px] table-fixed">
+              <colgroup>
+                <col className="w-[120px]" />
+                <col className="w-[150px]" />
+                <col className="w-[150px]" />
+                <col className="w-[130px]" />
+                <col />
+              </colgroup>
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-100">
-                  <th className={`text-left ${thCls}`}>날짜</th>
-                  <th className={`text-left ${thCls}`}>출근</th>
-                  <th className={`text-left ${thCls}`}>퇴근</th>
-                  <th className={`text-right ${thCls}`}>근무</th>
-                  <th className={`text-left ${thCls}`}>사유</th>
+                  <th className={`${thDetailCls} text-left`}>날짜</th>
+                  <th className={`${thDetailCls} text-left`}>출근</th>
+                  <th className={`${thDetailCls} text-left`}>퇴근</th>
+                  <th className={`h-10 px-2 text-right ${thBase}`}>근무</th>
+                  <th className={`${thDetailCls} text-left`}>사유</th>
                 </tr>
               </thead>
               <tbody>
-                {detailDays.map(({ ymd, row, summary }) => (
-                  <tr key={ymd} className="border-b border-gray-50 last:border-0 hover:bg-blue-50/30">
-                    <td className={`${tdCls} text-gray-700 font-mono whitespace-nowrap`}>
-                      {ymd.slice(5)} ({weekdayKo(ymd)})
-                    </td>
-                    <td className={`${tdCls} text-gray-900 font-mono whitespace-nowrap`}>
-                      {row ? renderTimeCell(row.originalCheckIn, row.checkIn) : "-"}
-                    </td>
-                    <td className={`${tdCls} text-gray-900 font-mono whitespace-nowrap`}>
-                      {row ? renderTimeCell(row.originalCheckOut, row.checkOut, row.workDate) : "-"}
-                    </td>
-                    <td className={`${tdCls} text-gray-900 font-mono text-right whitespace-nowrap`}>
-                      {dayMinutesText(summary)}
-                    </td>
-                    <td className={`${tdCls} text-gray-600 w-full`}>
-                      {summary.notes.length ? summary.notes.join(", ") : <span className="text-gray-300">-</span>}
-                    </td>
-                  </tr>
-                ))}
+                {detailDays.map(({ ymd, row, summary }) => {
+                  const future = summary.state === "future";
+                  const minutes = dayMinutesText(summary);
+                  const notes = summary.notes.join(", ");
+                  return (
+                    <tr
+                      key={ymd}
+                      className={`border-b border-gray-50 last:border-0 ${
+                        ymd === today ? "bg-blue-50/60" : "hover:bg-slate-50"
+                      }`}
+                    >
+                      <td className={`${tdCls} font-mono tabular-nums ${future ? "text-gray-300" : "text-gray-700"}`}>
+                        {ymd.slice(5)} (<span className={future ? "" : weekdayTone(ymd)}>{weekdayKo(ymd)}</span>)
+                      </td>
+                      <td className={`${tdCls} font-mono tabular-nums ${row?.checkIn && !future ? "text-gray-900" : "text-gray-300"}`}>
+                        {row && !future ? renderTimeCell(row.originalCheckIn, row.checkIn) : "-"}
+                      </td>
+                      <td className={`${tdCls} font-mono tabular-nums ${row?.checkOut && !future ? "text-gray-900" : "text-gray-300"}`}>
+                        {row && !future ? renderTimeCell(row.originalCheckOut, row.checkOut, row.workDate) : "-"}
+                      </td>
+                      <td className={`${numCls} ${minutes === "-" || minutes === ZERO ? "text-gray-300" : summary.state === "working" ? PROGRESS_WORKING.cls : "text-gray-900"}`}>
+                        {minutes}
+                      </td>
+                      <td className={`${tdCls} ${notes ? "text-gray-600" : "text-gray-300"}`} title={notes || undefined}>
+                        {notes || "-"}
+                      </td>
+                    </tr>
+                  );
+                })}
                 <tr className="bg-gray-50 border-t border-gray-100">
                   <td colSpan={3} className={`${tdCls} font-semibold text-gray-700`}>
                     합계
                   </td>
-                  <td colSpan={2} className={`${tdCls} font-semibold text-gray-900 whitespace-nowrap`}>
-                    {detailTotal}
+                  <td className={`${numCls} font-semibold text-gray-900`}>{detailTotal}</td>
+                  <td className={`${tdCls} text-xs text-orange-500`} title={detailRemark || undefined}>
+                    {detailRemark}
                   </td>
                 </tr>
               </tbody>
@@ -562,36 +673,49 @@ export default function WorkHoursPage() {
 
           {/* 모바일 카드 */}
           <div className="md:hidden divide-y divide-gray-50">
-            {detailDays.map(({ ymd, row, summary }) => (
-              <div key={ymd} className="px-4 py-3 space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-semibold text-gray-900 font-mono">
-                    {ymd.slice(5)} ({weekdayKo(ymd)})
-                  </span>
-                  <span className="text-xs text-gray-700 font-mono font-semibold">
-                    {dayMinutesText(summary)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-gray-900 font-mono">
-                    {row ? (
-                      <>
-                        {renderTimeCell(row.originalCheckIn, row.checkIn)} ~{" "}
-                        {renderTimeCell(row.originalCheckOut, row.checkOut, row.workDate)}
-                      </>
-                    ) : (
-                      "-"
-                    )}
-                  </span>
-                  {summary.notes.length > 0 && (
-                    <span className="text-gray-600 truncate ml-2">{summary.notes.join(", ")}</span>
+            {detailDays.map(({ ymd, row, summary }) => {
+              const future = summary.state === "future";
+              const minutes = dayMinutesText(summary);
+              return (
+                <div key={ymd} className={`px-4 py-3 space-y-1 ${ymd === today ? "bg-blue-50/60" : ""}`}>
+                  <div className="flex items-center justify-between">
+                    <span className={`text-sm font-semibold font-mono ${future ? "text-gray-300" : "text-gray-900"}`}>
+                      {ymd.slice(5)} ({weekdayKo(ymd)})
+                    </span>
+                    <span
+                      className={`text-xs font-mono tabular-nums font-semibold ${
+                        minutes === "-" ? "text-gray-300" : summary.state === "working" ? PROGRESS_WORKING.cls : "text-gray-700"
+                      }`}
+                    >
+                      {minutes}
+                    </span>
+                  </div>
+                  {!future && (row || summary.notes.length > 0) && (
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-gray-900 font-mono">
+                        {row ? (
+                          <>
+                            {renderTimeCell(row.originalCheckIn, row.checkIn)} ~{" "}
+                            {renderTimeCell(row.originalCheckOut, row.checkOut, row.workDate)}
+                          </>
+                        ) : (
+                          "-"
+                        )}
+                      </span>
+                      {summary.notes.length > 0 && (
+                        <span className="text-gray-600 truncate ml-2">{summary.notes.join(", ")}</span>
+                      )}
+                    </div>
                   )}
                 </div>
+              );
+            })}
+            <div className="px-4 py-3 space-y-0.5 bg-gray-50">
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-semibold text-gray-700">합계</span>
+                <span className="font-semibold text-gray-900 font-mono tabular-nums">{detailTotal}</span>
               </div>
-            ))}
-            <div className="px-4 py-3 flex items-center justify-between text-sm bg-gray-50">
-              <span className="font-semibold text-gray-700">합계</span>
-              <span className="font-semibold text-gray-900">{detailTotal}</span>
+              {detailRemark && <div className="text-[11px] text-orange-500 text-right">{detailRemark}</div>}
             </div>
           </div>
         </div>

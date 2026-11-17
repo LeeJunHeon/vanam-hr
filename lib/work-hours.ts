@@ -6,9 +6,11 @@
 //  - 하루 = 퇴근 − 출근 (분 절삭한 두 시각의 차). 휴게(점심) 시간은 빼지 않는다. 자정 넘긴 퇴근도 그대로.
 //  - 시각은 attendance_daily check_in/out — 승인된 근태 정정이 있으면 정정 시각, 없으면 WiFi 시각
 //    (승인 정정만 이 값을 바꾼다: lib/finalize-approval → applyCorrectionToDaily).
-//  - 퇴근 없음(오늘 근무 중 포함)·기록 오류(출근 없이 퇴근, 퇴근 < 출근)는 합계에서 뺀다.
+//  - 지난 날짜의 퇴근 없음·기록 오류(출근 없이 퇴근, 퇴근 < 출근)는 합계에서 빼고 비고에 날짜를 적는다.
+//  - 오늘 근무일(work_date_cutoff_hour 기준)에 퇴근 전이면 "근무중" — 합계·제외 집계 모두 넣지 않는다.
+//  - 오늘 이후 날짜는 "-" — 합계 대상 아님.
 //  - 주는 월~일. 월별 보기의 주 칸에는 그 달 날짜만 더한다.
-import { formatWorkMinutes } from "@/lib/attendanceLabels";
+import { formatWorkMinutes, PROGRESS_WORKING } from "@/lib/attendanceLabels";
 
 // ─────────────────────────────────────────────────────────────
 // 하루 근무시간
@@ -126,7 +128,7 @@ export function monthWeeks(ym: string): MonthWeek[] {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 하루 요약·합계
+// 하루 요약·합계 (표시 상태 — 위 계산 규칙은 그대로 쓰고, 오늘·미래만 따로 표시)
 // ─────────────────────────────────────────────────────────────
 
 /** GET /api/attendance/work-hours 의 rows 한 줄 (lib/attendance-rows AttendanceRow 의 일부) */
@@ -142,77 +144,115 @@ export interface WorkHoursDayRow {
   categoryType: string | null;
 }
 
+/**
+ * 하루 표시 상태
+ *  - ok / no_checkout / invalid: computeDayWorkMinutes 결과 (no_checkout·invalid 는 지난 날짜만 — 합계 제외 대상)
+ *  - working: 오늘 근무일, 출근만 있고 퇴근 전 — 합계에도 제외 집계에도 넣지 않는다
+ *  - future: 오늘 이후 — 합계 대상 아님, 칸은 "-"
+ *  - none: 출퇴근 기록 없음
+ */
+export type DayState = "ok" | "no_checkout" | "invalid" | "working" | "future" | "none";
+
 export interface DaySummary {
-  /** 합계에 더할 분 (퇴근 없음·기록 오류·기록 없음은 0) */
+  ymd: string;
+  state: DayState;
+  /** 합계에 더할 분 (ok 만) */
   countedMinutes: number;
-  /** 출퇴근 기록이 하나도 없으면 null */
-  result: DayWorkResult | null;
   /** 사유 글자 (출장·휴가 등 구분명, 퇴근 없음, 기록 오류, 결근) — 없으면 빈 배열 */
   notes: string[];
 }
 
-export function summarizeDay(r: WorkHoursDayRow | null | undefined): DaySummary {
-  if (!r) return { countedMinutes: 0, result: null, notes: [] };
-  const notes: string[] = [];
-  // 근태정정은 구분명 대신 출퇴근 칸의 정정 표시로 보여준다
-  if (r.categoryName && r.categoryType !== "correction") notes.push(r.categoryName);
+/** 근무 중 라벨 — 근태 화면과 같은 PROGRESS_WORKING.label */
+export const WORKING_LABEL: string = PROGRESS_WORKING.label;
 
-  if (!r.checkIn && !r.checkOut) {
-    if (notes.length === 0 && r.autoStatus === "absent") notes.push("결근");
-    return { countedMinutes: 0, result: null, notes };
+/**
+ * 하루 요약. today = 오늘 근무일(work_date_cutoff_hour 기준, API 응답 today).
+ * 근태정정은 구분명 대신 출퇴근 칸의 정정 표시로 보여준다.
+ */
+export function summarizeDay(
+  ymd: string,
+  r: WorkHoursDayRow | null | undefined,
+  today: string
+): DaySummary {
+  const notes: string[] = [];
+  if (r?.categoryName && r.categoryType !== "correction") notes.push(r.categoryName);
+
+  if (ymd > today) return { ymd, state: "future", countedMinutes: 0, notes };
+  if (!r || (!r.checkIn && !r.checkOut)) {
+    if (notes.length === 0 && r?.autoStatus === "absent" && ymd < today) notes.push("결근");
+    return { ymd, state: "none", countedMinutes: 0, notes };
   }
   const result = computeDayWorkMinutes(r.checkIn, r.checkOut);
-  if (result.status === "no_checkout") notes.push("퇴근 없음");
-  if (result.status === "invalid") notes.push("기록 오류");
-  return {
-    countedMinutes: result.status === "ok" ? result.workMinutes : 0,
-    result,
-    notes,
-  };
+  if (result.status === "ok") return { ymd, state: "ok", countedMinutes: result.workMinutes, notes };
+  if (result.status === "no_checkout") {
+    if (ymd === today) return { ymd, state: "working", countedMinutes: 0, notes };
+    return { ymd, state: "no_checkout", countedMinutes: 0, notes: [...notes, "퇴근 없음"] };
+  }
+  return { ymd, state: "invalid", countedMinutes: 0, notes: [...notes, "기록 오류"] };
 }
 
-/** 근무 칸 글자 — "8시간 30분", "0분 출장 및 외근", "퇴근 없음", 기록 자체가 없으면 "-" */
+/** 하루 칸 글자 — "8시간 30분", "근무중", "-"(미래·기록 없음), "0분 출장 및 외근", "퇴근 없음" */
 export function dayCellText(d: DaySummary): string {
   const reason = d.notes.filter((n) => n !== "퇴근 없음" && n !== "기록 오류").join(", ");
-  if (!d.result) return reason ? `${formatWorkMinutes(0)} ${reason}` : "-";
-  if (d.result.status === "no_checkout") return reason ? `퇴근 없음 ${reason}` : "퇴근 없음";
-  if (d.result.status === "invalid") return reason ? `기록 오류 ${reason}` : "기록 오류";
-  const t = formatWorkMinutes(d.result.workMinutes);
-  return reason ? `${t} ${reason}` : t;
+  switch (d.state) {
+    case "future":
+      return "-";
+    case "working":
+      return WORKING_LABEL;
+    case "none":
+      return reason ? `${formatWorkMinutes(0)} ${reason}` : "-";
+    case "no_checkout":
+      return reason ? `퇴근 없음 ${reason}` : "퇴근 없음";
+    case "invalid":
+      return reason ? `기록 오류 ${reason}` : "기록 오류";
+    case "ok": {
+      const t = formatWorkMinutes(d.countedMinutes);
+      return reason ? `${t} ${reason}` : t;
+    }
+  }
 }
 
-/** 일별 상세의 근무 칸 — 시간만 (퇴근 없음·기록 오류·기록 없음은 "-") */
+/** 일별 상세의 근무 칸 — 시간만 ("근무중", 그 밖에 시간이 없으면 "-") */
 export function dayMinutesText(d: DaySummary): string {
-  return d.result?.status === "ok" ? formatWorkMinutes(d.result.workMinutes) : "-";
+  if (d.state === "ok") return formatWorkMinutes(d.countedMinutes);
+  if (d.state === "working") return WORKING_LABEL;
+  return "-";
 }
 
 export interface PeriodTotal {
   minutes: number;
-  noCheckoutDays: number;
-  invalidDays: number;
+  /** 합계에서 뺀 지난 날짜 */
+  noCheckoutDates: string[];
+  invalidDates: string[];
+  /** 기간 전체가 오늘 이후 */
+  allFuture: boolean;
 }
 
 export function sumDays(days: DaySummary[]): PeriodTotal {
-  const t: PeriodTotal = { minutes: 0, noCheckoutDays: 0, invalidDays: 0 };
+  const t: PeriodTotal = { minutes: 0, noCheckoutDates: [], invalidDates: [], allFuture: days.length > 0 };
   for (const d of days) {
     t.minutes += d.countedMinutes;
-    if (d.result?.status === "no_checkout") t.noCheckoutDays++;
-    if (d.result?.status === "invalid") t.invalidDays++;
+    if (d.state === "no_checkout") t.noCheckoutDates.push(d.ymd);
+    if (d.state === "invalid") t.invalidDates.push(d.ymd);
+    if (d.state !== "future") t.allFuture = false;
   }
   return t;
 }
 
-/** 합계에서 뺀 날 글자 — "(퇴근 없음 1일 제외)", 없으면 "" */
-export function periodExcludedText(t: PeriodTotal): string {
-  const extra: string[] = [];
-  if (t.noCheckoutDays) extra.push(`퇴근 없음 ${t.noCheckoutDays}일 제외`);
-  if (t.invalidDays) extra.push(`기록 오류 ${t.invalidDays}일 제외`);
-  return extra.length ? `(${extra.join(", ")})` : "";
+/** 합계 칸 글자 — "176시간 30분", 기간 전체가 미래면 "-" */
+export function periodMinutesText(t: PeriodTotal): string {
+  return t.allFuture ? "-" : formatWorkMinutes(t.minutes);
 }
 
-/** 합계 칸 글자 — "176시간 30분" + 제외한 날 "(퇴근 없음 1일 제외)" */
-export function periodTotalText(t: PeriodTotal): string {
-  const excluded = periodExcludedText(t);
-  const base = formatWorkMinutes(t.minutes);
-  return excluded ? `${base} ${excluded}` : base;
+function excludedPart(label: string, dates: string[]): string {
+  if (dates.length === 0) return "";
+  if (dates.length === 1) return `${label} ${shortMd(dates[0])} 제외`;
+  return `${label} ${dates.length}일(${dates.map(shortMd).join(", ")}) 제외`;
+}
+
+/** 비고 칸 — "퇴근 없음 11/12 제외", "퇴근 없음 2일(11/12, 11/14) 제외", 없으면 "" */
+export function periodRemarkText(t: PeriodTotal): string {
+  return [excludedPart("퇴근 없음", t.noCheckoutDates), excludedPart("기록 오류", t.invalidDates)]
+    .filter(Boolean)
+    .join(", ");
 }

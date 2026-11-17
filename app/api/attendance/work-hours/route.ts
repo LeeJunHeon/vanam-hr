@@ -6,6 +6,7 @@ import {
   canViewEmployee,
 } from "@/lib/auth-helpers";
 import { assembleAttendanceRows } from "@/lib/attendance-rows";
+import { loadTodayWorkDate } from "@/lib/kst-date";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,7 @@ export const dynamic = "force-dynamic";
 //
 // 응답: {
 //   range: { startDate, endDate }, scope: 'all' | 'department', departmentId,
+//   today: "YYYY-MM-DD"   // 오늘 근무일 (work_date_cutoff_hour 기준 — attendance-rows 의 오늘 판정과 같음)
 //   departments: [{ id, name }] | null   // 전체 조회 권한자만 (부서 선택용)
 //   employees: [{ id, name, departmentName, isActive }]   // 표 행 (재직자 + 기간 내 기록 있는 퇴사자)
 //   detailEmployee: { id, name, departmentName, isActive } | null
@@ -157,7 +159,7 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    const [rows, departments] = await Promise.all([
+    const [rows, departments, todayWorkDate] = await Promise.all([
       assembleAttendanceRows({ employees: assembleTargets, startDate, endDate }),
       viewAll
         ? prisma.department.findMany({
@@ -166,10 +168,12 @@ export async function GET(request: NextRequest) {
             select: { id: true, name: true },
           })
         : Promise.resolve(null),
+      loadTodayWorkDate(prisma),
     ]);
 
     return NextResponse.json({
       range: { startDate, endDate },
+      today: todayWorkDate.ymd,
       scope: departmentFilter === null ? "all" : "department",
       departmentId: departmentFilter,
       departments,

@@ -28,6 +28,7 @@ fakeModule("@/lib/prisma", {
       },
     },
     department: { findMany: async () => [{ id: 3, name: "개발" }] },
+    policySetting: { findUnique: async () => ({ value: "4" }) },
   },
 });
 
@@ -53,6 +54,7 @@ test("CEO — 전체, 부서 선택 가능, 다른 부서 직원 상세 가능",
   assert.equal(all.body.scope, "all");
   assert.ok(Array.isArray(all.body.departments));
   assert.equal(lastEmployeeWhere?.departmentId, undefined);
+  assert.match(all.body.today, /^\d{4}-\d{2}-\d{2}$/);
 
   const dept = await call(`${RANGE}&departmentId=4&employeeId=8`, ceo);
   assert.equal(dept.status, 200);
