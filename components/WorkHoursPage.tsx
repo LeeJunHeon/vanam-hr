@@ -1,54 +1,53 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
-import { ChevronLeft, ChevronRight, Loader2, Users, X } from "lucide-react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { ChevronLeft, ChevronRight, Loader2, Users } from "lucide-react";
 import MonthPicker from "@/components/MonthPicker";
 import DatePicker from "@/components/DatePicker";
 import ExcelButton from "@/components/ExcelButton";
-import { renderTimeCell } from "@/components/AttendanceTimeCell";
+import WorkHoursTable from "@/components/work-hours/WorkHoursTable";
+import WorkHoursMobileList from "@/components/work-hours/WorkHoursMobileList";
+import type { WorkHoursDetailData } from "@/components/work-hours/WorkHoursDetail";
+import type { WorkHoursEmployee, WorkHoursListProps } from "@/components/work-hours/shared";
 import { todayYmd } from "@/lib/dateUtils";
 import { exportExcel } from "@/lib/excelUtils";
 import { writePageQuery } from "@/lib/launcher";
 import {
   addDays,
   addMonths,
-  dayCellText,
-  dayMinutesText,
+  buildColumns,
+  buildDetailLines,
+  columnCell,
   daysInRange,
+  isColumnClickable,
   monthRange,
   monthWeeks,
   mondayOf,
+  neighborIds,
+  parseDayParam,
+  parseWeekParam,
   parseYm,
   parseYmd,
   periodMinutesText,
   periodRemarkText,
+  periodTotalOf,
   shortMd,
   summarizeDay,
-  sumDays,
   weekRange,
-  weekdayKo,
-  type DayState,
-  type DaySummary,
-  type PeriodTotal,
+  type DaySummarizer,
+  type WorkHoursColumn,
   type WorkHoursDayRow,
+  type WorkHoursView,
 } from "@/lib/work-hours";
-import { formatWorkMinutes, PROGRESS_WORKING } from "@/lib/attendanceLabels";
 
-// 전체 근무시간 조회 (관리자 메뉴 work-hours).
+// 전체 근무시간 조회 (관리자 메뉴 work-hours) — 상태·주소·데이터 조회를 맡는 컨테이너.
+// 화면 조각: components/work-hours/ (WorkHoursTable 데스크톱 표, WorkHoursMobileList 휴대폰 카드, WorkHoursDetail 펼친 상세)
 // 데이터: GET /api/attendance/work-hours (권한·부서 강제는 서버). 계산: lib/work-hours.
-// 주소: /?page=work-hours&view=month&month=2026-11 | &view=week&date=2026-11-16 | &employee=8 | &department=3
-//       (화면 상태가 바뀌면 replaceState 로 맞춘다. 다른 메뉴로 가면 lib/launcher 가 이 키들을 지운다)
-// 표: 열 너비 고정(table-fixed) — 달마다 주 개수가 달라도 이름·부서·합계·비고 위치는 그대로,
-//     좁은 창에서는 카드 안에서만 가로 스크롤(이름 칸 고정).
-
-type View = "month" | "week";
-
-interface Employee {
-  id: number;
-  name: string;
-  departmentName: string | null;
-  isActive: boolean;
-}
+// 주소: /?page=work-hours&view=month&month=2026-11 | &view=week&date=2026-11-16 | &department=3
+//       | &employee=8 (펼친 직원) | &week=3 (월별 — 그 주만) | &day=2026-11-18 (주별 — 그날 강조)
+//       (화면 상태가 바뀌면 replaceState 로 맞춘다. 보기·기간·부서를 바꾸면 week·day 는 지운다.
+//        다른 메뉴로 가면 lib/launcher 가 이 키들을 지운다)
+// 펼치기: 한 번에 한 명, 누른 행(카드) 바로 아래. 주소로 바로 열면 처음 한 번 그 행이 보이게 스크롤한다.
 
 interface ApiResponse {
   range: { startDate: string; endDate: string };
@@ -57,26 +56,18 @@ interface ApiResponse {
   scope: "all" | "department";
   departmentId: number | null;
   departments: { id: number; name: string }[] | null;
-  employees: Employee[];
-  detailEmployee: Employee | null;
+  employees: WorkHoursEmployee[];
   rows: WorkHoursDayRow[];
 }
 
-interface Column {
-  key: string;
-  /** 머리글 윗줄 — "1주" / "월" */
-  title: string;
-  /** 머리글 아랫줄 — "11/2~11/8" / "11/16" */
-  sub: string;
-  days: string[];
-}
-
 interface UrlState {
-  view: View;
+  view: WorkHoursView;
   month: string;
   date: string;
   employee: number | null;
   department: number | null;
+  week: number | null;
+  day: string | null;
 }
 
 function positiveInt(s: string | null): number | null {
@@ -85,52 +76,54 @@ function positiveInt(s: string | null): number | null {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
-// 주소 → 화면 상태 (잘못된 값은 기본값으로)
+// 주소 → 화면 상태 (잘못된 값은 기본값으로, week·day 는 보기·기간·직원과 맞을 때만)
 function readUrlState(): UrlState {
   const today = todayYmd();
   const q = new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
+  const view: WorkHoursView = q.get("view") === "week" ? "week" : "month";
+  const month = parseYm(q.get("month")) ?? today.slice(0, 7);
+  const date = parseYmd(q.get("date")) ?? today;
+  const employee = positiveInt(q.get("employee"));
   return {
-    view: q.get("view") === "week" ? "week" : "month",
-    month: parseYm(q.get("month")) ?? today.slice(0, 7),
-    date: parseYmd(q.get("date")) ?? today,
-    employee: positiveInt(q.get("employee")),
+    view,
+    month,
+    date,
+    employee,
     department: positiveInt(q.get("department")),
+    week: employee && view === "month" ? parseWeekParam(q.get("week"), month) : null,
+    day: employee && view === "week" ? parseDayParam(q.get("day"), date) : null,
   };
 }
 
 const RULE_TEXT =
   "직원별 주간·월간 근무시간 — WiFi 첫 연결~마지막 연결(승인된 근태 정정 반영), 휴게시간 공제 없음, 지난 날짜의 퇴근 기록 없는 날은 합계 제외";
 
-// 숫자 칸 글자 색 — "-"·"0분" 연한 회색, 근무중 파랑, 퇴근 없음·기록 오류 주황
-const ZERO = formatWorkMinutes(0);
-function tone(text: string, state?: DayState): string {
-  if (text === "-" || text === ZERO) return "text-gray-300";
-  if (state === "working") return PROGRESS_WORKING.cls;
-  if (state === "no_checkout" || state === "invalid") return "text-orange-500";
-  return "text-gray-700";
+// ── 펼칠 때 스크롤 (페이지 스크롤 상자는 app/page 의 overflow-y-auto 영역) ──
+function scrollParentOf(el: HTMLElement): HTMLElement {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const oy = getComputedStyle(p).overflowY;
+    if ((oy === "auto" || oy === "scroll") && p.scrollHeight > p.clientHeight) return p;
+  }
+  return (document.scrollingElement as HTMLElement) ?? document.documentElement;
 }
 
-// 주별 머리글 — 토·일 색은 AttendanceCalendarView 와 같다
-function weekdayTone(ymd: string): string {
-  const dow = new Date(ymd + "T00:00:00.000Z").getUTCDay();
-  return dow === 0 ? "text-rose-500" : dow === 6 ? "text-blue-500" : "text-gray-500";
-}
-
-function RetiredBadge() {
-  return (
-    <span className="text-xs font-semibold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full shrink-0">
-      퇴사
-    </span>
-  );
+function viewportOf(sp: HTMLElement): { top: number; bottom: number } {
+  if (sp === document.scrollingElement || sp === document.documentElement) {
+    return { top: 0, bottom: window.innerHeight };
+  }
+  const r = sp.getBoundingClientRect();
+  return { top: r.top, bottom: r.bottom };
 }
 
 export default function WorkHoursPage() {
   const [initial] = useState(readUrlState);
-  const [view, setView] = useState<View>(initial.view);
+  const [view, setView] = useState<WorkHoursView>(initial.view);
   const [month, setMonth] = useState(initial.month);
   const [date, setDate] = useState(initial.date);
   const [employeeId, setEmployeeId] = useState<number | null>(initial.employee);
   const [departmentId, setDepartmentId] = useState<number | null>(initial.department);
+  const [week, setWeek] = useState<number | null>(initial.week);
+  const [day, setDay] = useState<string | null>(initial.day);
 
   // 마지막으로 받은 응답 — 다음 조회 중에도 이전 표를 그대로 보여준다
   const [result, setResult] = useState<{
@@ -145,23 +138,12 @@ export default function WorkHoursPage() {
     [view, month, date]
   );
 
-  // 화면 상태 → 주소
-  useEffect(() => {
-    writePageQuery({
-      view,
-      month: view === "month" ? month : null,
-      date: view === "week" ? date : null,
-      employee: employeeId ? String(employeeId) : null,
-      department: departmentId ? String(departmentId) : null,
-    });
-  }, [view, month, date, employeeId, departmentId]);
-
+  // 펼친 직원의 근태 행은 표 데이터에 이미 있으므로 employeeId 는 조회 조건에 넣지 않는다(펼칠 때마다 다시 받지 않음)
   const queryKey = useMemo(() => {
     const params = new URLSearchParams({ startDate: range.start, endDate: range.end });
     if (departmentId) params.set("departmentId", String(departmentId));
-    if (employeeId) params.set("employeeId", String(employeeId));
     return params.toString();
-  }, [range.start, range.end, departmentId, employeeId]);
+  }, [range.start, range.end, departmentId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -189,6 +171,24 @@ export default function WorkHoursPage() {
   const error = result?.error ?? null;
   // 오늘 근무일 — 서버(work_date_cutoff_hour 기준)가 준 값, 받기 전에는 브라우저 날짜
   const today = data?.today ?? todayYmd();
+  const employees = useMemo(() => data?.employees ?? [], [data]);
+
+  // 펼친 직원 — 지금 표에 있을 때만 (부서 필터 밖이면 펼치지 않고 주소에서도 뺀다)
+  const expandedId = employeeId !== null && employees.some((e) => e.id === employeeId) ? employeeId : null;
+  const urlEmployee = loading || !data ? employeeId : expandedId;
+
+  // 화면 상태 → 주소
+  useEffect(() => {
+    writePageQuery({
+      view,
+      month: view === "month" ? month : null,
+      date: view === "week" ? date : null,
+      employee: urlEmployee ? String(urlEmployee) : null,
+      department: departmentId ? String(departmentId) : null,
+      week: urlEmployee && view === "month" && week ? String(week) : null,
+      day: urlEmployee && view === "week" && day ? day : null,
+    });
+  }, [view, month, date, urlEmployee, departmentId, week, day]);
 
   // 직원 → 날짜 → 근태 행
   const byEmployee = useMemo(() => {
@@ -201,67 +201,130 @@ export default function WorkHoursPage() {
     return m;
   }, [data]);
 
-  // 표 열 — 월별: 그 달의 주(그 달 날짜만), 주별: 월~일
-  const columns: Column[] = useMemo(() => {
-    if (view === "month") {
-      return monthWeeks(month).map((w) => ({
-        key: w.start,
-        title: `${w.index}주`,
-        sub: w.start === w.end ? shortMd(w.start) : `${shortMd(w.start)}~${shortMd(w.end)}`,
-        days: daysInRange(w.start, w.end),
-      }));
-    }
-    return daysInRange(range.start, range.end).map((d) => ({
-      key: d,
-      title: weekdayKo(d),
-      sub: shortMd(d),
-      days: [d],
-    }));
-  }, [view, month, range.start, range.end]);
+  const columns: WorkHoursColumn[] = useMemo(() => buildColumns(view, month, date), [view, month, date]);
+  const weeks = useMemo(() => monthWeeks(month), [month]);
   const totalLabel = view === "month" ? "월 합계" : "주 합계";
   const allDays = useMemo(() => daysInRange(range.start, range.end), [range.start, range.end]);
 
-  const daySummary = useCallback(
-    (empId: number, ymd: string): DaySummary =>
-      summarizeDay(ymd, byEmployee.get(empId)?.get(ymd), today),
-    [byEmployee, today]
-  );
-  const periodTotal = useCallback(
-    (empId: number, days: string[]): PeriodTotal => sumDays(days.map((d) => daySummary(empId, d))),
-    [daySummary]
-  );
-
-  // 칸 — 주별은 하루 값, 월별은 주 합계
-  const cell = (empId: number, col: Column): { text: string; state?: DayState } => {
-    if (view === "week") {
-      const s = daySummary(empId, col.days[0]);
-      return { text: dayCellText(s), state: s.state };
-    }
-    return { text: periodMinutesText(periodTotal(empId, col.days)) };
-  };
-  const total = (empId: number) => {
-    const t = periodTotal(empId, allDays);
+  const summarizerFor = (empId: number): DaySummarizer => (ymd) =>
+    summarizeDay(ymd, byEmployee.get(empId)?.get(ymd), today);
+  const cellOf = (empId: number, col: WorkHoursColumn) => columnCell(view, col, summarizerFor(empId));
+  const totalOf = (empId: number) => {
+    const t = periodTotalOf(allDays, summarizerFor(empId));
     return { text: periodMinutesText(t), remark: periodRemarkText(t) };
   };
 
-  const employees = data?.employees ?? [];
-  // 표에 있는 직원은 바로, 표 밖 직원(다른 부서 등)은 서버가 돌려준 detailEmployee 로
-  const detail = employeeId
-    ? (employees.find((e) => e.id === employeeId) ??
-      (data?.detailEmployee?.id === employeeId ? data.detailEmployee : null))
-    : null;
+  // ── 펼친 행 스크롤 ──
+  const containerRef = useRef<HTMLDivElement>(null);
+  // 주소로 바로 열었을 때 처음 한 번 그 행이 보이게
+  const initialScrollPending = useRef(initial.employee !== null);
+  // 사용자가 누를 때 — 누른 행(이전/다음은 지금 펼친 행) 위치를 기억해 두고, 다시 그린 뒤 같은 자리에 두고
+  // 펼친 영역이 화면 밖이면 보이는 만큼만 부드럽게 내린다
+  const anchorRef = useRef<{ id: number; top: number } | null>(null);
 
-  // ── 기간 이동 ──
+  const visibleEl = (selector: string): HTMLElement | null => {
+    for (const el of containerRef.current?.querySelectorAll<HTMLElement>(selector) ?? []) {
+      if (el.getClientRects().length > 0) return el;
+    }
+    return null;
+  };
+  const rowEl = (id: number) => visibleEl(`[data-emp-row="${id}"]`);
+
+  const rememberAnchor = (targetId: number, fromId: number) => {
+    const el = rowEl(fromId);
+    anchorRef.current = el ? { id: targetId, top: el.getBoundingClientRect().top } : null;
+  };
+
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    anchorRef.current = null;
+    if (!anchor) return;
+    const row = rowEl(anchor.id);
+    if (!row) return;
+    const sp = scrollParentOf(row);
+    const shift = row.getBoundingClientRect().top - anchor.top;
+    if (shift !== 0) sp.scrollTop += shift;
+    const detailEl = visibleEl(`[data-emp-detail="${anchor.id}"]`);
+    if (!detailEl) return;
+    const vp = viewportOf(sp);
+    const overflow = detailEl.getBoundingClientRect().bottom - vp.bottom;
+    // 행이 화면 위로 밀려나지 않는 만큼까지만
+    const room = row.getBoundingClientRect().top - vp.top - 8;
+    const by = Math.min(overflow + 8, room);
+    if (overflow > 0 && by > 0) sp.scrollBy({ top: by, behavior: "smooth" });
+    // rowEl·visibleEl 은 containerRef 만 읽는다
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employeeId, week, day]);
+
+  useEffect(() => {
+    if (!initialScrollPending.current || loading || !data) return;
+    initialScrollPending.current = false;
+    if (expandedId === null) return;
+    rowEl(expandedId)?.scrollIntoView({ block: "start" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, data, expandedId]);
+
+  // ── 펼치기·칸 누르기 ──
+  const clearFocus = () => {
+    setWeek(null);
+    setDay(null);
+  };
+  // 행(이름) — 접힘이면 펼치기, 그 주만 보는 중이면 월 전체, 그 밖에는 접기
+  const toggleEmployee = (id: number) => {
+    rememberAnchor(id, id);
+    if (expandedId === id && view === "month" && week !== null) {
+      setWeek(null);
+      return;
+    }
+    setEmployeeId(expandedId === id ? null : id);
+    clearFocus();
+  };
+  // 칸 — 월별: 그 주만 보기, 주별: 그날 강조. 같은 칸을 다시 누르면 풀린다. 미래 칸은 반응 없음
+  const selectColumn = (id: number, col: WorkHoursColumn) => {
+    if (!isColumnClickable(col, today)) return;
+    rememberAnchor(id, id);
+    const same = expandedId === id;
+    setEmployeeId(id);
+    if (view === "month") {
+      setWeek(same && week === col.weekIndex ? null : col.weekIndex);
+      setDay(null);
+    } else {
+      setDay(same && day === col.days[0] ? null : col.days[0]);
+      setWeek(null);
+    }
+  };
+  const closeDetail = () => {
+    if (expandedId !== null) rememberAnchor(expandedId, expandedId);
+    setEmployeeId(null);
+    clearFocus();
+  };
+  // 이전/다음 직원 — 지금 표 순서(부서 필터 반영), 보던 주·날은 유지
+  const neighbors = expandedId !== null ? neighborIds(employees.map((e) => e.id), expandedId) : null;
+  const moveTo = (id: number | null) => {
+    if (id === null || expandedId === null) return;
+    rememberAnchor(id, expandedId);
+    setEmployeeId(id);
+  };
+
+  // ── 기간 이동 (보기·기간·부서가 바뀌면 week·day 는 지운다) ──
+  const changeMonth = (ym: string) => {
+    setMonth(ym);
+    clearFocus();
+  };
+  const changeDate = (ymd: string) => {
+    setDate(ymd);
+    clearFocus();
+  };
   const goPrev = () =>
-    view === "month" ? setMonth(addMonths(month, -1)) : setDate(addDays(mondayOf(date), -7));
+    view === "month" ? changeMonth(addMonths(month, -1)) : changeDate(addDays(mondayOf(date), -7));
   const goNext = () =>
-    view === "month" ? setMonth(addMonths(month, 1)) : setDate(addDays(mondayOf(date), 7));
+    view === "month" ? changeMonth(addMonths(month, 1)) : changeDate(addDays(mondayOf(date), 7));
   const goToday = () => {
     const t = todayYmd();
-    if (view === "month") setMonth(t.slice(0, 7));
-    else setDate(t);
+    if (view === "month") changeMonth(t.slice(0, 7));
+    else changeDate(t);
   };
-  const switchView = (v: View) => {
+  const switchView = (v: WorkHoursView) => {
     if (v === view) return;
     // 보던 기간을 이어서 — 월별→주별은 그 달 1일(이번 달이면 오늘)의 주, 주별→월별은 그 주 월요일의 달
     if (v === "week") {
@@ -271,6 +334,11 @@ export default function WorkHoursPage() {
       setMonth(mondayOf(date).slice(0, 7));
     }
     setView(v);
+    clearFocus();
+  };
+  const changeDepartment = (id: number | null) => {
+    setDepartmentId(id);
+    clearFocus();
   };
 
   const periodLabel =
@@ -281,57 +349,69 @@ export default function WorkHoursPage() {
   // ── 엑셀 — 지금 보고 있는 표 그대로 (머리글은 한 줄 "2주 (11/2~11/8)") ──
   const handleExport = async () => {
     if (!data || employees.length === 0) return;
-    const headers = [
-      "이름",
-      "부서",
-      ...columns.map((c) => `${c.title} (${c.sub})`),
-      totalLabel,
-      "비고",
-    ];
+    const headers = ["이름", "부서", ...columns.map((c) => `${c.title} (${c.sub})`), totalLabel, "비고"];
     const rows = employees.map((e) => {
-      const t = total(e.id);
+      const t = totalOf(e.id);
       return [
         e.isActive ? e.name : `${e.name} (퇴사)`,
         e.departmentName ?? "",
-        ...columns.map((c) => cell(e.id, c).text),
+        ...columns.map((c) => cellOf(e.id, c).text),
         t.text,
         t.remark,
       ];
     });
     const deptName =
-      departmentId && data.departments
-        ? data.departments.find((d) => d.id === departmentId)?.name
-        : null;
+      departmentId && data.departments ? data.departments.find((d) => d.id === departmentId)?.name : null;
     const period = view === "month" ? `월별_${month}` : `주별_${range.start}~${range.end}`;
-    await exportExcel(
-      headers,
-      rows,
-      `근무시간_${period}${deptName ? `_${deptName}` : ""}.xlsx`,
-      "근무시간"
-    );
+    await exportExcel(headers, rows, `근무시간_${period}${deptName ? `_${deptName}` : ""}.xlsx`, "근무시간");
   };
 
-  // ── 일별 상세 ──
-  const detailDays = useMemo(() => {
-    if (!detail) return [];
-    return daysInRange(range.start, range.end).map((d) => ({
-      ymd: d,
-      row: byEmployee.get(detail.id)?.get(d) ?? null,
-      summary: daySummary(detail.id, d),
-    }));
-  }, [detail, byEmployee, daySummary, range.start, range.end]);
-  const detailSum = sumDays(detailDays.map((d) => d.summary));
-  const detailTotal = periodMinutesText(detailSum);
-  const detailRemark = periodRemarkText(detailSum);
+  // ── 펼친 직원 일별 상세 (표·카드 공용 — 날짜 줄·주 소계·합계를 여기서 한 번 만든다) ──
+  const focusWeek = view === "month" && week !== null ? (weeks[week - 1] ?? null) : null;
+  let detail: WorkHoursDetailData | null = null;
+  if (expandedId !== null) {
+    const employee = employees.find((e) => e.id === expandedId)!;
+    const summarize = summarizerFor(expandedId);
+    const days = focusWeek ? daysInRange(focusWeek.start, focusWeek.end) : allDays;
+    detail = {
+      employee,
+      periodLabel,
+      focusWeek,
+      focusDay: view === "week" ? day : null,
+      // 월 전체일 때만 주 소계 줄
+      lines: buildDetailLines(days, summarize, view === "month" && !focusWeek ? weeks : null),
+      total: periodTotalOf(days, summarize),
+      today,
+      getRow: (ymd) => byEmployee.get(expandedId)?.get(ymd) ?? null,
+      hasPrev: neighbors?.prev != null,
+      hasNext: neighbors?.next != null,
+      onPrev: () => moveTo(neighbors?.prev ?? null),
+      onNext: () => moveTo(neighbors?.next ?? null),
+      onClose: closeDetail,
+      onShowMonth: () => {
+        rememberAnchor(expandedId, expandedId);
+        setWeek(null);
+      },
+    };
+  }
 
-  const thBase = "align-middle text-xs font-semibold text-gray-500 whitespace-nowrap";
-  const thCls = `h-[52px] px-3 ${thBase}`;
-  const thNumCls = `h-[52px] px-2 text-right ${thBase}`;
-  const thDetailCls = `h-10 px-3 ${thBase}`;
-  const tdBase = "h-11 text-sm whitespace-nowrap overflow-hidden text-ellipsis";
-  const tdCls = `${tdBase} px-3`;
-  // 숫자 칸 — 상세 모달 근무 칸과 같은 font-mono, 오른쪽 정렬로 자릿수를 맞춘다
-  const numCls = `${tdBase} px-2 font-mono tabular-nums text-right`;
+  const listProps: WorkHoursListProps = {
+    view,
+    columns,
+    employees,
+    today,
+    totalLabel,
+    cellOf,
+    totalOf,
+    expandedId,
+    activeColumnKey:
+      view === "month"
+        ? (columns.find((c) => c.weekIndex === week)?.key ?? null)
+        : day,
+    onToggleEmployee: toggleEmployee,
+    onSelectColumn: selectColumn,
+    detail,
+  };
 
   return (
     <div className="p-4 sm:p-6 pb-24 sm:pb-24 space-y-5 min-w-0">
@@ -388,7 +468,7 @@ export default function WorkHoursPage() {
               <DatePicker
                 value={date}
                 onChange={(v) => {
-                  if (v) setDate(v);
+                  if (v) changeDate(v);
                 }}
                 className="w-40"
               />
@@ -413,7 +493,7 @@ export default function WorkHoursPage() {
         {data?.departments && (
           <select
             value={departmentId ?? "all"}
-            onChange={(e) => setDepartmentId(e.target.value === "all" ? null : Number(e.target.value))}
+            onChange={(e) => changeDepartment(e.target.value === "all" ? null : Number(e.target.value))}
             className="lg:ml-auto px-3 py-2.5 border border-gray-200 rounded-xl text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500"
           >
             <option value="all">전체 부서</option>
@@ -426,307 +506,37 @@ export default function WorkHoursPage() {
         )}
       </div>
 
-      {/* ───── 직원별 표 ───── */}
+      {/* ───── 직원별 표 (행 아래 펼침 상세) ───── */}
       {loading && !data ? (
         <div className="bg-white rounded-2xl border border-gray-100 flex items-center justify-center h-32">
           <Loader2 size={20} className="animate-spin text-blue-500" />
           <span className="ml-2 text-sm text-gray-500">불러오는 중...</span>
         </div>
       ) : error ? (
-        <div className="bg-white rounded-2xl border border-gray-100 px-5 py-6 text-sm text-rose-600">
-          {error}
-        </div>
+        <div className="bg-white rounded-2xl border border-gray-100 px-5 py-6 text-sm text-rose-600">{error}</div>
       ) : employees.length === 0 ? (
         <div className="bg-white rounded-2xl border border-gray-100 px-5 py-12 text-center">
           <Users size={32} className="mx-auto mb-2 text-gray-300" />
           <p className="text-sm text-gray-400">표시할 직원이 없습니다</p>
         </div>
       ) : (
-        <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-          <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-gray-900">
+        <div ref={containerRef} className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+          <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between gap-2">
+            <h3 className="text-sm font-bold text-gray-900 shrink-0">
               {view === "month" ? "월별 근무시간" : "주별 근무시간"}
             </h3>
-            <span className="text-xs text-gray-400 flex items-center gap-1.5">
-              {loading && <Loader2 size={12} className="animate-spin" />}
-              {employees.length}명 · 이름 클릭 시 일별 상세
+            <span className="text-xs text-gray-400 flex items-center gap-1.5 min-w-0 truncate">
+              {loading && <Loader2 size={12} className="animate-spin shrink-0" />}
+              {employees.length}명 · 행을 누르면 일별 상세
             </span>
           </div>
-
-          {/* 데스크탑 표 — 열 너비 고정, 좁으면 이 안에서만 가로 스크롤 */}
-          <div className="hidden md:block overflow-x-auto">
-            <table className="w-full min-w-[1280px] table-fixed">
-              <colgroup>
-                <col className="w-[180px]" />
-                <col className="w-[110px]" />
-                {columns.map((c) => (
-                  <col key={c.key} />
-                ))}
-                <col className="w-[140px]" />
-                <col className="w-[170px]" />
-              </colgroup>
-              <thead>
-                <tr className="bg-gray-50 border-b border-gray-100">
-                  <th className={`${thCls} text-left sticky left-0 z-10 bg-gray-50`}>이름</th>
-                  <th className={`${thCls} text-left`}>부서</th>
-                  {columns.map((c) => {
-                    const isToday = view === "week" && c.days[0] === today;
-                    return (
-                      <th key={c.key} className={`${thNumCls} ${isToday ? "bg-blue-50" : ""}`}>
-                        <div className={view === "week" ? weekdayTone(c.key) : ""}>{c.title}</div>
-                        <div className="text-[11px] font-normal text-gray-400 font-mono tabular-nums">
-                          {c.sub}
-                        </div>
-                      </th>
-                    );
-                  })}
-                  <th className={thNumCls}>{totalLabel}</th>
-                  <th className={`${thCls} text-left`}>비고</th>
-                </tr>
-              </thead>
-              <tbody>
-                {employees.map((e) => {
-                  const selected = employeeId === e.id;
-                  const t = total(e.id);
-                  return (
-                    <tr
-                      key={e.id}
-                      className={`group border-b border-gray-50 last:border-0 ${
-                        selected ? "bg-blue-50" : "hover:bg-slate-50"
-                      }`}
-                    >
-                      <td
-                        className={`${tdCls} sticky left-0 z-[1] ${
-                          selected ? "bg-blue-50" : "bg-white group-hover:bg-slate-50"
-                        }`}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <button
-                            onClick={() => setEmployeeId(e.id)}
-                            className="font-semibold text-gray-900 hover:text-blue-600 truncate"
-                            title={e.name}
-                          >
-                            {e.name}
-                          </button>
-                          {!e.isActive && <RetiredBadge />}
-                        </div>
-                      </td>
-                      <td className={`${tdCls} text-gray-600`} title={e.departmentName ?? undefined}>
-                        {e.departmentName ?? "-"}
-                      </td>
-                      {columns.map((c) => {
-                        const v = cell(e.id, c);
-                        const isToday = view === "week" && c.days[0] === today;
-                        return (
-                          <td
-                            key={c.key}
-                            className={`${numCls} ${tone(v.text, v.state)} ${
-                              isToday ? "bg-blue-50/60" : ""
-                            }`}
-                            title={v.text}
-                          >
-                            {v.text}
-                          </td>
-                        );
-                      })}
-                      <td className={`${numCls} font-semibold ${t.text === "-" || t.text === ZERO ? "text-gray-300" : "text-gray-900"}`}>
-                        {t.text}
-                      </td>
-                      <td className={`${tdCls} text-xs text-orange-500`} title={t.remark || undefined}>
-                        {t.remark}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* 모바일 카드 */}
-          <div className="md:hidden divide-y divide-gray-50">
-            {employees.map((e) => {
-              const t = total(e.id);
-              return (
-                <button
-                  key={e.id}
-                  onClick={() => setEmployeeId(e.id)}
-                  className="w-full text-left px-4 py-3 space-y-1.5 hover:bg-blue-50/30"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-sm font-semibold text-gray-900 truncate">{e.name}</span>
-                      {!e.isActive && <RetiredBadge />}
-                    </div>
-                    <span className="text-xs text-gray-400 shrink-0">{e.departmentName ?? "-"}</span>
-                  </div>
-                  <div className="space-y-0.5">
-                    {columns.map((c) => {
-                      const v = cell(e.id, c);
-                      const isToday = view === "week" && c.days[0] === today;
-                      return (
-                        <div key={c.key} className="flex items-center justify-between gap-2 text-xs">
-                          <span className={`shrink-0 ${isToday ? "text-blue-600 font-semibold" : "text-gray-500"}`}>
-                            {c.title} ({c.sub})
-                          </span>
-                          <span className={`font-mono tabular-nums truncate ${tone(v.text, v.state)}`}>
-                            {v.text}
-                          </span>
-                        </div>
-                      );
-                    })}
-                    <div className="flex items-center justify-between text-xs pt-1">
-                      <span className="text-gray-700 font-semibold">{totalLabel}</span>
-                      <span className="text-gray-900 font-semibold font-mono tabular-nums">{t.text}</span>
-                    </div>
-                    {t.remark && <div className="text-[11px] text-orange-500 text-right">{t.remark}</div>}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* ───── 직원 일별 상세 ───── */}
-      {detail && !error && (
-        <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-          <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <h3 className="text-sm font-bold text-gray-900 truncate">
-                {detail.name} 일별 근무시간
-              </h3>
-              {!detail.isActive && <RetiredBadge />}
-              <span className="text-xs text-gray-400 whitespace-nowrap">
-                {detail.departmentName ?? ""} · {periodLabel}
-              </span>
-            </div>
-            <button
-              onClick={() => setEmployeeId(null)}
-              className="p-1.5 rounded-lg hover:bg-gray-100 shrink-0"
-              aria-label="닫기"
-            >
-              <X size={16} className="text-gray-400" />
-            </button>
-          </div>
-
-          {/* 데스크탑 표 */}
-          <div className="hidden md:block overflow-x-auto">
-            <table className="w-full min-w-[720px] table-fixed">
-              <colgroup>
-                <col className="w-[120px]" />
-                <col className="w-[150px]" />
-                <col className="w-[150px]" />
-                <col className="w-[130px]" />
-                <col />
-              </colgroup>
-              <thead>
-                <tr className="bg-gray-50 border-b border-gray-100">
-                  <th className={`${thDetailCls} text-left`}>날짜</th>
-                  <th className={`${thDetailCls} text-left`}>출근</th>
-                  <th className={`${thDetailCls} text-left`}>퇴근</th>
-                  <th className={`h-10 px-2 text-right ${thBase}`}>근무</th>
-                  <th className={`${thDetailCls} text-left`}>사유</th>
-                </tr>
-              </thead>
-              <tbody>
-                {detailDays.map(({ ymd, row, summary }) => {
-                  const future = summary.state === "future";
-                  const minutes = dayMinutesText(summary);
-                  const notes = summary.notes.join(", ");
-                  return (
-                    <tr
-                      key={ymd}
-                      className={`border-b border-gray-50 last:border-0 ${
-                        ymd === today ? "bg-blue-50/60" : "hover:bg-slate-50"
-                      }`}
-                    >
-                      <td className={`${tdCls} font-mono tabular-nums ${future ? "text-gray-300" : "text-gray-700"}`}>
-                        {ymd.slice(5)} (<span className={future ? "" : weekdayTone(ymd)}>{weekdayKo(ymd)}</span>)
-                      </td>
-                      <td className={`${tdCls} font-mono tabular-nums ${row?.checkIn && !future ? "text-gray-900" : "text-gray-300"}`}>
-                        {row && !future ? renderTimeCell(row.originalCheckIn, row.checkIn) : "-"}
-                      </td>
-                      <td className={`${tdCls} font-mono tabular-nums ${row?.checkOut && !future ? "text-gray-900" : "text-gray-300"}`}>
-                        {row && !future ? renderTimeCell(row.originalCheckOut, row.checkOut, row.workDate) : "-"}
-                      </td>
-                      <td className={`${numCls} ${minutes === "-" || minutes === ZERO ? "text-gray-300" : summary.state === "working" ? PROGRESS_WORKING.cls : "text-gray-900"}`}>
-                        {minutes}
-                      </td>
-                      <td className={`${tdCls} ${notes ? "text-gray-600" : "text-gray-300"}`} title={notes || undefined}>
-                        {notes || "-"}
-                      </td>
-                    </tr>
-                  );
-                })}
-                <tr className="bg-gray-50 border-t border-gray-100">
-                  <td colSpan={3} className={`${tdCls} font-semibold text-gray-700`}>
-                    합계
-                  </td>
-                  <td className={`${numCls} font-semibold text-gray-900`}>{detailTotal}</td>
-                  <td className={`${tdCls} text-xs text-orange-500`} title={detailRemark || undefined}>
-                    {detailRemark}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          {/* 모바일 카드 */}
-          <div className="md:hidden divide-y divide-gray-50">
-            {detailDays.map(({ ymd, row, summary }) => {
-              const future = summary.state === "future";
-              const minutes = dayMinutesText(summary);
-              return (
-                <div key={ymd} className={`px-4 py-3 space-y-1 ${ymd === today ? "bg-blue-50/60" : ""}`}>
-                  <div className="flex items-center justify-between">
-                    <span className={`text-sm font-semibold font-mono ${future ? "text-gray-300" : "text-gray-900"}`}>
-                      {ymd.slice(5)} ({weekdayKo(ymd)})
-                    </span>
-                    <span
-                      className={`text-xs font-mono tabular-nums font-semibold ${
-                        minutes === "-" ? "text-gray-300" : summary.state === "working" ? PROGRESS_WORKING.cls : "text-gray-700"
-                      }`}
-                    >
-                      {minutes}
-                    </span>
-                  </div>
-                  {!future && (row || summary.notes.length > 0) && (
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-gray-900 font-mono">
-                        {row ? (
-                          <>
-                            {renderTimeCell(row.originalCheckIn, row.checkIn)} ~{" "}
-                            {renderTimeCell(row.originalCheckOut, row.checkOut, row.workDate)}
-                          </>
-                        ) : (
-                          "-"
-                        )}
-                      </span>
-                      {summary.notes.length > 0 && (
-                        <span className="text-gray-600 truncate ml-2">{summary.notes.join(", ")}</span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            <div className="px-4 py-3 space-y-0.5 bg-gray-50">
-              <div className="flex items-center justify-between text-sm">
-                <span className="font-semibold text-gray-700">합계</span>
-                <span className="font-semibold text-gray-900 font-mono tabular-nums">{detailTotal}</span>
-              </div>
-              {detailRemark && <div className="text-[11px] text-orange-500 text-right">{detailRemark}</div>}
-            </div>
-          </div>
+          <WorkHoursTable {...listProps} />
+          <WorkHoursMobileList {...listProps} />
         </div>
       )}
 
       {monthPickerOpen && (
-        <MonthPicker
-          value={month}
-          onChange={(ym) => setMonth(ym)}
-          onClose={() => setMonthPickerOpen(false)}
-        />
+        <MonthPicker value={month} onChange={changeMonth} onClose={() => setMonthPickerOpen(false)} />
       )}
     </div>
   );

@@ -16,7 +16,7 @@ export function readPageParam(): PageId | null {
  * 다른 메뉴로 옮기면 writePageParam 이 이 키들을 주소에서 지운다.
  */
 const PAGE_QUERY_KEYS: Partial<Record<PageId, readonly string[]>> = {
-  "work-hours": ["view", "month", "date", "employee", "department"],
+  "work-hours": ["view", "month", "date", "employee", "department", "week", "day"],
 };
 
 /**

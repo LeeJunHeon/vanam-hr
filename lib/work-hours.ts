@@ -256,3 +256,123 @@ export function periodRemarkText(t: PeriodTotal): string {
     .filter(Boolean)
     .join(", ");
 }
+
+// ─────────────────────────────────────────────────────────────
+// 화면 공용 — 표 열·칸 글자·상세 줄 (표·휴대폰 카드·엑셀·상세가 같은 함수를 쓴다)
+// ─────────────────────────────────────────────────────────────
+
+export type WorkHoursView = "month" | "week";
+
+export interface WorkHoursColumn {
+  key: string;
+  /** 머리글 윗줄 — "1주" / "월" */
+  title: string;
+  /** 머리글 아랫줄 — "11/2~11/8" / "11/16" */
+  sub: string;
+  days: string[];
+  /** 월별 보기의 주 번호(1부터), 주별 보기는 null */
+  weekIndex: number | null;
+}
+
+/** "11/2~11/8", 하루짜리 주는 "11/30" */
+export function rangeMdText(start: string, end: string): string {
+  return start === end ? shortMd(start) : `${shortMd(start)}~${shortMd(end)}`;
+}
+
+/** "3주 (10/12~10/18)" — 상세 머리줄·소계 줄 */
+export function weekLabel(w: MonthWeek): string {
+  return `${w.index}주 (${rangeMdText(w.start, w.end)})`;
+}
+
+/** 표 열 — 월별: 그 달의 주(그 달 날짜만), 주별: 그 주 월~일 */
+export function buildColumns(view: WorkHoursView, month: string, date: string): WorkHoursColumn[] {
+  if (view === "month") {
+    return monthWeeks(month).map((w) => ({
+      key: w.start,
+      title: `${w.index}주`,
+      sub: rangeMdText(w.start, w.end),
+      days: daysInRange(w.start, w.end),
+      weekIndex: w.index,
+    }));
+  }
+  const { start, end } = weekRange(date);
+  return daysInRange(start, end).map((d) => ({
+    key: d,
+    title: weekdayKo(d),
+    sub: shortMd(d),
+    days: [d],
+    weekIndex: null,
+  }));
+}
+
+/** 직원 한 명의 날짜 → 하루 요약 */
+export type DaySummarizer = (ymd: string) => DaySummary;
+
+/** 기간 합계 — 표의 주 칸·합계 칸, 상세의 주 소계·합계가 모두 이 함수를 쓴다 */
+export function periodTotalOf(days: string[], summarize: DaySummarizer): PeriodTotal {
+  return sumDays(days.map(summarize));
+}
+
+/** 표 칸 — 주별은 하루 값, 월별은 주 합계 */
+export function columnCell(
+  view: WorkHoursView,
+  col: WorkHoursColumn,
+  summarize: DaySummarizer
+): { text: string; state?: DayState } {
+  if (view === "week") {
+    const s = summarize(col.days[0]);
+    return { text: dayCellText(s), state: s.state };
+  }
+  return { text: periodMinutesText(periodTotalOf(col.days, summarize)) };
+}
+
+/** 누를 수 있는 칸 — 오늘 이전 날짜가 하나라도 있으면 (전부 미래인 칸 "-" 는 반응하지 않는다) */
+export function isColumnClickable(col: WorkHoursColumn, today: string): boolean {
+  return col.days.some((d) => d <= today);
+}
+
+export type DetailLine =
+  | { kind: "day"; ymd: string; summary: DaySummary }
+  | { kind: "subtotal"; week: MonthWeek; total: PeriodTotal };
+
+/**
+ * 일별 상세 줄. weeks 를 주면 각 주 마지막 날 다음에 그 주 소계 줄을 넣는다
+ * (소계 = 표의 그 주 칸과 같은 periodTotalOf(그 주 날짜)).
+ */
+export function buildDetailLines(
+  days: string[],
+  summarize: DaySummarizer,
+  weeks: MonthWeek[] | null
+): DetailLine[] {
+  const lines: DetailLine[] = [];
+  for (const ymd of days) {
+    lines.push({ kind: "day", ymd, summary: summarize(ymd) });
+    const week = weeks?.find((w) => w.end === ymd);
+    if (week) {
+      lines.push({ kind: "subtotal", week, total: periodTotalOf(daysInRange(week.start, week.end), summarize) });
+    }
+  }
+  return lines;
+}
+
+/** 주소 week — 그 달 주 번호(1~주 개수)면 숫자, 아니면 null */
+export function parseWeekParam(s: string | null | undefined, ym: string): number | null {
+  if (!s || !/^\d+$/.test(s)) return null;
+  const n = Number(s);
+  return n >= 1 && n <= monthWeeks(ym).length ? n : null;
+}
+
+/** 주소 day — 보고 있는 주(월~일) 안의 실제 날짜면 그대로, 아니면 null */
+export function parseDayParam(s: string | null | undefined, weekOf: string): string | null {
+  const d = parseYmd(s);
+  if (!d) return null;
+  const { start, end } = weekRange(weekOf);
+  return d >= start && d <= end ? d : null;
+}
+
+/** 표 순서(ids) 기준 이전·다음 직원 — 끝이면 null, 목록에 없으면 둘 다 null */
+export function neighborIds(ids: number[], id: number): { prev: number | null; next: number | null } {
+  const i = ids.indexOf(id);
+  if (i < 0) return { prev: null, next: null };
+  return { prev: i > 0 ? ids[i - 1] : null, next: i < ids.length - 1 ? ids[i + 1] : null };
+}
