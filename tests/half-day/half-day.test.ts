@@ -3,6 +3,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   HALF_DAY_FALLBACK,
+  HALF_DAY_TIME_REQUIRED_MSG,
+  TIME_PAIR_REQUIRED_MSG,
+  requestTimeInputError,
   effectiveSplitMinutes,
   halfDayDefaultsFor,
   halfDayHint,
@@ -116,4 +119,24 @@ test("캘린더 PATCH 본문 — start/end 만, dateTime + Asia/Seoul", () => {
     start: { dateTime: "2026-11-20T03:00:00.000Z", timeZone: "Asia/Seoul" },
     end: { dateTime: "2026-11-20T11:00:00.000Z", timeZone: "Asia/Seoul" },
   });
+});
+
+test("반차는 시작·종료 시각 필수 — 비면 화면 검증 문구", () => {
+  for (const code of ["HALF_AM", "HALF_PM"]) {
+    assert.equal(requestTimeInputError(code, "", ""), HALF_DAY_TIME_REQUIRED_MSG);
+    assert.equal(requestTimeInputError(code, "13:00", ""), HALF_DAY_TIME_REQUIRED_MSG);
+    assert.equal(requestTimeInputError(code, null, "18:00"), HALF_DAY_TIME_REQUIRED_MSG);
+    assert.equal(requestTimeInputError(code, "  ", "18:00"), HALF_DAY_TIME_REQUIRED_MSG);
+    assert.equal(requestTimeInputError(code, "13:00", "18:00"), null);
+  }
+});
+
+test("반차 아닌 시간형 카테고리 — 둘 다 비우면 종일 허용, 한쪽만은 차단", () => {
+  for (const code of ["SICK", "REMOTE_WORK", "EXTERNAL_WORK", "FAMILY_EVENT"]) {
+    assert.equal(requestTimeInputError(code, "", ""), null);
+    assert.equal(requestTimeInputError(code, null, null), null);
+    assert.equal(requestTimeInputError(code, "09:00", "12:00"), null);
+    assert.equal(requestTimeInputError(code, "09:00", ""), TIME_PAIR_REQUIRED_MSG);
+    assert.equal(requestTimeInputError(code, "", "12:00"), TIME_PAIR_REQUIRED_MSG);
+  }
 });

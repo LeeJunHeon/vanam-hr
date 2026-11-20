@@ -187,3 +187,25 @@ export function halfDayHint(info: HalfDayInfo, who: "내" | "직원" = "내"): s
       : `${who} 시프트 ${info.shiftStart}~${info.shiftEnd}`;
   return `${shift} · 반차 경계 ${info.defaults.split} (직접 수정 가능)`;
 }
+
+// ── 신청 화면 시각 입력 검증 ──
+// 반차는 시작·종료 시각이 반드시 있어야 한다 — 비우면 연차는 0.5일 차감인데 근태 판정·캘린더는 종일 휴가가 된다.
+// 반차가 아닌 시간 입력 카테고리는 기존대로 둘 다 비우면 종일, 한쪽만은 막는다.
+export const HALF_DAY_TIME_REQUIRED_MSG = "반차는 시작·종료 시각을 입력해야 합니다.";
+export const TIME_PAIR_REQUIRED_MSG =
+  "시작 시간과 종료 시간을 모두 입력하거나, 모두 비워주세요. (모두 비우면 종일 일정으로 등록됩니다.)";
+
+/** 신청 시각 입력 오류 문구 또는 null */
+export function requestTimeInputError(
+  categoryCode: string | null | undefined,
+  checkIn: string | null | undefined,
+  checkOut: string | null | undefined
+): string | null {
+  const inFilled = !!checkIn?.trim();
+  const outFilled = !!checkOut?.trim();
+  if (isHalfDayCode(categoryCode)) return inFilled && outFilled ? null : HALF_DAY_TIME_REQUIRED_MSG;
+  return inFilled !== outFilled ? TIME_PAIR_REQUIRED_MSG : null;
+}
+
+/** 그날 시프트 정보를 못 받았을 때 안내 */
+export const HALF_DAY_INFO_FAILED_MSG = "시프트 정보를 불러오지 못했습니다 — 시각을 직접 입력하세요";

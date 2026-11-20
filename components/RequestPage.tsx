@@ -24,7 +24,14 @@ import ExcelButton from "@/components/ExcelButton";
 import DatePicker from "@/components/DatePicker";
 import TimePicker from "@/components/TimePicker";
 import { todayYmd } from "@/lib/dateUtils";
-import { halfDayHint, isHalfDayCode, type HalfDayCode, type HalfDayInfo } from "@/lib/half-day";
+import {
+  HALF_DAY_INFO_FAILED_MSG,
+  halfDayHint,
+  isHalfDayCode,
+  requestTimeInputError,
+  type HalfDayCode,
+  type HalfDayInfo,
+} from "@/lib/half-day";
 
 interface AttendanceRequest {
   id: number;
@@ -223,7 +230,8 @@ export default function RequestPage() {
   // 반차 카테고리를 새로 고를 때 다시 켜진다. 시작 날짜를 바꾸면(고치지 않았다면) 그날 시프트로 다시 채운다.
   const autoHalfDayTimesRef = useRef<{ in: string; out: string } | null>(null);
   // 그날 내 시프트·반차 기본 시각 (반차 카테고리일 때만)
-  const [halfDayInfo, setHalfDayInfo] = useState<HalfDayInfo | null>(null);
+  // 그날 내 시프트·반차 기본 시각 조회 결과 (반차 카테고리일 때만). info null = 조회 실패
+  const [halfDayFetch, setHalfDayFetch] = useState<{ date: string; info: HalfDayInfo | null } | null>(null);
 
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<AttendanceRequest | null>(null);
@@ -468,20 +476,23 @@ export default function RequestPage() {
   useEffect(() => {
     if (!showForm || !halfDayCode || !form.startDate) return;
     let cancelled = false;
-    fetch(`/api/my-shift/half-day?date=${form.startDate}`)
+    const date = form.startDate;
+    fetch(`/api/my-shift/half-day?date=${date}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((info: HalfDayInfo | null) => {
-        if (!cancelled) setHalfDayInfo(info);
+        if (!cancelled) setHalfDayFetch({ date, info });
       })
       .catch(() => {
-        if (!cancelled) setHalfDayInfo(null);
+        if (!cancelled) setHalfDayFetch({ date, info: null });
       });
     return () => {
       cancelled = true;
     };
   }, [showForm, halfDayCode, form.startDate]);
-  const halfDayInfoForDate =
-    halfDayCode && halfDayInfo?.date === form.startDate ? halfDayInfo : null;
+  // 지금 시작일의 조회 결과 — 받기 전이면 undefined, 실패면 null
+  const halfDayFetchForDate =
+    halfDayCode && halfDayFetch?.date === form.startDate ? halfDayFetch : undefined;
+  const halfDayInfoForDate = halfDayFetchForDate?.info ?? null;
 
   // 반차 자동 채움 — 카테고리를 새로 고르거나 시작 날짜를 바꾸면 그날 시프트 기준 시각으로.
   // 기존 가드 유지: 수정 모드 skip, 사용자가 시간을 직접 고친 뒤에는 덮어쓰지 않음.
@@ -683,12 +694,14 @@ export default function RequestPage() {
       selectedCategory &&
       categoryAllowsTimeInput(selectedCategory.code)
     ) {
-      const inFilled = !!form.correctedCheckIn?.trim();
-      const outFilled = !!form.correctedCheckOut?.trim();
-      if (inFilled !== outFilled) {
-        setFormError(
-          "시작 시간과 종료 시간을 모두 입력하거나, 모두 비워주세요. (모두 비우면 종일 일정으로 등록됩니다.)"
-        );
+      // 반차는 두 시각 필수, 그 밖에는 둘 다 비우면 종일·한쪽만은 차단 (lib/half-day requestTimeInputError)
+      const timeErr = requestTimeInputError(
+        selectedCategory.code,
+        form.correctedCheckIn,
+        form.correctedCheckOut
+      );
+      if (timeErr) {
+        setFormError(timeErr);
         return;
       }
     }
@@ -1161,7 +1174,12 @@ export default function RequestPage() {
                   {categoryAllowsTimeInput(selectedCategory?.code) && (
                     <div className="space-y-2">
                       <label className="block text-xs font-semibold text-blue-700">
-                        시간 <span className="text-gray-400">(선택)</span>
+                        시간{" "}
+                        {halfDayCode ? (
+                          <span className="text-rose-500">*</span>
+                        ) : (
+                          <span className="text-gray-400">(선택)</span>
+                        )}
                       </label>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div>
@@ -1186,10 +1204,18 @@ export default function RequestPage() {
                         </div>
                       </div>
 
-                      {/* 반차 — 그날 내 시프트·반차 경계 안내 */}
-                      {halfDayInfoForDate && (
-                        <p className="text-[11px] text-gray-400">
-                          {halfDayHint(halfDayInfoForDate)}
+                      {/* 반차 — 그날 내 시프트·반차 경계 안내 (조회 실패도 알린다) */}
+                      {halfDayCode && (
+                        <p
+                          className={`text-[11px] ${
+                            halfDayFetchForDate && !halfDayInfoForDate ? "text-orange-500" : "text-gray-400"
+                          }`}
+                        >
+                          {halfDayFetchForDate === undefined
+                            ? "내 시프트 확인 중..."
+                            : halfDayInfoForDate
+                              ? halfDayHint(halfDayInfoForDate)
+                              : HALF_DAY_INFO_FAILED_MSG}
                         </p>
                       )}
 
@@ -1205,7 +1231,11 @@ export default function RequestPage() {
                                 <span className="font-mono">{form.endDate}</span>
                               </>
                             )}{" "}
-                            <span className="font-medium">종일</span>
+                            {halfDayCode ? (
+                              <span className="font-medium text-rose-600">시각 입력 필요</span>
+                            ) : (
+                              <span className="font-medium">종일</span>
+                            )}
                           </p>
                         ) : (
                           <p>
@@ -1223,7 +1253,9 @@ export default function RequestPage() {
                       </div>
 
                       <p className="text-[11px] text-gray-500">
-                        ⓘ 시간을 입력하지 않으면 종일 일정으로 등록됩니다.
+                        {halfDayCode
+                          ? "ⓘ 반차는 시작·종료 시각을 모두 입력해야 합니다."
+                          : "ⓘ 시간을 입력하지 않으면 종일 일정으로 등록됩니다."}
                       </p>
                     </div>
                   )}
