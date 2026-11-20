@@ -71,7 +71,15 @@ test("시프트 미배정 → 예전 고정값, 근무 시프트 → 안내 문�
     date: "2026-11-20", employeeId: 1, assigned: true, isWorkDay: true, isHoliday: false,
     shiftStart: "07:00", shiftEnd: "17:00", splitMinutes: 300, splitSource: "pattern", defaults: d,
   };
-  assert.equal(halfDayHint(info), "내 시프트 07:00~17:00 · 반차 경계 12:00 (직접 수정 가능)");
+  assert.equal(halfDayHint(info), "내 시프트 07:00~17:00 · 오전반차 07:00~12:00 / 오후반차 12:00~17:00 (직접 수정 가능)");
+  assert.equal(
+    halfDayHint({ ...info, assigned: false, shiftStart: null, shiftEnd: null, defaults: fb }),
+    "시프트 미배정 · 오전반차 09:00~13:00 / 오후반차 13:00~18:00 (직접 수정 가능)"
+  );
+  assert.equal(
+    halfDayHint({ ...info, shiftStart: "09:00", shiftEnd: "18:00", defaults: halfDayDefaultsFor({ assigned: true, isWorkDay: true, start: "09:00", end: "18:00" }, 240) }, "직원"),
+    "직원 시프트 09:00~18:00 · 오전반차 09:00~13:00 / 오후반차 13:00~18:00 (직접 수정 가능)"
+  );
 });
 
 test("경계 분 우선순위 — 패턴 → 정책 → 240", () => {
@@ -89,9 +97,9 @@ test("시프트 패턴 반차 경계 검증 — 0 초과, 30분 단위, 시프�
   ];
   assert.equal(validatePatternSplit(null, sched), null);
   assert.equal(validatePatternSplit(300, sched), null);
-  assert.match(validatePatternSplit(0, sched) ?? "", /0보다/);
-  assert.match(validatePatternSplit(250, sched) ?? "", /30분 단위/);
-  assert.match(validatePatternSplit(360, sched) ?? "", /짧아야/); // 가장 짧은 근무 6시간
+  assert.equal(validatePatternSplit(0, sched), "오전반차 시간은 0보다 커야 합니다.");
+  assert.equal(validatePatternSplit(250, sched), "오전반차 시간은 30분 단위여야 합니다.");
+  assert.equal(validatePatternSplit(360, sched), "오전반차 시간(6시간)은 근무 시간(6시간)보다 짧아야 합니다."); // 가장 짧은 근무 6시간
   assert.deepEqual(representativeShift([...sched, { type: "day", start: "07:00", end: "17:00" }]), {
     start: "07:00",
     end: "17:00",
@@ -105,7 +113,9 @@ test("정책 기본값 half_day_split_minutes 검증", () => {
   assert.ok(p.validate("250"));
   assert.ok(p.validate("0"));
   assert.ok(p.validate("abc"));
-  assert.equal(p.display("240"), "240분 (4시간)");
+  assert.equal(p.label, "오전반차 시간 기본값");
+  assert.equal(p.display("240"), "4시간");
+  assert.equal(p.display("270"), "4시간 30분");
 });
 
 test("캘린더 PATCH 본문 — start/end 만, dateTime + Asia/Seoul", () => {

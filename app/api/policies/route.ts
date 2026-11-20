@@ -28,7 +28,8 @@ export async function GET(request: NextRequest) {
     const rows = policies.map((p) => ({
       key: p.key,
       value: p.value,
-      description: p.description,
+      // 코드 기본값 키는 화면 설명을 코드(lib/policy-defaults) 한 곳에서 관리한다
+      description: findCodeDefaultPolicy(p.key)?.description ?? p.description,
       updatedAt: p.updatedAt as Date | null,
     }));
     // 코드 기본값이 있는 키는 행이 없어도 기본값으로 보여준다 (처음 저장 시 PUT 이 행을 만든다)

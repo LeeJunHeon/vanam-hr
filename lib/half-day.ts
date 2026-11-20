@@ -118,9 +118,9 @@ export function validatePatternSplit(
 ): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
-    return "반차 경계는 0보다 큰 분(정수)이어야 합니다.";
+    return "오전반차 시간은 0보다 커야 합니다.";
   }
-  if (value % HALF_DAY_SPLIT_STEP !== 0) return `반차 경계는 ${HALF_DAY_SPLIT_STEP}분 단위여야 합니다.`;
+  if (value % HALF_DAY_SPLIT_STEP !== 0) return `오전반차 시간은 ${HALF_DAY_SPLIT_STEP}분 단위여야 합니다.`;
   const lengths = schedule
     .filter((p) => p && p.type !== "off")
     .map((p) => shiftLengthMinutes(p.start, p.end))
@@ -128,7 +128,7 @@ export function validatePatternSplit(
   if (lengths.length > 0) {
     const min = Math.min(...lengths);
     if (value >= min) {
-      return `반차 경계(${formatSplit(value)})는 근무 시간(${formatSplit(min)})보다 짧아야 합니다.`;
+      return `오전반차 시간(${formatSplit(value)})은 근무 시간(${formatSplit(min)})보다 짧아야 합니다.`;
     }
   }
   return null;
@@ -174,18 +174,16 @@ export interface HalfDayInfo {
   defaults: HalfDayDefaults;
 }
 
-/** 시간 입력 칸 아래 안내 — "내 시프트 07:00~17:00 · 반차 경계 12:00 (직접 수정 가능)" */
+/** 시간 입력 칸 아래 안내 — "내 시프트 07:00~17:00 · 오전반차 07:00~12:00 / 오후반차 12:00~17:00 (직접 수정 가능)" */
 export function halfDayHint(info: HalfDayInfo, who: "내" | "직원" = "내"): string {
   if (info.defaults.kind === "none") {
     return info.defaults.reason === "off_day"
       ? "이 날은 근무일이 아닙니다"
       : `${who} 시프트 ${info.shiftStart}~${info.shiftEnd} (자정을 넘는 시프트 — 시각을 직접 입력하세요)`;
   }
-  const shift =
-    info.defaults.kind === "fallback"
-      ? `시프트 미배정 — 기본 ${HALF_DAY_FALLBACK.HALF_AM.in}~${HALF_DAY_FALLBACK.HALF_PM.out}`
-      : `${who} 시프트 ${info.shiftStart}~${info.shiftEnd}`;
-  return `${shift} · 반차 경계 ${info.defaults.split} (직접 수정 가능)`;
+  const shift = info.defaults.kind === "fallback" ? "시프트 미배정" : `${who} 시프트 ${info.shiftStart}~${info.shiftEnd}`;
+  const { HALF_AM, HALF_PM } = info.defaults.times;
+  return `${shift} · 오전반차 ${HALF_AM.in}~${HALF_AM.out} / 오후반차 ${HALF_PM.in}~${HALF_PM.out} (직접 수정 가능)`;
 }
 
 // ── 신청 화면 시각 입력 검증 ──

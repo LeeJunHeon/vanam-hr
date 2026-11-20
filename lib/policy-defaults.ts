@@ -23,19 +23,19 @@ export interface CodeDefaultPolicy {
 export const CODE_DEFAULT_POLICIES: CodeDefaultPolicy[] = [
   {
     key: HALF_DAY_SPLIT_POLICY_KEY,
-    label: "반차 경계 기본값(시작 후 시간)",
+    label: "오전반차 시간 기본값",
     defaultValue: String(DEFAULT_HALF_DAY_SPLIT_MINUTES),
     description:
-      "반차 경계 기본값(시작 후 시간) — 분 단위(240 = 4시간). 오전반차 = 시프트 시작~경계, 오후반차 = 경계~종료. 시프트 패턴에 값이 있으면 그 값이 우선",
+      "시프트 시작부터 이 시간까지가 오전반차, 나머지는 오후반차입니다. 시프트 패턴에서 따로 정하지 않으면 이 값을 씁니다.",
     display: (v) => {
       const n = parseSplitMinutes(v);
-      return n ? `${v}분 (${formatSplit(n)})` : v;
+      return n ? formatSplit(n) : v;
     },
     validate: (v) => {
       const n = Number(v);
-      if (!/^\d+$/.test(v) || !Number.isInteger(n) || n <= 0) return "0보다 큰 분(정수)을 입력하세요. 예: 240";
-      if (n % HALF_DAY_SPLIT_STEP !== 0) return `${HALF_DAY_SPLIT_STEP}분 단위로 입력하세요. 예: 240, 270`;
-      if (n >= 24 * 60) return "24시간(1440분)보다 작아야 합니다.";
+      if (!/^\d+$/.test(v) || !Number.isInteger(n) || n <= 0) return "오전반차 시간은 0보다 큰 분(정수)으로 입력하세요. 예: 240 (= 4시간)";
+      if (n % HALF_DAY_SPLIT_STEP !== 0) return `오전반차 시간은 ${HALF_DAY_SPLIT_STEP}분 단위로 입력하세요. 예: 240, 270`;
+      if (n >= 24 * 60) return "오전반차 시간은 24시간(1440분)보다 짧아야 합니다.";
       return null;
     },
   },

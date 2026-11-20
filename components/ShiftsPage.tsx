@@ -93,7 +93,7 @@ function splitHoursToMinutes(hours: string): number | null {
   return m % HALF_DAY_SPLIT_STEP === 0 ? m : null;
 }
 
-// 그 패턴의 대표 근무일 기준 예시 — "오전 07:00~12:00 / 오후 12:00~17:00" (lib/half-day 와 같은 계산)
+// 그 패턴의 대표 근무일 기준 예시 — "오전반차 07:00~12:00 / 오후반차 12:00~17:00" (lib/half-day 와 같은 계산)
 function halfDayExample(schedule: SchedulePoint[], hours: string, policySplit: number): string {
   const rep = representativeShift(
     schedule.map((sp) => ({ ...sp, end: sp.end ? normalizeTimeForDb(sp.end) : sp.end }))
@@ -103,7 +103,7 @@ function halfDayExample(schedule: SchedulePoint[], hours: string, policySplit: n
   if (hours.trim() && own === null) return "30분 단위로 입력하세요 (예: 4, 4.5)";
   const t = halfDayTimes(rep.start, rep.end, own ?? policySplit);
   if (!t) return `대표 근무일 ${rep.start}~${rep.end} — 자정을 넘는 시프트는 반차 시각을 자동으로 채우지 않습니다`;
-  return `${own ? "" : `비우면 기본값 ${formatSplit(policySplit)} · `}오전 ${t.HALF_AM.in}~${t.HALF_AM.out} / 오후 ${t.HALF_PM.in}~${t.HALF_PM.out} (대표 근무일 ${rep.start}~${rep.end})`;
+  return `${own ? "" : `기본값 사용(${formatSplit(policySplit)}) · `}오전반차 ${t.HALF_AM.in}~${t.HALF_AM.out} / 오후반차 ${t.HALF_PM.in}~${t.HALF_PM.out} (대표 근무일 ${rep.start}~${rep.end})`;
 }
 
 export default function ShiftsPage() {
@@ -330,7 +330,7 @@ export default function ShiftsPage() {
     }
     if (form.halfDaySplitHours.trim()) {
       const m = splitHoursToMinutes(form.halfDaySplitHours);
-      if (m === null) return "반차 경계는 30분 단위 시간으로 입력하세요. 예: 4, 4.5";
+      if (m === null) return "오전반차 시간은 30분 단위 시간으로 입력하세요. 예: 4, 4.5";
       const splitErr = validatePatternSplit(
         m,
         form.schedule.map((sp) => ({ ...sp, end: sp.end ? normalizeTimeForDb(sp.end) : sp.end }))
@@ -543,7 +543,7 @@ export default function ShiftsPage() {
 
             <div className="sm:col-span-3">
               <label className="block text-xs font-semibold text-blue-700 mb-1">
-                반차 경계 (시작 후 시간)
+                오전반차 시간
               </label>
               <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                 <div className="flex items-center gap-2">
@@ -776,7 +776,7 @@ export default function ShiftsPage() {
                           {p.name}
                         </div>
                         <p className="text-[11px] font-normal text-gray-400 mt-0.5">
-                          반차 경계 {p.halfDaySplitMinutes ? formatSplit(p.halfDaySplitMinutes) : `기본값(${formatSplit(policySplit)})`}
+                          오전반차 시간 {p.halfDaySplitMinutes ? formatSplit(p.halfDaySplitMinutes) : `기본값(${formatSplit(policySplit)})`}
                         </p>
                       </td>
                       <td className="px-5 py-3 text-sm text-gray-500 max-w-xs">
@@ -886,7 +886,7 @@ export default function ShiftsPage() {
                   </div>
                   <p className="text-xs text-gray-400">
                     {p.cycleDays}일 사이클
-                    {` · 반차 경계 ${p.halfDaySplitMinutes ? formatSplit(p.halfDaySplitMinutes) : `기본값(${formatSplit(policySplit)})`}`}
+                    {` · 오전반차 시간 ${p.halfDaySplitMinutes ? formatSplit(p.halfDaySplitMinutes) : `기본값(${formatSplit(policySplit)})`}`}
                     {p.description && ` · ${p.description}`}
                   </p>
                   <div className="flex flex-wrap items-center gap-1">
