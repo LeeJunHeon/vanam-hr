@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Loader2, Bell } from "lucide-react";
 
-// 알림 종류 정의 (정책 키 prefix ↔ 라벨). 정책 키 notify_{type}_{app|email|push} (15종 × 앱/이메일/푸시, 행이 없으면 PUT 이 만든다).
+// 알림 종류 정의 (정책 키 prefix ↔ 라벨). 정책 키 notify_{type}_{app|email|push} (16종 × 앱/이메일/푸시, 행이 없으면 PUT 이 만든다).
 const NOTIFY_TYPES: { type: string; label: string; desc: string; channels: ("app" | "email" | "push")[] }[] = [
   { type: "approval_request", label: "새 결재 요청", desc: "휴가/근태 신청 시 결재자에게", channels: ["app", "email", "push"] },
   { type: "trip_request", label: "새 외근 결재 요청", desc: "외근 참여(결재 필요) 시 부서 결재자에게", channels: ["app", "email", "push"] },
@@ -20,6 +20,7 @@ const NOTIFY_TYPES: { type: string; label: string; desc: string; channels: ("app
   { type: "team_schedule", label: "팀 일정 안내", desc: "같은 부서 동료의 휴가/반차 승인 시 팀원에게", channels: ["app", "email", "push"] },
   { type: "perf_revision", label: "성과 수정 요청", desc: "관리자가 성과 수정을 요청하면 본인에게", channels: ["app", "email", "push"] },
   { type: "perf_open", label: "성과 회차 등록", desc: "성과 제출 회차가 만들어지거나 대상자로 추가되면 본인에게", channels: ["app", "email", "push"] },
+  { type: "request_retime", label: "근태 신청 시각 변경", desc: "관리자가 내 승인된 반차 등의 시각을 바꾸면", channels: ["app", "email", "push"] },
 ];
 
 type FlagMap = Record<string, boolean>; // key(notify_xxx_app) → bool

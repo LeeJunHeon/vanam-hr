@@ -16,6 +16,7 @@ import {
   runAutoApprovalSideEffects,
 } from "@/lib/create-attendance-request";
 import { revertCancelledRequestFromDaily } from "@/lib/finalize-approval";
+import { retimeAttendanceRequest } from "@/lib/attendance-request-retime";
 
 function parseDate(s: string | null | undefined): Date | null {
   if (!s || typeof s !== "string") return null;
@@ -244,7 +245,8 @@ export async function POST(request: NextRequest) {
 }
 
 // PUT /api/attendance-requests?id=N
-// 두 흐름: action="cancel" 취소 / 그 외 필드 수정 (수정은 pending 만 — 신청과 같은 검사·결재선 재계산,
+// 세 흐름: action="retime" 관리자 — 승인된 시간형 휴가의 시각만 수정(lib/attendance-request-retime, 캘린더·근태 반영)
+//         / action="cancel" 취소 / 그 외 필드 수정 (수정은 pending 만 — 신청과 같은 검사·결재선 재계산,
 //        승인 초기화, requested_at 갱신. 자동승인 대상이 되면 바로 auto_approved + 후처리)
 // 비관리자: 본인 요청만 수정/취소 가능.
 export async function PUT(request: NextRequest) {
@@ -264,7 +266,7 @@ export async function PUT(request: NextRequest) {
 
     const body = await request.json();
     const {
-      action, // "cancel" | undefined
+      action, // "cancel" | "retime" | undefined
       categoryId,
       startDate,
       endDate,
@@ -276,6 +278,16 @@ export async function PUT(request: NextRequest) {
       calendarEventTitle,
       calendarEventDescription,
     } = body;
+
+    if (!Number.isInteger(idNum)) {
+      return NextResponse.json({ error: "id는 정수여야 합니다." }, { status: 400 });
+    }
+
+    // 관리자 시각 수정 — 권한·대상·검증·저장·캘린더·알림은 lib/attendance-request-retime 한 곳에서
+    if (action === "retime") {
+      const r = await retimeAttendanceRequest(session, idNum, { correctedCheckIn, correctedCheckOut });
+      return NextResponse.json(r.body, { status: r.status });
+    }
 
     const before = await prisma.attendanceRequest.findUnique({
       where: { id: idNum },

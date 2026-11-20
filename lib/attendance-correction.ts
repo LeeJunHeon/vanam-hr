@@ -1,7 +1,8 @@
 // 근태 정정 반영·정정 계산. 판정은 lib/attendance-judge(aggregator/day_rules.py 와 같은 규칙) — 규칙을 바꾸면 npm run parity.
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/app/generated/prisma/client";
-import { resolveShiftPoint, isWorkPoint } from "@/lib/shift-schedule";
+import { isWorkPoint } from "@/lib/shift-schedule";
+import { loadShiftPointOn } from "@/lib/employee-shift";
 import {
   isResearchMeetingDay,
   loadResearchMeetingPolicy,
@@ -85,52 +86,39 @@ export function shiftEndBoundary(
   return end;
 }
 
-// 정정 날짜 기준 시프트(HH:MM) + grace 정책 로드.
-// tx 안/밖 어디서든 호출 가능하도록 prisma(또는 tx)를 인자로 받는다.
+// 직원·날짜의 판정용 시프트 시각(HH:MM) — 정정 계산·반차 기본 시각(lib/half-day-info)이 같이 쓴다.
+// 조회는 lib/employee-shift loadShiftPointOn(aggregator get_employee_shift 와 같은 배정 선택).
 // 연구미팅 대체는 aggregator get_employee_shift 와 같다: 참여 직원 + 미팅일 + 근무일 point 일 때만
 // 시작·종료를 정책 시간으로 바꾼다(휴무·미배정은 그대로).
-export async function loadShiftAndGrace(
+export async function loadShiftTimes(
   db: Prisma.TransactionClient | typeof prisma,
   employeeId: number,
   workDate: Date
 ): Promise<{
+  /** 그 날을 덮는 배정이 있는지 */
+  assigned: boolean;
+  /** 근무 포인트(isWorkPoint) */
+  isWorkPoint: boolean;
   shiftStartHHMM: string | null;
   shiftEndHHMM: string | null;
-  graceInMinutes: number;
-  graceOutMinutes: number;
+  /** 배정 패턴의 반차 경계(시작 후 분), 없으면 null */
+  patternHalfDaySplitMinutes: number | null;
 }> {
   const workDateStr = workDate.toISOString().split("T")[0];
-
-  // shift_patterns는 (cycle_days, schedule Json) 구조.
-  // schedule = [{ dayIndex, type, start:"HH:MM"|null, end:"HH:MM"|null }, ...] (cycle_days개)
-  // aggregator get_employee_shift와 동일 로직으로 해당 날짜의 point를 찾는다.
-  const shiftRows = await db.$queryRaw<
-    Array<{ start_date: Date; cycle_days: number; schedule: unknown }>
-  >`
-    SELECT es.start_date, sp.cycle_days, sp.schedule
-    FROM hr.employee_shifts es
-    JOIN hr.shift_patterns sp ON sp.id = es.pattern_id
-    WHERE es.employee_id = ${employeeId}
-      AND es.start_date <= ${workDateStr}::date
-      AND (es.end_date IS NULL OR es.end_date >= ${workDateStr}::date)
-      AND sp.is_active = true
-    ORDER BY es.start_date DESC
-    LIMIT 1
-  `;
+  const found = await loadShiftPointOn(db, employeeId, workDate);
 
   let shiftStartHHMM: string | null = null;
   let shiftEndHHMM: string | null = null;
+  const point = found?.point ?? null;
+  const work = isWorkPoint(point);
 
-  if (shiftRows.length > 0) {
-    const { start_date, cycle_days, schedule } = shiftRows[0];
-    const point = resolveShiftPoint(start_date, cycle_days, schedule, workDate);
-
+  if (found) {
     if (point && point.type !== "off") {
       shiftStartHHMM = point.start ?? null;
       shiftEndHHMM = point.end ?? null;
     }
 
-    if (isWorkPoint(point)) {
+    if (work) {
       const emp = await db.employee.findUnique({
         where: { id: employeeId },
         select: { attendsResearchMeeting: true },
@@ -144,6 +132,28 @@ export async function loadShiftAndGrace(
       }
     }
   }
+  return {
+    assigned: !!found,
+    isWorkPoint: work,
+    shiftStartHHMM,
+    shiftEndHHMM,
+    patternHalfDaySplitMinutes: found?.assignment.half_day_split_minutes ?? null,
+  };
+}
+
+// 정정 날짜 기준 시프트(HH:MM) + grace 정책 로드.
+// tx 안/밖 어디서든 호출 가능하도록 prisma(또는 tx)를 인자로 받는다.
+export async function loadShiftAndGrace(
+  db: Prisma.TransactionClient | typeof prisma,
+  employeeId: number,
+  workDate: Date
+): Promise<{
+  shiftStartHHMM: string | null;
+  shiftEndHHMM: string | null;
+  graceInMinutes: number;
+  graceOutMinutes: number;
+}> {
+  const { shiftStartHHMM, shiftEndHHMM } = await loadShiftTimes(db, employeeId, workDate);
   // grace 정책 — lib/attendance-policy (aggregator 와 같은 키·기본값)
   const { graceInMinutes, graceOutMinutes } = await loadAttendancePolicy(db);
   return { shiftStartHHMM, shiftEndHHMM, graceInMinutes, graceOutMinutes };

@@ -65,3 +65,43 @@ export async function createCalendarEvent(
   const data = await res.json();
   return data.eventId ?? data.event_id ?? data.id ?? null;
 }
+
+// 일정 시각만 수정 (calendar-syncer PATCH /internal/calendar-event/<eventId>) — 관리자 반차 시각 수정(retime)이 쓴다.
+// 제목·설명·참석자는 건드리지 않고 start/end(dateTime, Asia/Seoul)만 보낸다.
+// 반환: "updated" | "not_found"(syncer 404 — 일정이 지워졌거나 다른 캘린더). 그 밖의 실패는 throw.
+export function buildEventTimePatchBody(
+  calendarId: string,
+  start: Date,
+  end: Date
+): {
+  calendar_id: string;
+  start: { dateTime: string; timeZone: string };
+  end: { dateTime: string; timeZone: string };
+} {
+  return {
+    calendar_id: calendarId,
+    start: { dateTime: start.toISOString(), timeZone: "Asia/Seoul" },
+    end: { dateTime: end.toISOString(), timeZone: "Asia/Seoul" },
+  };
+}
+
+export async function updateCalendarEventTime(
+  calendarId: string,
+  eventId: string,
+  start: Date,
+  end: Date
+): Promise<"updated" | "not_found"> {
+  const base = process.env.CALENDAR_SYNCER_URL;
+  if (!base) throw new Error("CALENDAR_SYNCER_URL env not set");
+  const res = await fetch(`${base}/internal/calendar-event/${encodeURIComponent(eventId)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Internal-Token": process.env.INTERNAL_API_TOKEN ?? "",
+    },
+    body: JSON.stringify(buildEventTimePatchBody(calendarId, start, end)),
+  });
+  if (res.status === 404) return "not_found";
+  if (!res.ok) throw new Error(`calendar-syncer PATCH failed: ${res.status}`);
+  return "updated";
+}

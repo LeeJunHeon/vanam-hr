@@ -14,6 +14,7 @@ import {
   Bell,
   Globe,
 } from "lucide-react";
+import { findCodeDefaultPolicy } from "@/lib/policy-defaults";
 import { exportExcel } from "@/lib/excelUtils";
 import ExcelButton from "@/components/ExcelButton";
 import { todayYmd } from "@/lib/dateUtils";
@@ -22,7 +23,8 @@ interface Policy {
   key: string;
   value: string;
   description: string | null;
-  updatedAt: string;
+  /** 행이 없는 코드 기본값 키(lib/policy-defaults)는 null — 처음 저장 때 행이 생긴다 */
+  updatedAt: string | null;
 }
 
 // 비밀번호류 키 감지 — UI에서 마스킹 처리
@@ -126,7 +128,7 @@ export default function PoliciesPage() {
         // 비밀 키는 값을 마스킹해서 export
         isSecretKey(p.key) && p.value ? "***" : p.value,
         p.description ?? "",
-        new Date(p.updatedAt).toLocaleString("ko-KR"),
+        p.updatedAt ? new Date(p.updatedAt).toLocaleString("ko-KR") : "",
       ]),
       `정책설정_${todayYmd()}.xlsx`,
       "정책설정"
@@ -135,6 +137,8 @@ export default function PoliciesPage() {
 
   const formatValue = (p: Policy): string => {
     if (!p.value) return "(빈 값)";
+    const codeDefault = findCodeDefaultPolicy(p.key);
+    if (codeDefault) return codeDefault.display(p.value);
     if (isSecretKey(p.key) && !revealedKeys.has(p.key)) {
       return "•".repeat(Math.min(p.value.length, 20));
     }
@@ -223,6 +227,11 @@ export default function PoliciesPage() {
                           <code className="text-sm font-mono font-semibold text-gray-900 truncate">
                             {p.key}
                           </code>
+                          {findCodeDefaultPolicy(p.key) && (
+                            <span className="text-xs font-semibold text-gray-700 truncate">
+                              {findCodeDefaultPolicy(p.key)!.label}
+                            </span>
+                          )}
                           {isSecret && (
                             <span className="text-[10px] font-semibold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full shrink-0">
                               SECRET
@@ -259,7 +268,9 @@ export default function PoliciesPage() {
                         </p>
                       </div>
                       <p className="text-[10px] text-gray-400 mt-1">
-                        최종 수정: {new Date(p.updatedAt).toLocaleString("ko-KR")}
+                        {p.updatedAt
+                          ? `최종 수정: ${new Date(p.updatedAt).toLocaleString("ko-KR")}`
+                          : "코드 기본값 — 아직 저장한 적 없음 (저장하면 정책 행이 만들어집니다)"}
                       </p>
                     </div>
                   </div>

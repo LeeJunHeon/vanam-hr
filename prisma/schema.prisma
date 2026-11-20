@@ -132,6 +132,8 @@ model ShiftPattern {
   isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// 반차 경계 = 시프트 시작 후 분. NULL 이면 정책 기본값(half_day_split_minutes) 사용
+  halfDaySplitMinutes Int? @map("half_day_split_minutes")
 
   employeeShifts    EmployeeShift[]
   attendanceDailies AttendanceDaily[]

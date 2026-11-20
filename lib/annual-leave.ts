@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/app/generated/prisma/client";
 import { resolveShiftPoint, isWorkPoint } from "@/lib/shift-schedule";
+import { assignmentOn, loadShiftAssignments } from "@/lib/employee-shift";
 import { LIVE_REQUEST_STATUSES } from "@/lib/attendance-live-requests";
 
 export interface AnnualLeavePolicyValues {
@@ -64,14 +65,6 @@ function pendingLeaveRequestWhere(employeeId: number): Prisma.AttendanceRequestW
   };
 }
 
-type ShiftAssignmentRow = {
-  employee_id: number;
-  start_date: Date;
-  end_date: Date | null;
-  cycle_days: number;
-  schedule: unknown;
-};
-
 // 연차는 본인이 원래 일하는 날만 센다 (2026-09 방침).
 // 근무일 = 그 날을 덮는 시프트 배정상 근무(isWorkPoint) AND 공휴일 아님.
 // 그 날을 덮는 배정이 없으면 기존 규칙(토·일 제외, 공휴일 제외) — 시프트 미배정 직원 동작 유지.
@@ -82,34 +75,15 @@ export async function loadWorkDayChecker(
 ): Promise<(employeeId: number, day: Date) => boolean> {
   const holidays = await getHolidaySet(fromYmd, toYmd);
 
-  const byEmployee = new Map<number, ShiftAssignmentRow[]>();
-  if (employeeIds.length > 0) {
-    // loadShiftAndGrace 와 같은 조건(pattern is_active) + 기간 겹침. start_date DESC 라
-    // 날짜별로 첫 매칭 행을 고르면 LIMIT 1 과 같은 선택이 된다.
-    const rows = await prisma.$queryRaw<ShiftAssignmentRow[]>`
-      SELECT es.employee_id, es.start_date, es.end_date, sp.cycle_days, sp.schedule
-      FROM hr.employee_shifts es
-      JOIN hr.shift_patterns sp ON sp.id = es.pattern_id
-      WHERE es.employee_id = ANY(${employeeIds}::int[])
-        AND es.start_date <= ${toYmd}::date
-        AND (es.end_date IS NULL OR es.end_date >= ${fromYmd}::date)
-        AND sp.is_active = true
-      ORDER BY es.start_date DESC
-    `;
-    for (const r of rows) {
-      const list = byEmployee.get(r.employee_id);
-      if (list) list.push(r);
-      else byEmployee.set(r.employee_id, [r]);
-    }
-  }
+  // 직원·날짜 시프트 조회는 lib/employee-shift 한 곳 (loadShiftAndGrace 와 같은 조건 — pattern is_active + 기간 겹침,
+  // start_date DESC 라 날짜별 첫 매칭 = LIMIT 1 과 같은 선택)
+  const byEmployee = await loadShiftAssignments(prisma, employeeIds, fromYmd, toYmd);
 
   return (employeeId: number, day: Date): boolean => {
     const d = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate()));
     const ymd = d.toISOString().split("T")[0];
     if (holidays.has(ymd)) return false;
-    const row = byEmployee
-      .get(employeeId)
-      ?.find((r) => r.start_date <= d && (r.end_date == null || r.end_date >= d));
+    const row = assignmentOn(byEmployee.get(employeeId), d);
     if (row) {
       return isWorkPoint(resolveShiftPoint(row.start_date, row.cycle_days, row.schedule, d));
     }

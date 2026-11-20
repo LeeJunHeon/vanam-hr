@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth-helpers";
+import { CODE_DEFAULT_POLICIES, findCodeDefaultPolicy } from "@/lib/policy-defaults";
 
 // GET /api/policies?search=...
 export async function GET(request: NextRequest) {
@@ -24,14 +25,21 @@ export async function GET(request: NextRequest) {
       orderBy: { key: "asc" },
     });
 
-    return NextResponse.json(
-      policies.map((p) => ({
-        key: p.key,
-        value: p.value,
-        description: p.description,
-        updatedAt: p.updatedAt,
-      }))
-    );
+    const rows = policies.map((p) => ({
+      key: p.key,
+      value: p.value,
+      description: p.description,
+      updatedAt: p.updatedAt as Date | null,
+    }));
+    // 코드 기본값이 있는 키는 행이 없어도 기본값으로 보여준다 (처음 저장 시 PUT 이 행을 만든다)
+    const q = search.toLowerCase();
+    for (const d of CODE_DEFAULT_POLICIES) {
+      if (rows.some((r) => r.key === d.key)) continue;
+      if (q && !d.key.toLowerCase().includes(q) && !d.description.toLowerCase().includes(q)) continue;
+      rows.push({ key: d.key, value: d.defaultValue, description: d.description, updatedAt: null });
+    }
+    rows.sort((a, b) => a.key.localeCompare(b.key));
+    return NextResponse.json(rows);
   } catch (error) {
     console.error("GET /api/policies error:", error);
     return NextResponse.json(
@@ -73,7 +81,14 @@ export async function PUT(request: NextRequest) {
       where: { key },
     });
 
-    if (!exists && !isNotifyChannelKey) {
+    // 코드 기본값이 있는 키(lib/policy-defaults)도 행이 없으면 처음 저장 때 만든다. 값 검증도 여기서.
+    const codeDefault = findCodeDefaultPolicy(key);
+    if (codeDefault) {
+      const err = codeDefault.validate(trimmed);
+      if (err) return NextResponse.json({ error: err }, { status: 400 });
+    }
+
+    if (!exists && !isNotifyChannelKey && !codeDefault) {
       return NextResponse.json(
         { error: `정책 "${key}"가 존재하지 않습니다. 정책 추가는 DB 직접 작업이 필요합니다.` },
         { status: 404 }
@@ -89,7 +104,9 @@ export async function PUT(request: NextRequest) {
           data: {
             key,
             value: trimmed,
-            description: `알림 채널 설정 (${key}) — 설정 화면에서 자동 생성`,
+            description: codeDefault
+              ? codeDefault.description
+              : `알림 채널 설정 (${key}) — 설정 화면에서 자동 생성`,
           },
         });
 

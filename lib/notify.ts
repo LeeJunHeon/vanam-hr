@@ -3,7 +3,7 @@ import { sendEmail } from "@/lib/email";
 
 interface CreateNotificationArgs {
   employeeIds: number[];
-  type: string;                // 'approval_request' | 'trip_request' | 'trip_invite' | 'approval_result' | 'trip_result' | 'trip_decline' | 'trip_remove' | 'cancel'
+  type: string;                // 'approval_request' | 'trip_request' | 'trip_invite' | 'approval_result' | 'trip_result' | 'trip_decline' | 'trip_remove' | 'cancel' | 'request_retime' 등
   title: string;
   body?: string | null;
   linkPage?: string | null;

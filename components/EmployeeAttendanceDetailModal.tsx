@@ -32,10 +32,48 @@ import { summarizeDays } from "@/lib/attendance-summary";
 import ExcelButton from "@/components/ExcelButton";
 import { renderTimeCell } from "@/components/AttendanceTimeCell";
 import AttendanceExportModal from "@/components/AttendanceExportModal";
+import RequestRetimeModal, { type RetimeTarget } from "@/components/RequestRetimeModal";
+import { isLeaveCategoryType } from "@/lib/category-kind";
 
 // 직원 카드 클릭 시 열리는 최근 30일 출퇴근 상세 모달.
 // /api/attendance/overview?employeeId=X&startDate=30일전&endDate=오늘 를 호출한다.
 // (overview API는 이미 employeeId 필터 + 권한 체크를 지원하므로 호출만 다르게 함)
+// 반차 시각 수정: 그날 승인된 hr 출처 시간형 휴가가 있으면 날짜 줄에 "반차 시각 수정" 버튼(관리자 화면 전용 모달).
+//   신청 목록은 기존 GET /api/attendance-requests?employeeId=&from=&to= (관리자 조회), 저장은 RequestRetimeModal.
+
+// 그날 승인된 hr(또는 출처 없음) 하루짜리 시간형 휴가 — 서버 retime 대상 조건(lib/attendance-request-retime)과 같다
+const RETIME_STATUSES = ["approved", "auto_approved", "auto_delegated"];
+interface RequestListItem {
+  id: number;
+  categoryName: string;
+  categoryType: string | null;
+  startDate: string;
+  endDate: string;
+  correctedCheckIn: string | null;
+  correctedCheckOut: string | null;
+  status: string;
+  externalSource: string | null;
+}
+function retimeTargetsByDate(list: RequestListItem[]): Map<string, RetimeTarget[]> {
+  const m = new Map<string, RetimeTarget[]>();
+  for (const r of list) {
+    if (!RETIME_STATUSES.includes(r.status)) continue;
+    if (r.externalSource && r.externalSource !== "hr") continue;
+    if (!isLeaveCategoryType(r.categoryType)) continue;
+    if (!r.correctedCheckIn || !r.correctedCheckOut || r.startDate !== r.endDate) continue;
+    const t: RetimeTarget = {
+      id: r.id,
+      categoryName: r.categoryName,
+      date: r.startDate,
+      correctedCheckIn: r.correctedCheckIn,
+      correctedCheckOut: r.correctedCheckOut,
+    };
+    const list2 = m.get(r.startDate);
+    if (list2) list2.push(t);
+    else m.set(r.startDate, [t]);
+  }
+  return m;
+}
 
 interface EmployeeAttendanceDetailModalProps {
   employeeId: number;
@@ -249,6 +287,14 @@ export default function EmployeeAttendanceDetailModal({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
+  // 날짜 → 시각 수정 가능한 휴가 신청
+  const [retimeTargets, setRetimeTargets] = useState<Map<string, RetimeTarget[]>>(new Map());
+  const [retimeTarget, setRetimeTarget] = useState<RetimeTarget | null>(null);
+  const [toast, setToast] = useState("");
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 3500);
+  };
 
   // KST 이번 달 "YYYY-MM" (Excel 기간 모달 종료 기본값)
   const thisYm = useMemo(
@@ -277,7 +323,14 @@ export default function EmployeeAttendanceDetailModal({
         startDate,
         endDate,
       });
-      const res = await fetch(`/api/attendance/overview?${params}`);
+      const reqParams = new URLSearchParams({ employeeId: String(employeeId), from: startDate, to: endDate });
+      const [res, reqRes] = await Promise.all([
+        fetch(`/api/attendance/overview?${params}`),
+        fetch(`/api/attendance-requests?${reqParams}`).catch(() => null),
+      ]);
+      // 신청 목록은 수정 버튼용 — 실패해도 상세는 그대로 보여준다
+      const reqList: RequestListItem[] = reqRes?.ok ? await reqRes.json().catch(() => []) : [];
+      setRetimeTargets(retimeTargetsByDate(Array.isArray(reqList) ? reqList : []));
       if (!res.ok) {
         const j = await res.json().catch(() => null);
         setError(j?.error || `조회 실패 (${res.status})`);
@@ -302,12 +355,26 @@ export default function EmployeeAttendanceDetailModal({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (exportOpen) return; // 하위 모달 우선
+      if (exportOpen || retimeTarget) return; // 하위 모달 우선
       onClose();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose, exportOpen]);
+  }, [onClose, exportOpen, retimeTarget]);
+
+  // 날짜 줄의 "반차 시각 수정" 버튼 (그날 대상 신청이 있을 때만, 여러 건이면 카테고리별로)
+  const renderRetimeButtons = (ymd: string) =>
+    (retimeTargets.get(ymd) ?? []).map((t) => (
+      <button
+        key={t.id}
+        type="button"
+        onClick={() => setRetimeTarget(t)}
+        className="inline-flex items-center px-2 py-1 text-[11px] font-medium text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 whitespace-nowrap"
+        title={`${t.categoryName} ${formatTime(t.correctedCheckIn)}~${formatTime(t.correctedCheckOut)} 시각 수정`}
+      >
+        {(retimeTargets.get(ymd)?.length ?? 0) > 1 ? `${t.categoryName} 시각 수정` : "반차 시각 수정"}
+      </button>
+    ));
 
   // 통계 — 공통 기준(lib/attendance-summary summarizeDays). 평가 키로 세고(지각·조퇴 둘 다면 둘 다),
   // 휴무일 휴가 줄은 출근일 외 칸에서 뺀다. 외근/휴가 = 휴가 type + 근무 type 인 날.
@@ -507,6 +574,9 @@ export default function EmployeeAttendanceDetailModal({
                                   <span className="text-gray-300">-</span>
                                 )}
                               </div>
+                              {retimeTargets.has(r.workDate) && (
+                                <div className="flex flex-wrap gap-1 mt-1">{renderRetimeButtons(r.workDate)}</div>
+                              )}
                             </td>
                           </tr>
                         ))}
@@ -550,6 +620,9 @@ export default function EmployeeAttendanceDetailModal({
                             사유: {r.reason}
                           </div>
                         )}
+                        {retimeTargets.has(r.workDate) && (
+                          <div className="flex flex-wrap gap-1">{renderRetimeButtons(r.workDate)}</div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -560,6 +633,27 @@ export default function EmployeeAttendanceDetailModal({
         </div>
       </div>
     </div>
+
+    {/* 반차 시각 수정 모달 — 상세 모달 위 (z-[60]). 저장 후 상세 다시 불러오기 */}
+    {retimeTarget && (
+      <RequestRetimeModal
+        target={retimeTarget}
+        employeeId={employeeId}
+        employeeName={employeeName}
+        onClose={() => setRetimeTarget(null)}
+        onSaved={(msg) => {
+          setRetimeTarget(null);
+          showToast(msg);
+          fetchDetail();
+        }}
+      />
+    )}
+
+    {toast && (
+      <div className="fixed bottom-6 right-6 z-[70] bg-gray-900 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-lg">
+        {toast}
+      </div>
+    )}
 
     {/* 근태 Excel 기간 선택 모달 — 상세 모달(z-50) 위에 뜨도록 형제로 렌더 (z-[60]) */}
     {exportOpen && (

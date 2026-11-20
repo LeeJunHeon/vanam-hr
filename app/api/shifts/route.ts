@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth-helpers";
+import { validatePatternSplit } from "@/lib/half-day";
 
 // schedule 원소 형식
 interface SchedulePoint {
@@ -133,6 +134,7 @@ export async function GET(request: NextRequest) {
         cycleDays: p.cycleDays,
         schedule: p.schedule,
         isActive: p.isActive,
+        halfDaySplitMinutes: p.halfDaySplitMinutes,
       }))
     );
   } catch (error) {
@@ -151,7 +153,7 @@ export async function POST(request: NextRequest) {
     if (!_auth.ok) return _auth.response;
 
     const body = await request.json();
-    const { name, description, cycleDays, schedule } = body;
+    const { name, description, cycleDays, schedule, halfDaySplitMinutes } = body;
 
     if (!name?.trim()) {
       return NextResponse.json(
@@ -178,6 +180,11 @@ export async function POST(request: NextRequest) {
     if (typeErr) {
       return NextResponse.json({ error: typeErr }, { status: 400 });
     }
+    // 반차 경계(시작 후 분) — 비우면 정책 기본값. 0 초과·30분 단위·근무 시간 미만 (lib/half-day)
+    const splitErr = validatePatternSplit(halfDaySplitMinutes ?? null, schedule);
+    if (splitErr) {
+      return NextResponse.json({ error: splitErr }, { status: 400 });
+    }
 
     const exists = await prisma.shiftPattern.findUnique({
       where: { name: name.trim() },
@@ -195,6 +202,7 @@ export async function POST(request: NextRequest) {
         description: description?.trim() || null,
         cycleDays,
         schedule,
+        halfDaySplitMinutes: halfDaySplitMinutes ?? null,
       },
     });
 
@@ -206,6 +214,7 @@ export async function POST(request: NextRequest) {
         cycleDays: pattern.cycleDays,
         schedule: pattern.schedule,
         isActive: pattern.isActive,
+        halfDaySplitMinutes: pattern.halfDaySplitMinutes,
       },
       { status: 201 }
     );
@@ -231,7 +240,7 @@ export async function PUT(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { name, description, cycleDays, schedule, isActive } = body;
+    const { name, description, cycleDays, schedule, isActive, halfDaySplitMinutes } = body;
 
     const before = await prisma.shiftPattern.findUnique({
       where: { id: Number(id) },
@@ -298,6 +307,16 @@ export async function PUT(request: NextRequest) {
       }
     }
 
+    // 반차 경계 — 새 값 또는 (schedule 만 바뀌면) 기존 값을 새 schedule 기준으로 다시 검증
+    if (halfDaySplitMinutes !== undefined || schedule !== undefined) {
+      const split = halfDaySplitMinutes !== undefined ? halfDaySplitMinutes : before.halfDaySplitMinutes;
+      const sched = (schedule !== undefined ? schedule : before.schedule) as SchedulePoint[];
+      const splitErr = validatePatternSplit(split ?? null, Array.isArray(sched) ? sched : []);
+      if (splitErr) {
+        return NextResponse.json({ error: splitErr }, { status: 400 });
+      }
+    }
+
     const pattern = await prisma.shiftPattern.update({
       where: { id: Number(id) },
       data: {
@@ -308,6 +327,7 @@ export async function PUT(request: NextRequest) {
         ...(cycleDays !== undefined && { cycleDays }),
         ...(schedule !== undefined && { schedule }),
         ...(isActive !== undefined && { isActive: Boolean(isActive) }),
+        ...(halfDaySplitMinutes !== undefined && { halfDaySplitMinutes: halfDaySplitMinutes ?? null }),
       },
     });
 
@@ -318,6 +338,7 @@ export async function PUT(request: NextRequest) {
       cycleDays: pattern.cycleDays,
       schedule: pattern.schedule,
       isActive: pattern.isActive,
+      halfDaySplitMinutes: pattern.halfDaySplitMinutes,
     });
   } catch (error) {
     console.error("PUT /api/shifts error:", error);

@@ -24,6 +24,7 @@ import ExcelButton from "@/components/ExcelButton";
 import DatePicker from "@/components/DatePicker";
 import TimePicker from "@/components/TimePicker";
 import { todayYmd } from "@/lib/dateUtils";
+import { halfDayHint, isHalfDayCode, type HalfDayCode, type HalfDayInfo } from "@/lib/half-day";
 
 interface AttendanceRequest {
   id: number;
@@ -157,11 +158,8 @@ const CATEGORIES_WITHOUT_TIME = new Set(["ANNUAL"]);
 // 휴가/근태 신청 탭에서 숨길 카테고리(출장/외근은 "출장/외근 관리" 탭에서 생성). 재택(REMOTE_WORK)은 유지.
 const HIDDEN_REQUEST_CATEGORY_CODES = new Set(["EXTERNAL_WORK", "BUSINESS_TRIP"]);
 
-// 반차 시간 기본값 (사용자 수정 가능)
-const HALF_DAY_DEFAULTS: Record<string, { in: string; out: string }> = {
-  HALF_AM: { in: "09:00", out: "13:00" },
-  HALF_PM: { in: "13:00", out: "18:00" },
-};
+// 반차 시간 기본값은 그날 내 시프트·반차 경계로 채운다 (GET /api/my-shift/half-day, 계산은 lib/half-day).
+// 시프트 미배정이면 lib/half-day HALF_DAY_FALLBACK(예전 고정값), 휴무일·공휴일·자정 넘는 시프트는 빈칸.
 
 // 카테고리 코드별 시간 입력 정책 헬퍼
 function categoryAllowsTimeInput(code: string | undefined | null): boolean {
@@ -221,6 +219,11 @@ export default function RequestPage() {
   // 카테고리가 이전에 자동채움된 값과 다를 때만 캘린더/제목/설명/반차시간 기본값 제안.
   // 사용자가 캘린더를 직접 바꾸거나 시간을 직접 수정한 후에는 자동값으로 되돌아가지 않음.
   const lastAutoFilledCategoryRef = useRef<string | null>(null);
+  // 반차 시각 자동 채움 — 마지막으로 자동으로 넣은 시각. 폼 시각이 이 값과 다르면 사용자가 고친 것 → 더 채우지 않음(null).
+  // 반차 카테고리를 새로 고를 때 다시 켜진다. 시작 날짜를 바꾸면(고치지 않았다면) 그날 시프트로 다시 채운다.
+  const autoHalfDayTimesRef = useRef<{ in: string; out: string } | null>(null);
+  // 그날 내 시프트·반차 기본 시각 (반차 카테고리일 때만)
+  const [halfDayInfo, setHalfDayInfo] = useState<HalfDayInfo | null>(null);
 
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<AttendanceRequest | null>(null);
@@ -402,8 +405,9 @@ export default function RequestPage() {
     ].filter(Boolean);
     const autoDesc = lines.join("\n");
 
-    // ── 3) 반차 시간 기본값 (HALF_AM/HALF_PM)
-    const halfDayDefault = HALF_DAY_DEFAULTS[cat.code];
+    // ── 3) 반차 시간 — 여기서는 비워 두고, 그날 시프트 기준 값은 아래 반차 자동 채움 effect 가 넣는다
+    const isHalfDay = isHalfDayCode(cat.code);
+    autoHalfDayTimesRef.current = isHalfDay ? { in: "", out: "" } : null;
 
     setForm((f) => {
       const next = { ...f };
@@ -418,10 +422,10 @@ export default function RequestPage() {
         autoDesc,
         extractMemoNotes(f.calendarEventDescription)
       );
-      // 시간: 반차면 기본값, 연차(시간불가)면 클리어, 그 외는 사용자 입력 유지
-      if (halfDayDefault) {
-        next.correctedCheckIn = halfDayDefault.in;
-        next.correctedCheckOut = halfDayDefault.out;
+      // 시간: 반차면 비움(곧 그날 시프트 기준으로 채움), 연차(시간불가)면 클리어, 그 외는 사용자 입력 유지
+      if (isHalfDay) {
+        next.correctedCheckIn = "";
+        next.correctedCheckOut = "";
       } else if (!categoryAllowsTimeInput(cat.code)) {
         next.correctedCheckIn = "";
         next.correctedCheckOut = "";
@@ -458,6 +462,44 @@ export default function RequestPage() {
       categories.find((c) => c.id === Number(form.categoryId)) ?? null,
     [categories, form.categoryId]
   );
+
+  // 반차면 그날 내 시프트·반차 기본 시각 조회 (수정 모드에서도 안내 문구용으로 조회)
+  const halfDayCode = isHalfDayCode(selectedCategory?.code) ? selectedCategory!.code : null;
+  useEffect(() => {
+    if (!showForm || !halfDayCode || !form.startDate) return;
+    let cancelled = false;
+    fetch(`/api/my-shift/half-day?date=${form.startDate}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((info: HalfDayInfo | null) => {
+        if (!cancelled) setHalfDayInfo(info);
+      })
+      .catch(() => {
+        if (!cancelled) setHalfDayInfo(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showForm, halfDayCode, form.startDate]);
+  const halfDayInfoForDate =
+    halfDayCode && halfDayInfo?.date === form.startDate ? halfDayInfo : null;
+
+  // 반차 자동 채움 — 카테고리를 새로 고르거나 시작 날짜를 바꾸면 그날 시프트 기준 시각으로.
+  // 기존 가드 유지: 수정 모드 skip, 사용자가 시간을 직접 고친 뒤에는 덮어쓰지 않음.
+  useEffect(() => {
+    if (!showForm || editTarget || !halfDayCode) return;
+    const auto = autoHalfDayTimesRef.current;
+    if (!auto) return;
+    if (form.correctedCheckIn !== auto.in || form.correctedCheckOut !== auto.out) {
+      autoHalfDayTimesRef.current = null; // 사용자가 고침
+      return;
+    }
+    if (!halfDayInfoForDate) return; // 그날 정보 받기 전
+    const d = halfDayInfoForDate.defaults;
+    const target = d.kind === "none" ? { in: "", out: "" } : d.times[halfDayCode as HalfDayCode];
+    if (target.in === auto.in && target.out === auto.out) return;
+    autoHalfDayTimesRef.current = target;
+    setForm((f) => ({ ...f, correctedCheckIn: target.in, correctedCheckOut: target.out }));
+  }, [showForm, editTarget, halfDayCode, halfDayInfoForDate, form.correctedCheckIn, form.correctedCheckOut]);
 
   // 연차 차감 미리보기 — 항목/기간 변경 시 debounce로 서버 조회 (서버 초과 차단과 동일 계산)
   useEffect(() => {
@@ -1143,6 +1185,13 @@ export default function RequestPage() {
                           />
                         </div>
                       </div>
+
+                      {/* 반차 — 그날 내 시프트·반차 경계 안내 */}
+                      {halfDayInfoForDate && (
+                        <p className="text-[11px] text-gray-400">
+                          {halfDayHint(halfDayInfoForDate)}
+                        </p>
+                      )}
 
                       {/* 미리보기 */}
                       <div className="bg-blue-50 border border-blue-100 text-blue-800 px-3 py-2 rounded-lg text-xs">
