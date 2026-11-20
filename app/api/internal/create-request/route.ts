@@ -7,6 +7,8 @@ import { createAttendanceRequest } from "@/lib/create-attendance-request";
 export const dynamic = "force-dynamic";
 
 // POST /api/internal/create-request — 챗 근태 신청 생성.
+// 반차를 시각 없이 보내면 lib/create-attendance-request 가 그날 시프트 기본 시각으로 채운다(못 채우면 400).
+// 응답: { ok, id, status, correctedCheckIn, correctedCheckOut (KST HH:MM|null), timesFilledFromShift, message }
 // employeeId는 신원(x-acting-user-email→resolveHrIdentity)에서만 결정 → 본인 명의로만(위조 불가).
 export async function POST(request: Request) {
   const auth = requireHrWriteAuth(request);
@@ -66,5 +68,25 @@ export async function POST(request: Request) {
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: result.status });
   }
-  return NextResponse.json({ ok: true, id: result.id, status: result.status }, { status: 201 });
+  // 저장된 시각과 안내 문구 — 반차를 시각 없이 보내면 그날 시프트 기본 시각으로 채워진다
+  const range =
+    result.correctedCheckIn && result.correctedCheckOut
+      ? ` ${result.correctedCheckIn}~${result.correctedCheckOut}`
+      : "";
+  const dates = startDate === endDate ? startDate : `${startDate}~${endDate}`;
+  const message =
+    `${result.categoryName} ${dates}${range} 으로 신청되었습니다.` +
+    (result.timesFilledFromShift ? " (그날 시프트 기준 시각으로 자동 지정)" : "");
+  return NextResponse.json(
+    {
+      ok: true,
+      id: result.id,
+      status: result.status,
+      correctedCheckIn: result.correctedCheckIn,
+      correctedCheckOut: result.correctedCheckOut,
+      timesFilledFromShift: result.timesFilledFromShift,
+      message,
+    },
+    { status: 201 }
+  );
 }

@@ -16,7 +16,7 @@ export const OPERATION_SCHEMAS: OperationSchema[] = [
   {
     id: "hr_leave_request",
     label: "근태 신청",
-    description: "연차·반차·외근·출장·재택·병가 등 근태 신청을 생성한다. 시간 단위(시간연차/특정 시각 반차 등)면 시작/종료 시각을 함께 넣고, 종일이면 시각을 비운다. 결재선은 시스템이 자동 배정한다. 본인 명의로만 신청된다.",
+    description: "연차·반차·외근·출장·재택·병가 등 근태 신청을 생성한다. 반차는 시각을 말하지 않으면 비워 두면 된다 — 신청자 그날 시프트 기준 기본 시각으로 자동 지정된다. 특정 시각을 말하면 그 시각을 넣는다. 반차는 하루만 신청한다. 연차 등 종일 항목은 시각을 비운다. 시간 단위 외근·병가 등은 시작/종료 시각을 함께 넣는다. 결재선은 시스템이 자동 배정한다. 본인 명의로만 신청된다. 결과는 응답의 message(예: '오후반차 2026-11-23 13:00~18:00 으로 신청되었습니다.')를 그대로 안내한다.",
     triggers: ["연차 쓸게", "휴가 신청", "연차 신청", "반차", "외근 신청", "출장 신청", "재택 신청", "병가", "근태 신청", "시간 연차", "오전 반차", "오후 반차"],
     app: "hr",
     fields: [
@@ -27,13 +27,14 @@ export const OPERATION_SCHEMAS: OperationSchema[] = [
       { name: "endDate", label: "종료일", type: "date", required: true,
         validation: "YYYY-MM-DD. 하루면 시작일과 동일하게." },
       { name: "startTime", label: "시작 시각", type: "text", required: false,
-        validation: "HH:MM 24시간(예: 13:00). 시간 단위 근태일 때만. 종일이면 비운다. 시작/종료 시각은 함께 넣거나 함께 비운다." },
+        validation: "HH:MM 24시간(예: 13:00). 사용자가 특정 시각을 말했을 때만 넣는다. 반차인데 시각을 말하지 않았으면 비운다(그날 시프트 기준으로 자동 지정). 종일 항목은 비운다. 시작/종료 시각은 함께 넣거나 함께 비운다." },
       { name: "endTime", label: "종료 시각", type: "text", required: false,
-        validation: "HH:MM 24시간(예: 18:00). 시간 단위 근태일 때만. 종일이면 비운다. 시작/종료 시각은 함께 넣거나 함께 비운다." },
+        validation: "HH:MM 24시간(예: 18:00). 사용자가 특정 시각을 말했을 때만 넣는다. 반차인데 시각을 말하지 않았으면 비운다(그날 시프트 기준으로 자동 지정). 종일 항목은 비운다. 시작/종료 시각은 함께 넣거나 함께 비운다." },
       { name: "reason", label: "사유", type: "text", required: false },
     ],
     steps: [
-      { api: "POST /api/internal/create-request", body: ["category", "startDate", "endDate", "startTime", "endTime", "reason"] },
+      { api: "POST /api/internal/create-request", body: ["category", "startDate", "endDate", "startTime", "endTime", "reason"],
+        returns: "id, status, correctedCheckIn·correctedCheckOut(실제 저장 시각 KST HH:MM, 종일이면 null), timesFilledFromShift(반차 시각을 그날 시프트로 채웠는지), message(사용자 안내 문구)" },
     ],
     cardTitle: "근태 신청 확인",
     cardShow: ["category", "startDate", "endDate", "startTime", "endTime", "reason"],

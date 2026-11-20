@@ -11,7 +11,7 @@
     "parity": "node tests/parity/run.mjs",
     "test:work-hours": "node --import tsx --experimental-test-module-mocks --test tests/work-hours/work-hours.test.ts tests/work-hours/view.test.ts tests/work-hours/api.test.ts",
     "test:perf-open": "node --import tsx --test tests/performance/open-notify.test.ts",
-    "test:half-day": "node --import tsx --experimental-test-module-mocks --test tests/half-day/half-day.test.ts tests/half-day/retime-api.test.ts"
+    "test:half-day": "node --import tsx --experimental-test-module-mocks --test tests/half-day/half-day.test.ts tests/half-day/retime-api.test.ts tests/half-day/create-request.test.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.4.2",

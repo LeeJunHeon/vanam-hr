@@ -14,6 +14,7 @@ import {
   approvalRouteFields,
   applyAutoApprovalInTx,
   runAutoApprovalSideEffects,
+  savedTimesForResponse,
 } from "@/lib/create-attendance-request";
 import { revertCancelledRequestFromDaily } from "@/lib/finalize-approval";
 import { retimeAttendanceRequest } from "@/lib/attendance-request-retime";
@@ -232,7 +233,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: result.error }, { status: result.status });
     }
     return NextResponse.json(
-      { id: result.id, status: result.status },
+      {
+        id: result.id,
+        status: result.status,
+        // 실제 저장된 시각 (반차를 시각 없이 보내면 그날 시프트 기본 시각으로 채워진다)
+        correctedCheckIn: result.correctedCheckIn,
+        correctedCheckOut: result.correctedCheckOut,
+        timesFilledFromShift: result.timesFilledFromShift,
+      },
       { status: 201 }
     );
   } catch (error) {
@@ -572,7 +580,7 @@ export async function PUT(request: NextRequest) {
         console.error("[notify] 수정 결재 요청 알림 생성 실패:", e);
       }
     }
-    return NextResponse.json({ id: saved.id, status: saved.status });
+    return NextResponse.json({ id: saved.id, status: saved.status, ...savedTimesForResponse(v) });
   } catch (error) {
     console.error("PUT /api/attendance-requests error:", error);
     return NextResponse.json(

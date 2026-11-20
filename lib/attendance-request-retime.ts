@@ -10,6 +10,7 @@ import { isLeaveCategoryType } from "@/lib/category-kind";
 import { LIVE_REQUEST_STATUSES } from "@/lib/attendance-live-requests";
 import { loadAttendancePolicy } from "@/lib/attendance-policy";
 import { markAttendanceRecalc } from "@/lib/attendance-recalc";
+import { kstHHMM } from "@/lib/kst-date";
 import { updateCalendarEventTime } from "@/lib/calendar-event";
 import { createNotifications } from "@/lib/notify";
 
@@ -83,11 +84,6 @@ export function parseRetimeTime(value: unknown, dateYmd: string): Date | null {
 export function workDayWindow(dateYmd: string, cutoffHour: number): { start: Date; end: Date } {
   const start = new Date(`${dateYmd}T${String(cutoffHour).padStart(2, "0")}:00:00+09:00`);
   return { start, end: new Date(start.getTime() + 86400000) };
-}
-
-/** KST "HH:MM" */
-export function kstHHMM(d: Date): string {
-  return new Date(d.getTime() + 9 * 3600000).toISOString().slice(11, 16);
 }
 
 /** "관리자 홍길동님이 11/20 오후반차 시각을 13:00~20:00 → 12:00~20:00 으로 변경했습니다." */

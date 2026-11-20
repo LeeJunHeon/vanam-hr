@@ -49,3 +49,8 @@ export function kstTodayMidnightUtc(): Date {
     )
   );
 }
+
+/** Date → KST "HH:MM" */
+export function kstHHMM(d: Date): string {
+  return new Date(d.getTime() + 9 * 3600000).toISOString().slice(11, 16);
+}

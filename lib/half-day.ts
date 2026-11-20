@@ -209,3 +209,10 @@ export function requestTimeInputError(
 
 /** 그날 시프트 정보를 못 받았을 때 안내 */
 export const HALF_DAY_INFO_FAILED_MSG = "시프트 정보를 불러오지 못했습니다 — 시각을 직접 입력하세요";
+
+// ── 서버 반차 신청 검사 문구 (lib/create-attendance-request — 웹·챗 공용) ──
+export const HALF_DAY_NO_DEFAULT_MSG =
+  "반차 시각을 정할 수 없습니다(근무일이 아니거나 시프트를 확인할 수 없음). 시작·종료 시각을 직접 지정해 주세요.";
+export const HALF_DAY_ONE_SIDED_MSG =
+  "반차는 시작·종료 시각을 함께 지정하거나 둘 다 비워 주세요. (비우면 그날 시프트 기준 시각으로 자동 지정됩니다.)";
+export const HALF_DAY_SINGLE_DATE_MSG = "반차는 하루만 신청할 수 있습니다. 시작일과 종료일을 같게 해 주세요.";

@@ -9,10 +9,20 @@ import {
 } from "@/lib/finalize-approval";
 import { checkLeaveRequest } from "@/lib/annual-leave";
 import { resolveApprovers, getApprovalCategoryId } from "@/lib/approval-resolver";
+import {
+  HALF_DAY_NO_DEFAULT_MSG,
+  HALF_DAY_ONE_SIDED_MSG,
+  HALF_DAY_SINGLE_DATE_MSG,
+  isHalfDayCode,
+} from "@/lib/half-day";
+import { loadHalfDayInfo } from "@/lib/half-day-info";
+import { kstHHMM } from "@/lib/kst-date";
 
 // ─────────────────────────────────────────────────────────────
 // 근태 신청 규칙 — 신청(웹·챗)·결재 대기 중 수정·신청 화면 안내가 모두 이 파일의 함수를 쓴다.
 //   validateAttendanceRequestInput  신청 검사 (날짜·직원·항목·연차 잔여·정정 규칙·시간 규칙)
+//                                   반차(HALF_AM/HALF_PM)는 하루짜리만, 시각을 둘 다 비우면 그날 시프트 기본 시각으로 채운다
+//                                   (lib/half-day-info — 신청 화면과 같은 기준), 못 채우면 400
 //   decideApprovalRoute             결재선 결정 (자동승인 여부·이유, 결재자)
 //   applyAutoApprovalInTx / runAutoApprovalSideEffects  자동승인 후처리
 // ─────────────────────────────────────────────────────────────
@@ -64,6 +74,8 @@ export type ValidatedAttendanceRequest = {
   reqType: string;
   emp: RequestEmployee;
   category: RequestCategory;
+  /** 반차 시각을 비워 보내 그날 시프트 기본 시각으로 채웠는지 */
+  timesFilledFromShift: boolean;
 };
 
 /**
@@ -123,6 +135,7 @@ export async function validateAttendanceRequestInput(
   // correction 타입은 정정 시각 필수
   let cciDate: Date | null = null;
   let ccoDate: Date | null = null;
+  let timesFilledFromShift = false;
   if (reqType === "correction") {
     // 단일 날짜 강제
     if (ymdFromDate(startD) !== ymdFromDate(endD)) {
@@ -216,8 +229,41 @@ export async function validateAttendanceRequestInput(
     // Phase 6-2G: 한쪽만 시간 입력 차단
     const cciFilled = !!correctedCheckIn;
     const ccoFilled = !!correctedCheckOut;
+    const isHalfDay = isHalfDayCode(category.code);
     if (cciFilled !== ccoFilled) {
-      return { ok: false, error: "시작 시간과 종료 시간 중 하나만 입력할 수 없습니다. 모두 입력하거나 모두 비워주세요.", status: 400 };
+      return {
+        ok: false,
+        error: isHalfDay
+          ? HALF_DAY_ONE_SIDED_MSG
+          : "시작 시간과 종료 시간 중 하나만 입력할 수 없습니다. 모두 입력하거나 모두 비워주세요.",
+        status: 400,
+      };
+    }
+
+    // 반차 — 하루짜리만. 시각을 둘 다 비우면 그날 시프트 기본 시각(패턴 경계 → 정책 → 240, 미배정은 예전 고정값).
+    // 휴무일·공휴일·자정 넘는 시프트·조회 실패면 400 (시각 없이 저장되면 연차 0.5일인데 판정·캘린더는 종일이 된다).
+    if (isHalfDay) {
+      if (ymdFromDate(startD) !== ymdFromDate(endD)) {
+        return { ok: false, error: HALF_DAY_SINGLE_DATE_MSG, status: 400 };
+      }
+      if (!cciFilled) {
+        const ymd = ymdFromDate(startD);
+        let filled: { in: string; out: string } | null = null;
+        try {
+          const info = await loadHalfDayInfo(prisma, employeeIdNum, ymd);
+          if (info.defaults.kind !== "none") {
+            filled = info.defaults.times[category.code as "HALF_AM" | "HALF_PM"];
+          }
+        } catch (e) {
+          console.error(`[half-day] 직원 #${employeeIdNum} ${ymd} 반차 기본 시각 조회 실패:`, e);
+        }
+        if (!filled || filled.out <= filled.in) {
+          return { ok: false, error: HALF_DAY_NO_DEFAULT_MSG, status: 400 };
+        }
+        cciDate = new Date(`${ymd}T${filled.in}:00+09:00`);
+        ccoDate = new Date(`${ymd}T${filled.out}:00+09:00`);
+        timesFilledFromShift = true;
+      }
     }
 
     if (correctedCheckIn) {
@@ -238,7 +284,16 @@ export async function validateAttendanceRequestInput(
     }
   }
 
-  return { ok: true, startD, endD, cciDate, ccoDate, reqType, emp, category };
+  return { ok: true, startD, endD, cciDate, ccoDate, reqType, emp, category, timesFilledFromShift };
+}
+
+/** 응답용 저장 시각 — KST "HH:MM" (종일이면 null) */
+export function savedTimesForResponse(v: { cciDate: Date | null; ccoDate: Date | null; timesFilledFromShift: boolean }) {
+  return {
+    correctedCheckIn: v.cciDate ? kstHHMM(v.cciDate) : null,
+    correctedCheckOut: v.ccoDate ? kstHHMM(v.ccoDate) : null,
+    timesFilledFromShift: v.timesFilledFromShift,
+  };
 }
 
 export type AutoApproveReason =
@@ -389,7 +444,17 @@ export type CreateAttendanceRequestInput = AttendanceRequestInput & {
   calendarEventDescription?: string | null;
 };
 export type CreateAttendanceRequestResult =
-  | { ok: true; id: number; status: string }
+  | {
+      ok: true;
+      id: number;
+      status: string;
+      /** 저장된 시각 KST "HH:MM" (종일이면 null) */
+      correctedCheckIn: string | null;
+      correctedCheckOut: string | null;
+      /** 반차 시각을 그날 시프트 기본 시각으로 채웠는지 */
+      timesFilledFromShift: boolean;
+      categoryName: string;
+    }
   | { ok: false; error: string; status: number };
 
 export async function createAttendanceRequest(
@@ -463,5 +528,11 @@ export async function createAttendanceRequest(
     }
   }
 
-  return { ok: true, id: created.id, status: created.status };
+  return {
+    ok: true,
+    id: created.id,
+    status: created.status,
+    ...savedTimesForResponse(v),
+    categoryName: category.name,
+  };
 }
